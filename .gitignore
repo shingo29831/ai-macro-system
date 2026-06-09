@@ -1,0 +1,49 @@
+# @role: Gitのバージョン管理から除外するファイルやディレクトリを定義する。
+
+# =========================
+# Python & Virtual Environments
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+
+# =========================
+# Environment Variables
+# =========================
+# 機密情報のハードコード厳禁のため、環境変数ファイルは必ず除外
+.env
+.env.local
+*.env
+# ※ .env.example はテンプレートとしてリポジトリに含めるため除外しない
+
+# =========================
+# Testing
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# =========================
+# IDE & OS
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =========================
+# Project Specific (AI Auto Macro)
+# =========================
+# 動的に生成されるマクロリソース群（画像、JSON等）を除外
+macros/wf_*/
+
+# 統合処理前の一時データ（フックやエンジンからの生ログ）を除外
+temp/
+
+# ※ macros/wf_template/ はアーキテクチャ上のテンプレートとして保持するため除外対象から外す
+!macros/wf_template/
