@@ -1,11 +1,11 @@
 # @role: 記録モード中に常時最前面に表示される、ミニマルなコントロール用ウィジェット画面を制御するビュークラス。
 import os
-from PySide6.QtWidgets import QWidget, QPushButton
+from PySide6.QtWidgets import QWidget, QPushButton, QLabel
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile
 
 class RecordDialog:
-    """超小型記録ウィジェットのUI表示およびクローズ動作を制御するクラス"""
+    """超小型記録ウィジェットのUI表示、タイマーバインド、およびクローズ動作を制御するクラス"""
     
     def __init__(self, parent=None):
         self.parent = parent
@@ -13,7 +13,11 @@ class RecordDialog:
         self.dialog.setWindowTitle("記録中")
         self.dialog.setFixedSize(300, 150)
         
+        # UI要素の取得
         self.btn_stop = self.dialog.findChild(QPushButton, "btnStopRecord")
+        self.lbl_timer = self.dialog.findChild(QLabel, "lblTimer")
+        
+        # 停止ボタン押下でウィジェットを閉じるシグナルをバインド
         if self.btn_stop:
             self.btn_stop.clicked.connect(self.dialog.close)
 

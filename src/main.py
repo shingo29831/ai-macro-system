@@ -6,7 +6,7 @@ from ui.views.main_window import MainWindow
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    # OS固有のダークテーマ等の影響を排除し、ホワイトテーマのカスタムCSSを正確に適用するため設定
+    # OS固有のダークモードによる配色崩れを防ぎ、ホワイトテーマのCSSを正確に適用するため設定
     app.setStyle("Fusion")
     
     window = MainWindow()
