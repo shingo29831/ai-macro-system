@@ -1,0 +1,35 @@
+/* ===== グローバル設定 (高コントラスト・ダークテーマ風) ===== */
+QDialog#RecordDialog {
+    background-color: #1e293b; /* 深いスレート色 */
+    color: #f8fafc;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    border: 1px solid #475569;
+    border-radius: 12px;
+}
+
+/* 終了ボタン (赤で目立たせる) */
+#btnStopRecord {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: bold;
+    background-color: #ef4444;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 24px;
+}
+
+#btnStopRecord:hover {
+    background-color: #dc2626;
+}
+
+#btnStopRecord:pressed {
+    background-color: #b91c1c;
+}
+
+/* タイマー表示 (等幅フォントで数字の揺れを防止) */
+#lblTimer {
+    font-size: 32px;
+    font-weight: bold;
+    color: #f8fafc;
+    font-family: "Consolas", "Courier New", monospace;
+}
