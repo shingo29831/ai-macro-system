@@ -6,28 +6,116 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>800</width>
+    <width>900</width>
     <height>600</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QPushButton" name="btnStatus">
-     <property name="text">
-      <string>待機中</string>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="headerLayout">
+     <item>
+      <widget class="QPushButton" name="btnEmergencyStop">
+       <property name="text">
+        <string>緊急停止</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="headerSpacerLeft">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeType">
+        <enum>QSizePolicy::Policy::Expanding</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnStatus">
+       <property name="text">
+        <string>待機中</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="headerSpacerRight">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
    </item>
    <item>
     <widget class="QPushButton" name="btnStartRecord">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>80</height>
+      </size>
+     </property>
      <property name="text">
-      <string>新規マクロ記録開始</string>
+      <string>⏺ 新規マクロ記録開始</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QTableWidget" name="tableMacros"/>
+    <widget class="QTableWidget" name="tableMacros">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>10</height>
+      </size>
+     </property>
+     <property name="columnCount">
+      <number>6</number>
+     </property>
+     <column>
+      <property name="text">
+       <string>マクロ名</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>直近の結果</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>自己修復</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>最終実行日時</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>実行</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>削除</string>
+      </property>
+     </column>
+    </widget>
    </item>
   </layout>
  </widget>
+ <resources/>
+ <connections/>
 </ui>
