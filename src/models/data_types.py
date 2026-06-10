@@ -1,29 +1,153 @@
-# @role: システム全体で共有するデータ構造（統合データ、ワークフロー、各エンジンの生ログ）の型定義とバリデーションを行う。
+# @role: システム全体で共有するデータ構造（一時生データ、コンテキスト統合データ、実行用ワークフロー）の型定義とバリデーションを統括するデータモデル層。
 # 
 # 【参照元 (呼ばれる側)】
-#   - core/recorder/* (記録データ生成時)
-#   - core/generator/* (統合データ生成時)
-#   - core/executor/* (ワークフロー読み込み時)
-#   - engines/* (解析結果の返却時)
+#   - core/recorder/* (フック・スクショ等の生データ生成時)
+#   - engines/* (YOLO/OCR等の解析結果返却時)
+#   - core/generator/* (生ログから統合データ・ワークフローデータへの変換・生成時)
+#   - core/executor/* (ワークフローデータの読み込み・実行時)
 # 
 # 【参照先 (呼ぶ側)】
-#   - なし (外部依存を持たない純粋なデータモデル)
-# 
-# 【処理内容】
-#   - pydantic を用いて、data.html に定義されたJSON構造（UI認識データ、入力操作データ、統合データ、ワークフロー）のモデルを定義する。
-#   - 不正なデータが各モジュール間を行き来しないよう、厳密な型チェックと初期値の設定を行う。
+#   - なし (アーキテクチャの最下層として、他モジュールへの依存を持たない)
 
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+# ====================================================================
+# 共通・基本データ構造
+# ====================================================================
+
 class Coordinates(BaseModel):
+    """画面上の絶対座標またはウィンドウ内の相対座標"""
     x: int
     y: int
 
+class Size(BaseModel):
+    """ウィンドウやオブジェクトの矩形サイズ"""
+    width: int
+    height: int
+
 class BoundingBox(BaseModel):
+    """検出されたUI要素またはテキスト領域の境界ボックス"""
     x: int
     y: int
     width: int
     height: int
 
-# ※ 以下、各種モデル（YoloResult, OcrResult, InputLog, IntegratedEvent, Workflow 等）を追記していく
+
+# ====================================================================
+# 5.2. 生データ構造定義（一時データ）
+# ====================================================================
+
+class UiAnalysisData(BaseModel):
+    """5.2.1. UI認識データ（YOLO Engine）"""
+    timestamp: int = Field(..., description="画像を取得・解析したUnixタイムスタンプ")
+    boundingBox: BoundingBox = Field(..., description="認識したUI要素の座標情報")
+    type: str = Field(..., description="物体認識されたUIの種類(button, dropdown, inputなど)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="UI認識の信頼度・精度")
+
+class YoloEngineOutput(BaseModel):
+    """YOLO Engineがtemp/に出力するJSON全体のラップ構造"""
+    uiAnalysis: UiAnalysisData
+
+
+class TextAnalysisData(BaseModel):
+    """5.2.2. テキスト認識データ（OCR Engine）"""
+    timestamp: int = Field(..., description="画像を取得・解析したUnixタイムスタンプ")
+    boundingBox: BoundingBox = Field(..., description="認識したテキスト領域の座標情報")
+    content: str = Field(..., description="OCRエンジンにより読み取られた文字列内容")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="OCRによるテキスト認識の信頼度・精度")
+
+class OcrEngineOutput(BaseModel):
+    """OCR Engineがtemp/に出力するJSON全体のラップ構造"""
+    textAnalysis: TextAnalysisData
+
+
+class InputLogData(BaseModel):
+    """5.2.3. 入力操作データ（Python OS Hook）"""
+    timestamp: int = Field(..., description="OSレベルで操作をフック・検出したUnixタイムスタンプ")
+    type: str = Field(..., description="入力操作の種類（click_down, key_down など）")
+    content: str = Field(..., description="具体的な入力内容（left_click, Enter, または入力文字など）")
+    windowName: str = Field(..., description="操作対象となったアプリケーションのウィンドウタイトル名")
+    windowSize: Size = Field(..., description="対象ウィンドウの全体サイズ")
+    windowCoordinates: Coordinates = Field(..., description="対象ウィンドウのデスクトップ上における絶対座標")
+    cursorCoordinates: Coordinates = Field(..., description="操作が実行された瞬間のマウスカーソルの絶対座標")
+
+class PythonOsHookOutput(BaseModel):
+    """Python OS Hookがtemp/に出力するJSON全体のラップ構造"""
+    inputLog: InputLogData
+
+
+# ====================================================================
+# 5.4. 統合データ構造定義 (integrated.json)
+# ====================================================================
+
+class ActionDetail(BaseModel):
+    """UIに対して行われた入力操作の詳細コンテキスト"""
+    inputType: str = Field(..., description="入力タイプ（click_down, key_down 等）")
+    inputValue: str = Field(..., description="入力内容（left_click, Enter 等）")
+    cursorRelativeCoordinates: Coordinates = Field(..., description="対象ウィンドウ内でのカーソル相対座標")
+    diffRatio: float = Field(..., description="操作による前画面変化率（最速化の待機判定に使用）")
+
+class ContextComponent(BaseModel):
+    """UI要素を補足する周辺情報（意味理解を助けるためのテキストやアイコン）"""
+    type: str = Field(..., description="コンテキストの種類（text, icon 等）")
+    content: str = Field(..., description="読み取られたテキストや記号の種類名")
+    relativeBoundingBox: BoundingBox = Field(..., description="対象ウィンドウ内での相対座標とサイズ")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="認識精度")
+    parentRelevance: float = Field(..., ge=0.0, le=1.0, description="親要素（対象UI）との距離や意味合いに基づく関連度")
+
+class InteractedUiElement(BaseModel):
+    """対象ウィンドウ内で認識され、実際に操作に関与したUI要素のデータ構造"""
+    type: str = Field(..., description="UIの種類（button, input 等）")
+    relativeBoundingBox: BoundingBox = Field(..., description="対象ウィンドウの左上を原点(0,0)とした相対座標とサイズ")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="AIによるUI認識精度")
+    action: ActionDetail = Field(..., description="当該UIに対して行われた入力操作の詳細")
+    context: List[ContextComponent] = Field(default_factory=list, description="UI要素を補足する周辺情報の配列")
+
+class WindowContext(BaseModel):
+    """操作時におけるアクティブウィンドウの全体コンテキスト"""
+    name: str = Field(..., description="操作対象となったアクティブウィンドウの名前（タイトル）")
+    size: Size = Field(..., description="ウィンドウのサイズ")
+    coordinates: Coordinates = Field(..., description="ウィンドウの画面上の絶対座標")
+    UIs: List[InteractedUiElement] = Field(default_factory=list, description="ウィンドウ内で認識・操作されたUI要素の配列")
+
+class IntegratedEvent(BaseModel):
+    """一時データをウィンドウ基準の階層型ツリーに統合したデータモデル"""
+    id: str = Field(..., description="統合ログの一意なID (例: evt_001)")
+    timestamp: int = Field(..., description="アクション実行時のUnixタイムスタンプ")
+    window: WindowContext = Field(..., description="ウィンドウおよび配下のUI要素ツリー情報")
+
+
+# ====================================================================
+# 5.6. ワークフローデータ構造定義 (workflow.json)
+# ====================================================================
+
+class WorkflowAction(BaseModel):
+    """実行エンジンが再現すべき具体的なユーザー操作内容の詳細"""
+    type: str = Field(..., description="入力操作の種類（click, key_down, text_input など）")
+    button: Optional[str] = Field(None, description="使用されたマウスボタン（left, right など。キー入力時は省略可）")
+    modifiers: List[str] = Field(default_factory=list, description="同時に押下された修飾キー（ctrl, shift, alt など）の配列")
+
+class InteractedElementContext(BaseModel):
+    """ユーザーが実際に操作を加えたUI要素の静的・意味的情報（自己修復時の特徴マッチングに使用）"""
+    element_id: str = Field(..., description="操作対象となったUI要素を特定する内部ID")
+    ui_type: str = Field(..., description="要素のオブジェクトタイプ（button, input, checkbox 等）")
+    semantic_role: str = Field(..., description="要素の持つ意味的役割（submit, cancel, search_box 等）")
+    location_context: str = Field(..., description="配置上の視覚的コンテキスト（bottom_right, top_nav 等）")
+
+class EventContext(BaseModel):
+    """操作実行時における対象要素および画面の状態コンテキストラップ"""
+    interacted_element: InteractedElementContext
+
+class WorkflowEvent(BaseModel):
+    """ワークフローを構成する一連の操作イベントの最小単位。画像ファイルとの紐付け規則を持つ。"""
+    event_id: str = Field(..., description="各操作イベントの一意なID。画像ファイル名との紐付けにも使用。")
+    timestamp: int = Field(..., description="イベントが検出または生成されたUnixタイムスタンプ")
+    action: WorkflowAction = Field(..., description="実行される具体的な操作内容")
+    context: EventContext = Field(..., description="操作対象要素のメタデータ情報")
+
+class Workflow(BaseModel):
+    """統合ログから抽出・生成され、実行エンジン(Executor)へと引き渡されるマクロシナリオの最上位構造"""
+    workflow_ID: str = Field(..., description="ワークフロー（マクロ）を一意に識別するID")
+    target_ID: str = Field(..., description="操作対象となる主要なアプリケーションの識別子ID")
+    events: List[WorkflowEvent] = Field(default_factory=list, description="ワークフローを構成する一連の操作イベントの配列")
