@@ -5,6 +5,7 @@
 #   - engines/* (YOLO/OCR等の解析結果返却時)
 #   - core/generator/* (生ログから統合データ・ワークフローデータへの変換・生成時)
 #   - core/executor/* (ワークフローデータの読み込み・実行時)
+#   - ui/viewmodels/* (UI状態の型安全な管理)
 # 
 # 【参照先 (呼ぶ側)】
 #   - なし (アーキテクチャの最下層として、他モジュールへの依存を持たない)
@@ -151,3 +152,16 @@ class Workflow(BaseModel):
     workflow_ID: str = Field(..., description="ワークフロー（マクロ）を一意に識別するID")
     target_ID: str = Field(..., description="操作対象となる主要なアプリケーションの識別子ID")
     events: List[WorkflowEvent] = Field(default_factory=list, description="ワークフローを構成する一連の操作イベントの配列")
+
+# ====================================================================
+# UI表示用・状態管理用データ構造
+# ====================================================================
+
+class MacroSummary(BaseModel):
+    """UIのメイン画面に表示するためのマクロ概要（メタデータと実行状態）"""
+    name: str = Field(..., description="マクロの表示名")
+    status: str = Field(..., description="直近の実行結果ステータス（success, warning, danger 等）")
+    status_text: str = Field(..., description="UIに表示する結果のテキスト表現")
+    heals: str = Field(..., description="自己修復の発動回数などのテキスト表現")
+    heal_level: str = Field(..., description="自己修復のレベル（none, low, mid, high 等）")
+    last_run: str = Field(..., description="最終実行日時のフォーマット済み文字列")

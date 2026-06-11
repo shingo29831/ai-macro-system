@@ -103,20 +103,20 @@ class MainWindow(QMainWindow):
         self.table_macros.setHorizontalHeaderLabels(["マクロ名", "直近の結果", "自己修復", "最終実行日時", "削除"])
         
         for row, macro in enumerate(macros):
-            self.table_macros.setItem(row, 0, QTableWidgetItem(macro['name']))
+            self.table_macros.setItem(row, 0, QTableWidgetItem(macro.name))
             
-            status_badge = self._create_badge(macro['status_text'], macro['status'])
+            status_badge = self._create_badge(macro.status_text, macro.status)
             self.table_macros.setCellWidget(row, 1, status_badge)
             
-            heal_badge = self._create_badge(macro['heals'], f"heal_{macro['heal_level']}")
+            heal_badge = self._create_badge(macro.heals, f"heal_{macro.heal_level}")
             self.table_macros.setCellWidget(row, 2, heal_badge)
             
-            self.table_macros.setItem(row, 3, QTableWidgetItem(macro['last_run']))
+            self.table_macros.setItem(row, 3, QTableWidgetItem(macro.last_run))
             
             btn_delete = QPushButton("🗑 削除")
             btn_delete.setObjectName("btnDelete")
             btn_delete.setCursor(Qt.PointingHandCursor)
-            btn_delete.clicked.connect(lambda checked, m=macro['name']: self.viewmodel.delete_macro(m))
+            btn_delete.clicked.connect(lambda checked, m=macro.name: self.viewmodel.delete_macro(m))
             self.table_macros.setCellWidget(row, 4, btn_delete)
 
         self.table_macros.resizeColumnsToContents()

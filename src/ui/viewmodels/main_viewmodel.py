@@ -1,6 +1,7 @@
 # @role: メインウィンドウのUI状態を管理し、ビューからのアクションをビジネスロジック(Core層)へ中継するViewModel層。
 
 from PySide6.QtCore import QObject, Signal, Slot
+from models.data_types import MacroSummary
 
 class MainViewModel(QObject):
     macros_updated = Signal(list)
@@ -15,12 +16,12 @@ class MainViewModel(QObject):
         self._selected_macro = None
 
     def load_macros(self):
-        # TODO: 将来的には models/data_types.py のモデルを用いて Core 層からデータをロードする
+        # TODO: 将来的には Core 層からデータをロードし、MacroSummaryモデルにマッピングする
         macros = [
-            {'name': 'Meld Task 定期バックアップ', 'status': 'success', 'status_text': '成功', 'heals': '0回', 'heal_level': 'none', 'last_run': '2026-06-10 09:00:00'},
-            {'name': 'ValorantParty データ同期', 'status': 'warning', 'status_text': '修復完了', 'heals': '2回', 'heal_level': 'mid', 'last_run': '2026-06-09 23:30:00'},
-            {'name': 'D1 Grand Prix ログ収集', 'status': 'success', 'status_text': '成功', 'heals': '1回', 'heal_level': 'low', 'last_run': '2026-06-08 14:15:00'},
-            {'name': '就活ポータル 新着チェック', 'status': 'danger', 'status_text': '失敗 (Stage 4)', 'heals': '4回', 'heal_level': 'high', 'last_run': '2026-06-07 18:00:00'}
+            MacroSummary(name='Meld Task 定期バックアップ', status='success', status_text='成功', heals='0回', heal_level='none', last_run='2026-06-10 09:00:00'),
+            MacroSummary(name='ValorantParty データ同期', status='warning', status_text='修復完了', heals='2回', heal_level='mid', last_run='2026-06-09 23:30:00'),
+            MacroSummary(name='D1 Grand Prix ログ収集', status='success', status_text='成功', heals='1回', heal_level='low', last_run='2026-06-08 14:15:00'),
+            MacroSummary(name='就活ポータル 新着チェック', status='danger', status_text='失敗 (Stage 4)', heals='4回', heal_level='high', last_run='2026-06-07 18:00:00')
         ]
         self.macros_updated.emit(macros)
 
