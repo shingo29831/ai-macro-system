@@ -7,14 +7,16 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, Qt
 from ui.views.record_dialog import RecordDialog
+from ui.viewmodels.main_viewmodel import MainViewModel
 
 class MainWindow(QMainWindow):
     """メインウィンドウ（ホーム画面）のインタラクションとUI表示を管理するクラス"""
     
-    def __init__(self):
+    def __init__(self, viewmodel: MainViewModel):
         super().__init__()
+        self.viewmodel = viewmodel
         self.setWindowTitle("Macro Manager")
-        self.resize(900, 600) # カラムが増えたため少し幅を拡大
+        self.resize(900, 600)
         
         self.central_widget = self._load_ui_and_style("main_window.ui")
         self.setCentralWidget(self.central_widget)
@@ -26,48 +28,41 @@ class MainWindow(QMainWindow):
         
         if self.table_macros:
             self.table_macros.setShowGrid(False)
+            self.table_macros.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.table_macros.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.table_macros.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+            self.table_macros.verticalHeader().setDefaultSectionSize(60)
         
-        self.states = ["idle", "recording", "running"]
-        self.state_labels = {"idle": "待機中", "recording": "記録中", "running": "実行中"}
-        self.current_state_index = 0
-        self._update_status_ui()
-        
+        self._bind_viewmodel()
+        self.viewmodel.load_macros()
+
+    def _bind_viewmodel(self):
         if self.btn_emergency_stop:
-            self.btn_emergency_stop.clicked.connect(self.handle_emergency_stop)
+            self.btn_emergency_stop.clicked.connect(self.viewmodel.trigger_emergency_stop)
         if self.btn_status:
-            self.btn_status.clicked.connect(self.toggle_status)
+            self.btn_status.clicked.connect(self.viewmodel.toggle_status)
         if self.btn_start_record:
             self.btn_start_record.clicked.connect(self.open_record_dialog)
             
-        self._init_table()
+        self.viewmodel.macros_updated.connect(self._render_table)
+        self.viewmodel.status_changed.connect(self._update_status_ui)
 
-    def toggle_status(self):
-        self.current_state_index = (self.current_state_index + 1) % len(self.states)
-        self._update_status_ui()
-
-    def handle_emergency_stop(self):
-        print("Emergency Stop Action Triggered.")
-
-    def _update_status_ui(self):
+    def _update_status_ui(self, state: str, label: str):
         if not self.btn_status:
             return
             
-        state = self.states[self.current_state_index]
-        self.btn_status.setText(self.state_labels[state])
+        self.btn_status.setText(label)
         self.btn_status.setProperty("state", state)
         
         self.btn_status.style().unpolish(self.btn_status)
         self.btn_status.style().polish(self.btn_status)
 
     def _create_badge(self, text: str, badge_type: str) -> QWidget:
-        """ステータス表示用の角丸バッジを生成する"""
         container = QWidget()
-        layout = QWidget().layout() # Dummy for alignment
         lbl = QLabel(text)
         lbl.setProperty("badge", badge_type)
         lbl.setAlignment(Qt.AlignCenter)
         
-        # セル内で中央に配置するためのラッパー
         from PySide6.QtWidgets import QHBoxLayout
         h_layout = QHBoxLayout(container)
         h_layout.setContentsMargins(4, 4, 4, 4)
@@ -75,59 +70,37 @@ class MainWindow(QMainWindow):
         
         return container
 
-    def _init_table(self):
+    def _render_table(self, macros: list):
         if not self.table_macros:
             return
             
-        self.table_macros.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table_macros.setSelectionBehavior(QAbstractItemView.SelectRows)
-        
-        # ====== 今回追加する設定 ======
-        # ユーザーによる行の高さ（縦幅）変更を無効化し、デフォルトの高さを60pxに固定して数字を見やすくする
-        self.table_macros.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.table_macros.verticalHeader().setDefaultSectionSize(60)
-        # ==============================
-        
-        # 実際の運用を想定したモックデータ（成否と修復回数を含む）
-        macros = [
-            {"name": "Meld Task 定期バックアップ", "status": "success", "status_text": "成功", "heals": "0回", "heal_level": "none", "last_run": "2026-06-10 09:00:00"},
-            {"name": "ValorantParty データ同期", "status": "warning", "status_text": "修復完了", "heals": "2回", "heal_level": "mid", "last_run": "2026-06-09 23:30:00"},
-            {"name": "D1 Grand Prix ログ収集", "status": "success", "status_text": "成功", "heals": "1回", "heal_level": "low", "last_run": "2026-06-08 14:15:00"},
-            {"name": "就活ポータル 新着チェック", "status": "danger", "status_text": "失敗 (Stage 4)", "heals": "4回", "heal_level": "high", "last_run": "2026-06-07 18:00:00"}
-        ]
-        
         self.table_macros.setRowCount(len(macros))
         
         for row, macro in enumerate(macros):
-            # 1. マクロ名
-            self.table_macros.setItem(row, 0, QTableWidgetItem(macro["name"]))
+            self.table_macros.setItem(row, 0, QTableWidgetItem(macro['name']))
             
-            # 2. 直近の結果バッジ
-            status_badge = self._create_badge(macro["status_text"], macro["status"])
+            status_badge = self._create_badge(macro['status_text'], macro['status'])
             self.table_macros.setCellWidget(row, 1, status_badge)
             
-            # 3. 自己修復バッジ
-            heal_badge = self._create_badge(macro["heals"], f"heal_{macro['heal_level']}")
+            heal_badge = self._create_badge(macro['heals'], f"heal_{macro['heal_level']}")
             self.table_macros.setCellWidget(row, 2, heal_badge)
             
-            # 4. 最終実行日時
-            self.table_macros.setItem(row, 3, QTableWidgetItem(macro["last_run"]))
+            self.table_macros.setItem(row, 3, QTableWidgetItem(macro['last_run']))
             
-            # 5. 実行ボタン
             btn_run = QPushButton("▶ 実行")
             btn_run.setObjectName("btnRun")
             btn_run.setCursor(Qt.PointingHandCursor)
+            btn_run.clicked.connect(lambda checked, m=macro['name']: self.viewmodel.run_macro(m))
             self.table_macros.setCellWidget(row, 4, btn_run)
             
-            # 6. 削除ボタン
             btn_delete = QPushButton("🗑 削除")
             btn_delete.setObjectName("btnDelete")
             btn_delete.setCursor(Qt.PointingHandCursor)
+            btn_delete.clicked.connect(lambda checked, m=macro['name']: self.viewmodel.delete_macro(m))
             self.table_macros.setCellWidget(row, 5, btn_delete)
 
-        # カラム幅の最適化
         self.table_macros.resizeColumnsToContents()
-        self.table_macros.setColumnWidth(0, 220) # 名前列は広めに
+        self.table_macros.setColumnWidth(0, 220)
         self.table_macros.setColumnWidth(1, 110)
         self.table_macros.setColumnWidth(2, 90)
         self.table_macros.horizontalHeader().setStretchLastSection(True)
