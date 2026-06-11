@@ -5,12 +5,14 @@ from PySide6.QtCore import QObject, Signal, Slot
 class MainViewModel(QObject):
     macros_updated = Signal(list)
     status_changed = Signal(str, str)
+    can_run_changed = Signal(bool)
 
     def __init__(self):
         super().__init__()
         self._states = ['idle', 'recording', 'running']
         self._state_labels = {'idle': '待機中', 'recording': '記録中', 'running': '実行中'}
         self._current_state_index = 0
+        self._selected_macro = None
 
     def load_macros(self):
         # TODO: 将来的には models/data_types.py のモデルを用いて Core 層からデータをロードする
@@ -34,9 +36,15 @@ class MainViewModel(QObject):
         pass
 
     @Slot(str)
-    def run_macro(self, macro_name: str):
-        # TODO: Executorへの実行要求を中継する
-        pass
+    def select_macro(self, macro_name: str):
+        self._selected_macro = macro_name if macro_name else None
+        self.can_run_changed.emit(self._selected_macro is not None)
+
+    @Slot()
+    def run_selected_macro(self):
+        if self._selected_macro:
+            print(f"Executing macro: {self._selected_macro}")
+            # TODO: Executorへの実行要求を中継する
 
     @Slot(str)
     def delete_macro(self, macro_name: str):

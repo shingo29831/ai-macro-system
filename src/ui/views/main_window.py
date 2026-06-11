@@ -24,12 +24,17 @@ class MainWindow(QMainWindow):
         self.btn_emergency_stop = self.central_widget.findChild(QPushButton, "btnEmergencyStop")
         self.btn_status = self.central_widget.findChild(QPushButton, "btnStatus")
         self.btn_start_record = self.central_widget.findChild(QPushButton, "btnStartRecord")
+        self.btn_run_selected = self.central_widget.findChild(QPushButton, "btnRunSelected")
         self.table_macros = self.central_widget.findChild(QTableWidget, "tableMacros")
         
+        if self.btn_run_selected:
+            self.btn_run_selected.setEnabled(False)
+            
         if self.table_macros:
             self.table_macros.setShowGrid(False)
             self.table_macros.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.table_macros.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.table_macros.setSelectionMode(QAbstractItemView.SingleSelection)
             self.table_macros.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
             self.table_macros.verticalHeader().setDefaultSectionSize(60)
         
@@ -43,9 +48,28 @@ class MainWindow(QMainWindow):
             self.btn_status.clicked.connect(self.viewmodel.toggle_status)
         if self.btn_start_record:
             self.btn_start_record.clicked.connect(self.open_record_dialog)
+        if self.btn_run_selected:
+            self.btn_run_selected.clicked.connect(self.viewmodel.run_selected_macro)
+            
+        if self.table_macros:
+            self.table_macros.itemSelectionChanged.connect(self._on_table_selection_changed)
             
         self.viewmodel.macros_updated.connect(self._render_table)
         self.viewmodel.status_changed.connect(self._update_status_ui)
+        self.viewmodel.can_run_changed.connect(self._update_run_button_state)
+
+    def _on_table_selection_changed(self):
+        selected_items = self.table_macros.selectedItems()
+        if selected_items:
+            row = selected_items[0].row()
+            macro_name = self.table_macros.item(row, 0).text()
+            self.viewmodel.select_macro(macro_name)
+        else:
+            self.viewmodel.select_macro("")
+
+    def _update_run_button_state(self, can_run: bool):
+        if self.btn_run_selected:
+            self.btn_run_selected.setEnabled(can_run)
 
     def _update_status_ui(self, state: str, label: str):
         if not self.btn_status:
@@ -75,6 +99,8 @@ class MainWindow(QMainWindow):
             return
             
         self.table_macros.setRowCount(len(macros))
+        self.table_macros.setColumnCount(5)
+        self.table_macros.setHorizontalHeaderLabels(["マクロ名", "直近の結果", "自己修復", "最終実行日時", "削除"])
         
         for row, macro in enumerate(macros):
             self.table_macros.setItem(row, 0, QTableWidgetItem(macro['name']))
@@ -87,17 +113,11 @@ class MainWindow(QMainWindow):
             
             self.table_macros.setItem(row, 3, QTableWidgetItem(macro['last_run']))
             
-            btn_run = QPushButton("▶ 実行")
-            btn_run.setObjectName("btnRun")
-            btn_run.setCursor(Qt.PointingHandCursor)
-            btn_run.clicked.connect(lambda checked, m=macro['name']: self.viewmodel.run_macro(m))
-            self.table_macros.setCellWidget(row, 4, btn_run)
-            
             btn_delete = QPushButton("🗑 削除")
             btn_delete.setObjectName("btnDelete")
             btn_delete.setCursor(Qt.PointingHandCursor)
             btn_delete.clicked.connect(lambda checked, m=macro['name']: self.viewmodel.delete_macro(m))
-            self.table_macros.setCellWidget(row, 5, btn_delete)
+            self.table_macros.setCellWidget(row, 4, btn_delete)
 
         self.table_macros.resizeColumnsToContents()
         self.table_macros.setColumnWidth(0, 220)
