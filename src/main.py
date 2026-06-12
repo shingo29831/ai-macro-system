@@ -2,14 +2,15 @@
 import sys
 from PySide6.QtWidgets import QApplication
 from ui.views.main_window import MainWindow
+from ui.viewmodels.main_viewmodel import MainViewModel
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     
-    # OS固有のダークモードによる配色崩れを防ぎ、ホワイトテーマのCSSを正確に適用するため設定
-    app.setStyle("Fusion")
+    app.setStyle('Fusion')
     
-    window = MainWindow()
+    viewmodel = MainViewModel()
+    window = MainWindow(viewmodel)
     window.show()
     
     sys.exit(app.exec())
