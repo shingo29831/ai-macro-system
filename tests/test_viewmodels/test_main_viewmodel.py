@@ -79,3 +79,27 @@ def test_delete_macro_empty_name_does_not_crash():
         vm.delete_macro('')
     except Exception as e:
         pytest.fail(f"空文字の削除要求で例外が発生しました: {e}")
+
+def test_start_and_stop_recording_updates_status(mocker):
+    """正常系：記録の開始および停止メソッドがos_hookを呼び出し、UIステータスを正しく更新するかをテストする"""
+    vm = MainViewModel()
+    
+    # Core層のos_hookは環境依存するためモック化する
+    mock_start = mocker.patch('core.recorder.os_hook.start_recording')
+    mock_stop = mocker.patch('core.recorder.os_hook.stop_recording')
+    
+    emitted_states = []
+    def handle_status_changed(state, label):
+        emitted_states.append(state)
+
+    vm.status_changed.connect(handle_status_changed)
+    
+    # 記録開始
+    vm.start_recording()
+    mock_start.assert_called_once()
+    assert emitted_states[-1] == 'recording'
+    
+    # 記録停止
+    vm.stop_recording()
+    mock_stop.assert_called_once()
+    assert emitted_states[-1] == 'idle'

@@ -7,8 +7,10 @@ from PySide6.QtCore import QFile
 class RecordDialog:
     """超小型記録ウィジェットのUI表示、タイマーバインド、およびクローズ動作を制御するクラス"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_stop_callback=None):
         self.parent = parent
+        self.on_stop_callback = on_stop_callback
+        
         self.dialog = self._load_ui_and_style("record_dialog.ui")
         self.dialog.setWindowTitle("記録中")
         self.dialog.setFixedSize(300, 150)
@@ -17,9 +19,14 @@ class RecordDialog:
         self.btn_stop = self.dialog.findChild(QPushButton, "btnStopRecord")
         self.lbl_timer = self.dialog.findChild(QLabel, "lblTimer")
         
-        # 停止ボタン押下でウィジェットを閉じるシグナルをバインド
+        # 停止ボタン押下でコールバック発火後にウィジェットを閉じる
         if self.btn_stop:
-            self.btn_stop.clicked.connect(self.dialog.close)
+            self.btn_stop.clicked.connect(self._on_stop_clicked)
+
+    def _on_stop_clicked(self):
+        if self.on_stop_callback:
+            self.on_stop_callback()
+        self.dialog.close()
 
     def show(self):
         """ウィジェット画面を表示する"""

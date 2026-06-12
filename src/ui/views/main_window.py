@@ -2,7 +2,7 @@
 import os
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QPushButton, QTableWidget, 
-    QTableWidgetItem, QAbstractItemView, QLabel, QHeaderView
+    QTableWidgetItem, QAbstractItemView, QLabel, QHeaderView, QMessageBox
 )
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, Qt
@@ -130,8 +130,29 @@ class MainWindow(QMainWindow):
         self.table_macros.horizontalHeader().setStretchLastSection(True)
 
     def open_record_dialog(self):
-        self.record_dialog = RecordDialog(self)
-        self.record_dialog.show()
+        """記録を開始し、ウィジェットを展開してメイン画面を最小化する"""
+        try:
+            self.viewmodel.start_recording()
+            
+            # 停止処理のコールバックを渡してミニマルウィジェットを生成
+            self.record_dialog = RecordDialog(self, on_stop_callback=self._on_recording_stopped)
+            self.record_dialog.show()
+            
+            # 仕様書7.2: メインウィンドウを自動的に最小化
+            self.showMinimized()
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"記録の開始に失敗しました:\n{e}")
+
+    def _on_recording_stopped(self):
+        """記録ウィジェットから停止指令を受けた際の復元処理"""
+        try:
+            self.viewmodel.stop_recording()
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"記録の停止中にエラーが発生しました:\n{e}")
+        finally:
+            # 仕様書7.2: ウィジェットが閉じると同時にメインウィンドウを元のサイズに復元
+            self.showNormal()
+            self.activateWindow()
 
     def open_settings_dialog(self):
         """設定画面をモーダルダイアログとして呼び出す"""
