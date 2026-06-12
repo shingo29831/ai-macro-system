@@ -1,4 +1,4 @@
-# @role: システム全体で共有するデータ構造（一時生データ、コンテキスト統合データ、実行用ワークフロー）の型定義とバリデーションを統括するデータモデル層。
+# @role: システム全体で共有するデータ構造（一時生データ、コンテキスト統合データ、実行用ワークフロー、アプリケーション設定）の型定義とバリデーションを統括するデータモデル層。
 # 
 # 【参照元 (呼ばれる側)】
 #   - core/recorder/* (フック・スクショ等の生データ生成時)
@@ -10,7 +10,8 @@
 # 【参照先 (呼ぶ側)】
 #   - なし (アーキテクチャの最下層として、他モジュールへの依存を持たない)
 
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 
 # ====================================================================
@@ -153,6 +154,7 @@ class Workflow(BaseModel):
     target_ID: str = Field(..., description="操作対象となる主要なアプリケーションの識別子ID")
     events: List[WorkflowEvent] = Field(default_factory=list, description="ワークフローを構成する一連の操作イベントの配列")
 
+
 # ====================================================================
 # UI表示用・状態管理用データ構造
 # ====================================================================
@@ -165,3 +167,38 @@ class MacroSummary(BaseModel):
     heals: str = Field(..., description="自己修復の発動回数などのテキスト表現")
     heal_level: str = Field(..., description="自己修復のレベル（none, low, mid, high 等）")
     last_run: str = Field(..., description="最終実行日時のフォーマット済み文字列")
+
+
+# ====================================================================
+# 6.8. アプリケーション設定用データ構造 (config.json)
+# ====================================================================
+
+class AppConfig(BaseModel):
+    """UIから設定され、config.jsonとして永続化されるシステム接続情報"""
+    ai_mode: str = Field(default='local', description='AIの動作モード（local または cloud）')
+    llm_host: str = Field(default='127.0.0.1', description='マクロ生成用AI（LLM）の接続先（IPまたはホスト名）')
+    llm_port: str = Field(default='8844', description='LLM APIのポート番号')
+    cv_host: str = Field(default='127.0.0.1', description='Computer Vision API（YOLO/OCR）の接続先（IPまたはホスト名）')
+    cv_port: str = Field(default='8843', description='Computer Vision APIのポート番号')
+
+    @field_validator('ai_mode')
+    @classmethod
+    def validate_ai_mode(cls, v: str) -> str:
+        if v not in ('local', 'cloud'):
+            raise ValueError(f'Invalid ai_mode: {v}')
+        return v
+
+    @field_validator('llm_host', 'cv_host')
+    @classmethod
+    def sanitize_host(cls, v: str) -> str:
+        # OSコマンドインジェクションやSSRF攻撃の抑止
+        if not re.match(r'^[a-zA-Z0-9.-]+$', v):
+            raise ValueError(f'Invalid host format: {v}')
+        return v
+
+    @field_validator('llm_port', 'cv_port')
+    @classmethod
+    def validate_port(cls, v: str) -> str:
+        if not v.isdigit() or not (1 <= int(v) <= 65535):
+            raise ValueError(f'Invalid port number: {v}')
+        return v
