@@ -72,6 +72,30 @@
     </widget>
    </item>
    <item>
+    <layout class="QHBoxLayout" name="tableControlLayout">
+     <item>
+      <spacer name="tableControlSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnRunSelected">
+       <property name="text">
+        <string>▶ 実行</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
     <widget class="QTableWidget" name="tableMacros">
      <property name="minimumSize">
       <size>
@@ -80,7 +104,7 @@
       </size>
      </property>
      <property name="columnCount">
-      <number>6</number>
+      <number>5</number>
      </property>
      <column>
       <property name="text">
@@ -100,11 +124,6 @@
      <column>
       <property name="text">
        <string>最終実行日時</string>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>実行</string>
       </property>
      </column>
      <column>

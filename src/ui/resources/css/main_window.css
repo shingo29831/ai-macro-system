@@ -69,6 +69,28 @@ QPushButton#btnStatus[state="running"] {
 }
 
 /* ====================================================================
+   ヘッダーエリア：実行ボタン (btnRunSelected)
+   ==================================================================== */
+QPushButton#btnRunSelected {
+    background-color: #10b981;
+    color: white;
+    border-radius: 20px;
+    padding: 8px 32px;
+    font-size: 14px;
+    font-weight: bold;
+    border: none;
+}
+
+QPushButton#btnRunSelected:hover {
+    background-color: #059669;
+}
+
+QPushButton#btnRunSelected:disabled {
+    background-color: #cbd5e1;
+    color: #94a3b8;
+}
+
+/* ====================================================================
    メインアクション：新規マクロ記録開始ボタン (btnStartRecord)
    画面内で最も大きく、目立つようにデザイン
    ==================================================================== */
@@ -126,16 +148,6 @@ QTableWidget#tableMacros::item:selected {
 }
 
 /* テーブル内の実行(▶)・削除(🗑)ボタン */
-QPushButton#btnRun {
-    background-color: #10b981;
-    color: white;
-    border-radius: 6px;
-    padding: 8px;
-    font-weight: bold;
-    font-size: 12px;
-}
-QPushButton#btnRun:hover { background-color: #059669; }
-
 QPushButton#btnDelete {
     background-color: #f43f5e;
     color: white;
