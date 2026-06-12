@@ -91,6 +91,30 @@ QPushButton#btnRunSelected:disabled {
 }
 
 /* ====================================================================
+   ヘッダーエリア：設定ボタン (btnSettings)
+   シックなスレートグレイの枠線ピル形状
+   ==================================================================== */
+QPushButton#btnSettings {
+    background-color: #ffffff;
+    color: #475569;
+    border: 1px solid #cbd5e1;
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+QPushButton#btnSettings:hover {
+    background-color: #f8fafc;
+    color: #1e293b;
+    border-color: #94a3b8;
+}
+
+QPushButton#btnSettings:pressed {
+    background-color: #f1f5f9;
+}
+
+/* ====================================================================
    メインアクション：新規マクロ記録開始ボタン (btnStartRecord)
    画面内で最も大きく、目立つようにデザイン
    ==================================================================== */

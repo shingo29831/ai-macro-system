@@ -1,4 +1,4 @@
-# @role: 仕様書の画面要件に基づき、ヘッダーのステータス管理、緊急停止、マクロ一覧テーブルの初期化・描画を制御するメイン画面のビュークラス。
+# @role: 仕様書の画面要件に基づき、ヘッダーのステータス管理、緊急停止、マクロ一覧テーブルの初期化・描画、および設定画面への遷移を制御するメイン画面のビュークラス。
 import os
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QPushButton, QTableWidget, 
@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, Qt
 from ui.views.record_dialog import RecordDialog
+from ui.views.settings_dialog import SettingsDialog
 from ui.viewmodels.main_viewmodel import MainViewModel
 
 class MainWindow(QMainWindow):
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         self.btn_status = self.central_widget.findChild(QPushButton, "btnStatus")
         self.btn_start_record = self.central_widget.findChild(QPushButton, "btnStartRecord")
         self.btn_run_selected = self.central_widget.findChild(QPushButton, "btnRunSelected")
+        self.btn_settings = self.central_widget.findChild(QPushButton, "btnSettings")
         self.table_macros = self.central_widget.findChild(QTableWidget, "tableMacros")
         
         if self.btn_run_selected:
@@ -50,6 +52,8 @@ class MainWindow(QMainWindow):
             self.btn_start_record.clicked.connect(self.open_record_dialog)
         if self.btn_run_selected:
             self.btn_run_selected.clicked.connect(self.viewmodel.run_selected_macro)
+        if self.btn_settings:
+            self.btn_settings.clicked.connect(self.open_settings_dialog)
             
         if self.table_macros:
             self.table_macros.itemSelectionChanged.connect(self._on_table_selection_changed)
@@ -129,10 +133,19 @@ class MainWindow(QMainWindow):
         self.record_dialog = RecordDialog(self)
         self.record_dialog.show()
 
+    def open_settings_dialog(self):
+        """設定画面をモーダルダイアログとして呼び出す"""
+        self.settings_dialog = SettingsDialog(self)
+        self.settings_dialog.exec()
+
     def _load_ui_and_style(self, ui_file_name: str) -> QWidget:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ui_path = os.path.join(base_dir, "resources", "ui", ui_file_name)
+        ui_path = os.path.join(os.path.dirname(base_dir), "ui", "resources", "ui", ui_file_name)
         
+        # 実行環境と開発時のパス差異（マッピング解決）に対応するための補正
+        if not os.path.exists(ui_path):
+            ui_path = os.path.join(base_dir, "resources", "ui", ui_file_name)
+            
         loader = QUiLoader()
         ui_file = QFile(ui_path)
         if not ui_file.open(QFile.ReadOnly):
@@ -145,8 +158,10 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"Failed to load UI file: {ui_path}")
         
         css_name = os.path.splitext(ui_file_name)[0] + ".css"
-        css_path = os.path.join(base_dir, "resources", "css", css_name)
-        
+        css_path = os.path.join(os.path.dirname(base_dir), "ui", "resources", "css", css_name)
+        if not os.path.exists(css_path):
+            css_path = os.path.join(base_dir, "resources", "css", css_name)
+            
         if os.path.exists(css_path):
             with open(css_path, "r", encoding="utf-8") as f:
                 stylesheet = f.read()
