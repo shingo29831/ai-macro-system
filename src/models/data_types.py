@@ -72,7 +72,7 @@ class InputLogData(BaseModel):
     windowName: str = Field(..., description="操作対象となったアプリケーションのウィンドウタイトル名")
     windowSize: Size = Field(..., description="対象ウィンドウの全体サイズ")
     windowCoordinates: Coordinates = Field(..., description="対象ウィンドウのデスクトップ上における絶対座標")
-    cursorCoordinates: Coordinates = Field(..., description="操作が実行された瞬間のマウスカーソルの絶対座標")
+    cursorCoordinates: Coordinates = Field(..., description="操作が実行された瞬間のマウスカーソルの相対座標")
 
 class PythonOsHookOutput(BaseModel):
     """Python OS Hookがtemp/に出力するJSON全体のラップ構造"""
