@@ -1,4 +1,4 @@
-# @role: MainViewModelの「振る舞い」とシグナル発行の正確性を検証するテストコード。
+# @role: MainViewModelの「振る舞い」とシグナル発行、およびエラー伝播の正確性を検証するテストコード。
 
 import sys
 import os
@@ -22,7 +22,6 @@ def test_load_macros_emits_signal():
     vm.load_macros()
 
     assert len(emitted_macros) == 4
-    # モジュールパスが一致したため、正常に True と判定されるようになる
     assert isinstance(emitted_macros[0], MacroSummary)
     assert emitted_macros[0].name == 'Meld Task 定期バックアップ'
 
@@ -62,7 +61,7 @@ def test_toggle_status_rotates_states():
     assert emitted_states[-1] == 'idle'
 
 def test_run_selected_macro_without_selection_does_not_crash():
-    """異常系：マクロが未選択の状態で実行要求が来た場合、エラーを握り潰すのではなく、安全に処理を中断する（クラッシュしない）振る舞いをテストする"""
+    """正常系：マクロが未選択の状態で実行要求が来た場合、エラーを出さずに安全に処理を中断する（早期リターンする）振る舞いをテストする"""
     vm = MainViewModel()
     
     # 意図的に未選択状態にする
@@ -72,3 +71,11 @@ def test_run_selected_macro_without_selection_does_not_crash():
         vm.run_selected_macro()
     except Exception as e:
         pytest.fail(f"未選択時の実行で予期せぬ例外が発生しました: {e}")
+
+def test_delete_macro_empty_name_does_not_crash():
+    """正常系：削除対象のマクロ名が空の場合、早期リターンしてクラッシュしないことをテストする"""
+    vm = MainViewModel()
+    try:
+        vm.delete_macro('')
+    except Exception as e:
+        pytest.fail(f"空文字の削除要求で例外が発生しました: {e}")
