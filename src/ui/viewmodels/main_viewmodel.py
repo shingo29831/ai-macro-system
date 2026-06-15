@@ -16,15 +16,11 @@ logger = logging.getLogger(__name__)
 
 class MainViewModel(QObject):
     macros_updated = Signal(list)
-    status_changed = Signal(str, str)
     can_run_changed = Signal(bool)
     execution_finished = Signal()
 
     def __init__(self):
         super().__init__()
-        self._states = ['idle', 'recording', 'running']
-        self._state_labels = {'idle': '待機中', 'recording': '記録中', 'running': '実行中'}
-        self._current_state_index = 0
         self._selected_macro: str | None = None
         self._macro_id_map: dict[str, str] = {}
 
@@ -80,19 +76,10 @@ class MainViewModel(QObject):
             raise
 
     @Slot()
-    def toggle_status(self):
-        self._current_state_index = (self._current_state_index + 1) % len(self._states)
-        state = self._states[self._current_state_index]
-        self.status_changed.emit(state, self._state_labels[state])
-
-    @Slot()
     def start_recording(self):
         try:
             logger.info("Starting macro recording...")
             os_hook.start_recording()
-            
-            self._current_state_index = self._states.index('recording')
-            self.status_changed.emit('recording', self._state_labels['recording'])
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             raise
@@ -106,9 +93,6 @@ class MainViewModel(QObject):
             workflow_id = None
             if os_hook._recording_dirs and "macro_name" in os_hook._recording_dirs:
                 workflow_id = os_hook._recording_dirs["macro_name"]
-            
-            self._current_state_index = self._states.index('idle')
-            self.status_changed.emit('idle', self._state_labels['idle'])
             
             if workflow_id:
                 def background_generation():
@@ -132,7 +116,6 @@ class MainViewModel(QObject):
 
     @Slot()
     def trigger_emergency_stop(self):
-        """Executor層に対して緊急停止（キルスイッチ）を発動する"""
         try:
             logger.warning('Emergency stop triggered by user.')
             runner.stop_workflow()
@@ -158,9 +141,6 @@ class MainViewModel(QObject):
         try:
             logger.info(f'Executing macro: {self._selected_macro} (Resolved ID: {workflow_id})')
             
-            self._current_state_index = self._states.index('running')
-            self.status_changed.emit('running', self._state_labels['running'])
-            
             def background_execution():
                 try:
                     runner.run_workflow(workflow_id)
@@ -168,8 +148,6 @@ class MainViewModel(QObject):
                 except Exception as exec_err:
                     logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
                 finally:
-                    self._current_state_index = self._states.index('idle')
-                    self.status_changed.emit('idle', self._state_labels['idle'])
                     self.load_macros()
                     self.execution_finished.emit()
             

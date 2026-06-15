@@ -23,7 +23,6 @@ class MainWindow(QMainWindow):
         self.central_widget = self._load_ui_and_style("main_window.ui")
         self.setCentralWidget(self.central_widget)
         
-        self.btn_status = self.central_widget.findChild(QPushButton, "btnStatus")
         self.btn_start_record = self.central_widget.findChild(QPushButton, "btnStartRecord")
         self.btn_run_selected = self.central_widget.findChild(QPushButton, "btnRunSelected")
         self.btn_delete_selected = self.central_widget.findChild(QPushButton, "btnDeleteSelected")
@@ -47,8 +46,6 @@ class MainWindow(QMainWindow):
         self.viewmodel.load_macros()
 
     def _bind_viewmodel(self):
-        if self.btn_status:
-            self.btn_status.clicked.connect(self.viewmodel.toggle_status)
         if self.btn_start_record:
             self.btn_start_record.clicked.connect(self.open_record_dialog)
         if self.btn_run_selected:
@@ -62,7 +59,6 @@ class MainWindow(QMainWindow):
             self.table_macros.itemSelectionChanged.connect(self._on_table_selection_changed)
             
         self.viewmodel.macros_updated.connect(self._render_table)
-        self.viewmodel.status_changed.connect(self._update_status_ui)
         self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
         self.viewmodel.execution_finished.connect(self._on_execution_finished)
 
@@ -96,16 +92,6 @@ class MainWindow(QMainWindow):
         
         if reply == QMessageBox.Yes:
             self.viewmodel.delete_macro(selected_macro_name)
-
-    def _update_status_ui(self, state: str, label: str):
-        if not self.btn_status:
-            return
-            
-        self.btn_status.setText(label)
-        self.btn_status.setProperty("state", state)
-        
-        self.btn_status.style().unpolish(self.btn_status)
-        self.btn_status.style().polish(self.btn_status)
 
     def _create_badge(self, text: str, badge_type: str) -> QWidget:
         container = QWidget()
@@ -180,14 +166,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", f"実行の開始に失敗しました:\n{e}")
 
     def _on_emergency_stop_triggered(self):
-        """実行中ダイアログからのキルスイッチ発火"""
         try:
             self.viewmodel.trigger_emergency_stop()
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"強制停止中にエラーが発生しました:\n{e}")
 
     def _on_execution_finished(self):
-        """ViewModelから実行完了シグナルを受け取り、ダイアログを閉じてメイン画面を復旧する"""
         if hasattr(self, 'running_dialog') and self.running_dialog:
             self.running_dialog.close_dialog()
             self.running_dialog = None
