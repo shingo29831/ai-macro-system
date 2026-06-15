@@ -16,9 +16,10 @@ class RecordDialog:
         self.dialog.setWindowTitle("記録中")
         self.dialog.setFixedSize(300, 150)
         
-        # ウィンドウの枠をなくし、常に最前面（Zオーダトップ）に固定するフラグを設定
-        # Qt.Windowを追加することで、親に引きずられない独立したトップレベルウィンドウとしての振る舞いを強化します
-        self.dialog.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # 【変更点】Qt.Tool を追加し、タスクバーに独立したアイコンを作らず、かつ最前面を強力に維持する
+        self.dialog.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
         
         # UI要素の取得
         self.btn_stop = self.dialog.findChild(QPushButton, "btnStopRecord")
@@ -56,7 +57,8 @@ class RecordDialog:
         if not ui_file.open(QFile.ReadOnly):
             raise FileNotFoundError(f"Cannot open UI file: {ui_path}")
             
-        widget = loader.load(ui_file, self.parent)
+        # 【重要な変更点】第二引数を self.parent から None に変更し、メイン画面の非表示に巻き込まれないように独立させる
+        widget = loader.load(ui_file, None)
         ui_file.close()
         
         if widget is None:

@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
         self.table_macros.horizontalHeader().setStretchLastSection(True)
 
     def open_record_dialog(self):
-        """記録を開始し、ウィジェットを展開してメイン画面を最小化する"""
+        """記録を開始し、ウィジェットを展開してメイン画面を非表示にする"""
         try:
             self.viewmodel.start_recording()
             
@@ -138,8 +138,7 @@ class MainWindow(QMainWindow):
             self.record_dialog = RecordDialog(self, on_stop_callback=self._on_recording_stopped)
             self.record_dialog.show()
             
-            # 仕様書7.2: メインウィンドウを自動的に最小化
-            self.showMinimized()
+            self.hide()
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"記録の開始に失敗しました:\n{e}")
 
@@ -150,8 +149,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"記録の停止中にエラーが発生しました:\n{e}")
         finally:
-            # 仕様書7.2: ウィジェットが閉じると同時にメインウィンドウを元のサイズに復元
-            self.showNormal()
+            self.show()
+            self.raise_()
             self.activateWindow()
 
     def open_settings_dialog(self):
