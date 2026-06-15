@@ -14,39 +14,12 @@
    <item>
     <layout class="QHBoxLayout" name="headerLayout">
      <item>
-      <widget class="QPushButton" name="btnEmergencyStop">
-       <property name="text">
-        <string>緊急停止</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="headerSpacerLeft">
+      <spacer name="headerSpacer">
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="sizeType">
         <enum>QSizePolicy::Policy::Expanding</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btnStatus">
-       <property name="text">
-        <string>待機中</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="headerSpacerRight">
-       <property name="orientation">
-        <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="sizeHint" stdset="0">
         <size>

@@ -1,8 +1,10 @@
+/* @role: メインウィンドウの視覚的なスタイリングを定義する。 */
+
 /* ====================================================================
    メインウィンドウ背景設定（モダンオフホワイト）
    ==================================================================== */
 QWidget#MainWidget {
-    background-color: #f1f5f9; /* 目に優しいスレート系のオフホワイト */
+    background-color: #f1f5f9;
     color: #334155;
     font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
     font-size: 14px;
@@ -12,22 +14,6 @@ QLayout#verticalLayout {
     spacing: 24px;
     margin: 20px;
 }
-
-/* ====================================================================
-   ヘッダーエリア：緊急停止ボタン (btnEmergencyStop)
-   ==================================================================== */
-QPushButton#btnEmergencyStop {
-    background-color: #ef4444;
-    color: #ffffff;
-    border: 2px solid #dc2626;
-    border-radius: 20px;
-    padding: 8px 24px;
-    font-size: 14px;
-    font-weight: bold;
-}
-
-QPushButton#btnEmergencyStop:hover { background-color: #dc2626; }
-QPushButton#btnEmergencyStop:pressed { background-color: #b91c1c; }
 
 /* ====================================================================
    ヘッダーエリア：ステータス表示ボタン (btnStatus)
@@ -59,7 +45,7 @@ QPushButton#btnRunSelected:hover { background-color: #059669; }
 QPushButton#btnRunSelected:disabled { background-color: #cbd5e1; color: #94a3b8; }
 
 /* ====================================================================
-   コントロールエリア：削除ボタン (btnDeleteSelected) - 追加
+   コントロールエリア：削除ボタン (btnDeleteSelected)
    ==================================================================== */
 QPushButton#btnDeleteSelected {
     background-color: #f43f5e;

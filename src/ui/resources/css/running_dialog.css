@@ -1,0 +1,35 @@
+/* ===== グローバル設定 (最上部フローティングバー・薄い赤の透過背景) ===== */
+QDialog#RunningDialog {
+    background-color: rgba(69, 10, 10, 0.85); /* 実行中であることを示す薄い暗赤色 */
+    color: #ffffff;
+    font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 6px;
+}
+
+/* 案内テキスト */
+#lblInstructions {
+    color: #fca5a5;
+    font-size: 12px;
+    font-weight: bold;
+    padding-left: 0px;
+}
+
+/* 緊急停止ボタン */
+#btnEmergencyStop {
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: bold;
+    background-color: #ef4444;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 12px;
+}
+
+#btnEmergencyStop:hover {
+    background-color: #dc2626;
+}
+
+#btnEmergencyStop:pressed {
+    background-color: #b91c1c;
+}
