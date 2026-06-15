@@ -8,7 +8,11 @@ import pytest
 sys.path.insert(0, os.path.abspath('src'))
 
 from pydantic import ValidationError
-from models.data_types import AppConfig
+from models.data_types import AppConfig, InputLogData, ActionDetail, Size, Coordinates
+
+# ==========================================
+# AppConfig のテスト
+# ==========================================
 
 def test_app_config_valid_data():
     """正常系: 正しいホスト名とポート番号でインスタンスが生成されること"""
@@ -40,3 +44,46 @@ def test_app_config_invalid_port():
     
     with pytest.raises(ValidationError):
         AppConfig(cv_port='abc') # 数値でない
+
+
+# ==========================================
+# データモデルの仕様追従テスト (Optional座標など)
+# ==========================================
+
+def test_input_log_data_with_cursor():
+    """正常系: マウス操作時など、カーソル座標が含まれるInputLogDataが正しく生成されること"""
+    log = InputLogData(
+        timestamp=1717654800123,
+        type="click_down",
+        content="left_click",
+        windowName="Test Window",
+        windowSize=Size(width=800, height=600),
+        windowCoordinates=Coordinates(x=0, y=0),
+        cursorCoordinates=Coordinates(x=100, y=100)
+    )
+    assert log.cursorCoordinates is not None
+    assert log.cursorCoordinates.x == 100
+
+def test_input_log_data_without_cursor():
+    """正常系: キー操作時など、カーソル座標が省略(None)されたInputLogDataが正しく生成されること"""
+    log = InputLogData(
+        timestamp=1717654800124,
+        type="key_down",
+        content="Enter",
+        windowName="Test Window",
+        windowSize=Size(width=800, height=600),
+        windowCoordinates=Coordinates(x=0, y=0),
+        cursorCoordinates=None
+    )
+    assert log.cursorCoordinates is None
+
+def test_action_detail_optional_cursor():
+    """正常系: ActionDetailでcursorRelativeCoordinatesを省略してもエラーにならないこと"""
+    action = ActionDetail(
+        inputType="key_down",
+        inputValue="A",
+        cursorRelativeCoordinates=None,
+        diffRatio=0.01  # 低変化率
+    )
+    assert action.cursorRelativeCoordinates is None
+    assert action.diffRatio == 0.01
