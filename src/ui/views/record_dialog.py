@@ -14,11 +14,17 @@ class RecordDialog:
         
         self.dialog = self._load_ui_and_style("record_dialog.ui")
         self.dialog.setWindowTitle("記録中")
-        self.dialog.setFixedSize(300, 150)
         
-        # ウィンドウの枠をなくし、常に最前面（Zオーダトップ）に固定するフラグを設定
-        # Qt.Windowを追加することで、親に引きずられない独立したトップレベルウィンドウとしての振る舞いを強化します
-        self.dialog.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # 横長薄型バーの形状へサイズを固定
+        self.dialog.setFixedSize(460, 40)
+        
+        # Qt.Toolフラグによりタスクバーへの露出を防ぎ、StaysOnTopHintで常にデスクトップの最前面へ張り付ける
+        self.dialog.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        
+        # CSS側のrgba定義と連動させて、ウィンドウ自体のアルファ透過レイヤーを有効化
+        self.dialog.setAttribute(Qt.WA_TranslucentBackground)
         
         # UI要素の取得
         self.btn_stop = self.dialog.findChild(QPushButton, "btnStopRecord")
@@ -34,16 +40,15 @@ class RecordDialog:
         self.dialog.close()
 
     def show(self):
-        """ウィジェット画面を表示し、強制的に画面上部へ配置する"""
+        """ウィジェット画面を表示し、強制的に画面の最上端へ配置する"""
         self.dialog.show()
         
-        # PySide6(Qt)の「自動センタリング」を上書きするため、show()の直後に絶対座標へ強制移動する
+        # 画面中央の最上部にぴったりと吸着させるための座標計算
         screen = QGuiApplication.primaryScreen()
         if screen:
             screen_geo = screen.availableGeometry()
-            # 画面幅からウィジェット幅を引き、2で割って中央のX座標を算出
             x = screen_geo.x() + (screen_geo.width() - self.dialog.width()) // 2
-            y = screen_geo.y() + 30  # 画面上端から30px下方に配置
+            y = screen_geo.y()  # ディスプレイの一番上の位置（y=0）へジャスト配置
             self.dialog.move(x, y)
 
     def _load_ui_and_style(self, ui_file_name: str) -> QWidget:
@@ -56,7 +61,8 @@ class RecordDialog:
         if not ui_file.open(QFile.ReadOnly):
             raise FileNotFoundError(f"Cannot open UI file: {ui_path}")
             
-        widget = loader.load(ui_file, self.parent)
+        # メインウィンドウの非表示処理に連動して消滅しないよう、親参照を断ち切り独立ウィンドウ化
+        widget = loader.load(ui_file, None)
         ui_file.close()
         
         if widget is None:

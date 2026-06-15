@@ -26,11 +26,15 @@ class MainWindow(QMainWindow):
         self.btn_status = self.central_widget.findChild(QPushButton, "btnStatus")
         self.btn_start_record = self.central_widget.findChild(QPushButton, "btnStartRecord")
         self.btn_run_selected = self.central_widget.findChild(QPushButton, "btnRunSelected")
+        self.btn_delete_selected = self.central_widget.findChild(QPushButton, "btnDeleteSelected")
         self.btn_settings = self.central_widget.findChild(QPushButton, "btnSettings")
         self.table_macros = self.central_widget.findChild(QTableWidget, "tableMacros")
         
+        # 起動時は何も選択されていないため、実行・削除ボタンを無効化
         if self.btn_run_selected:
             self.btn_run_selected.setEnabled(False)
+        if self.btn_delete_selected:
+            self.btn_delete_selected.setEnabled(False)
             
         if self.table_macros:
             self.table_macros.setShowGrid(False)
@@ -52,6 +56,8 @@ class MainWindow(QMainWindow):
             self.btn_start_record.clicked.connect(self.open_record_dialog)
         if self.btn_run_selected:
             self.btn_run_selected.clicked.connect(self.viewmodel.run_selected_macro)
+        if self.btn_delete_selected:
+            self.btn_delete_selected.clicked.connect(self._on_delete_selected_clicked)
         if self.btn_settings:
             self.btn_settings.clicked.connect(self.open_settings_dialog)
             
@@ -60,7 +66,7 @@ class MainWindow(QMainWindow):
             
         self.viewmodel.macros_updated.connect(self._render_table)
         self.viewmodel.status_changed.connect(self._update_status_ui)
-        self.viewmodel.can_run_changed.connect(self._update_run_button_state)
+        self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
 
     def _on_table_selection_changed(self):
         selected_items = self.table_macros.selectedItems()
@@ -71,9 +77,29 @@ class MainWindow(QMainWindow):
         else:
             self.viewmodel.select_macro("")
 
-    def _update_run_button_state(self, can_run: bool):
+    def _update_control_buttons_state(self, can_run: bool):
+        """マクロの選択状態に応じて、実行ボタンと削除ボタンの有効/無効を切り替える"""
         if self.btn_run_selected:
             self.btn_run_selected.setEnabled(can_run)
+        if self.btn_delete_selected:
+            self.btn_delete_selected.setEnabled(can_run)
+
+    def _on_delete_selected_clicked(self):
+        """削除ボタン押下時に確認ダイアログを表示し、承諾されたらViewModelへ削除を依頼する"""
+        selected_macro_name = self.viewmodel._selected_macro
+        if not selected_macro_name:
+            return
+            
+        reply = QMessageBox.question(
+            self,
+            "削除の確認",
+            f"「{selected_macro_name}」を完全に削除してもよろしいですか？\nこの操作は元に戻せません。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.viewmodel.delete_macro(selected_macro_name)
 
     def _update_status_ui(self, state: str, label: str):
         if not self.btn_status:
@@ -102,9 +128,10 @@ class MainWindow(QMainWindow):
         if not self.table_macros:
             return
             
+        # 削除ボタンをテーブル外へ移動したため、カラム数を4に変更
         self.table_macros.setRowCount(len(macros))
-        self.table_macros.setColumnCount(5)
-        self.table_macros.setHorizontalHeaderLabels(["マクロ名", "直近の結果", "自己修復", "最終実行日時", "削除"])
+        self.table_macros.setColumnCount(4)
+        self.table_macros.setHorizontalHeaderLabels(["マクロ名", "直近の結果", "自己修復", "最終実行日時"])
         
         for row, macro in enumerate(macros):
             self.table_macros.setItem(row, 0, QTableWidgetItem(macro.name))
@@ -117,29 +144,24 @@ class MainWindow(QMainWindow):
             
             self.table_macros.setItem(row, 3, QTableWidgetItem(macro.last_run))
             
-            btn_delete = QPushButton("🗑 削除")
-            btn_delete.setObjectName("btnDelete")
-            btn_delete.setCursor(Qt.PointingHandCursor)
-            btn_delete.clicked.connect(lambda checked, m=macro.name: self.viewmodel.delete_macro(m))
-            self.table_macros.setCellWidget(row, 4, btn_delete)
-
         self.table_macros.resizeColumnsToContents()
-        self.table_macros.setColumnWidth(0, 220)
-        self.table_macros.setColumnWidth(1, 110)
-        self.table_macros.setColumnWidth(2, 90)
+        self.table_macros.setColumnWidth(0, 300)
+        self.table_macros.setColumnWidth(1, 140)
+        self.table_macros.setColumnWidth(2, 120)
         self.table_macros.horizontalHeader().setStretchLastSection(True)
+        
+        # 再描画時に選択状態がリセットされるため、ボタンも無効化する
+        self.viewmodel.select_macro("")
 
     def open_record_dialog(self):
-        """記録を開始し、ウィジェットを展開してメイン画面を最小化する"""
+        """記録を開始し、ウィジェットを展開してメイン画面を非表示にする"""
         try:
             self.viewmodel.start_recording()
             
-            # 停止処理のコールバックを渡してミニマルウィジェットを生成
             self.record_dialog = RecordDialog(self, on_stop_callback=self._on_recording_stopped)
             self.record_dialog.show()
             
-            # 仕様書7.2: メインウィンドウを自動的に最小化
-            self.showMinimized()
+            self.hide()
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"記録の開始に失敗しました:\n{e}")
 
@@ -150,12 +172,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"記録の停止中にエラーが発生しました:\n{e}")
         finally:
-            # 仕様書7.2: ウィジェットが閉じると同時にメインウィンドウを元のサイズに復元
-            self.showNormal()
+            self.show()
+            self.raise_()
             self.activateWindow()
 
     def open_settings_dialog(self):
-        """設定画面をモーダルダイアログとして呼び出す"""
         self.settings_dialog = SettingsDialog(self)
         self.settings_dialog.exec()
 
@@ -163,7 +184,6 @@ class MainWindow(QMainWindow):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         ui_path = os.path.join(os.path.dirname(base_dir), "ui", "resources", "ui", ui_file_name)
         
-        # 実行環境と開発時のパス差異（マッピング解決）に対応するための補正
         if not os.path.exists(ui_path):
             ui_path = os.path.join(base_dir, "resources", "ui", ui_file_name)
             

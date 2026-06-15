@@ -67,12 +67,12 @@ class OcrEngineOutput(BaseModel):
 class InputLogData(BaseModel):
     """5.2.3. 入力操作データ（Python OS Hook）"""
     timestamp: int = Field(..., description="OSレベルで操作をフック・検出したUnixタイムスタンプ")
-    type: str = Field(..., description="入力操作の種類（click_down, key_down など）")
+    type: str = Field(..., description="入力操作の種類（click_down, key_down 等）")
     content: str = Field(..., description="具体的な入力内容（left_click, Enter, または入力文字など）")
     windowName: str = Field(..., description="操作対象となったアプリケーションのウィンドウタイトル名")
     windowSize: Size = Field(..., description="対象ウィンドウの全体サイズ")
     windowCoordinates: Coordinates = Field(..., description="対象ウィンドウのデスクトップ上における絶対座標")
-    cursorCoordinates: Coordinates = Field(..., description="操作が実行された瞬間のマウスカーソルの相対座標")
+    cursorCoordinates: Optional[Coordinates] = Field(None, description="操作が実行された瞬間のマウスカーソルの絶対座標（キーボード操作時などは省略可）")
 
 class PythonOsHookOutput(BaseModel):
     """Python OS Hookがtemp/に出力するJSON全体のラップ構造"""
@@ -87,8 +87,8 @@ class ActionDetail(BaseModel):
     """UIに対して行われた入力操作の詳細コンテキスト"""
     inputType: str = Field(..., description="入力タイプ（click_down, key_down 等）")
     inputValue: str = Field(..., description="入力内容（left_click, Enter 等）")
-    cursorRelativeCoordinates: Coordinates = Field(..., description="対象ウィンドウ内でのカーソル相対座標")
-    diffRatio: float = Field(..., description="操作による前画面変化率（最速化の待機判定に使用）")
+    cursorRelativeCoordinates: Optional[Coordinates] = Field(None, description="対象ウィンドウ内でのカーソル相対座標（キーボード操作時などは省略可）")
+    diffRatio: float = Field(..., description="操作による前画面変化率（最速化の待機判定、および低変化率画像の間引き処理に使用）")
 
 class ContextComponent(BaseModel):
     """UI要素を補足する周辺情報（意味理解を助けるためのテキストやアイコン）"""
