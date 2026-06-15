@@ -7,10 +7,11 @@ import shutil
 import threading
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
-from models.data_types import MacroSummary
+from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
 from core.executor import runner
+from utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -95,16 +96,18 @@ class MainViewModel(QObject):
                 workflow_id = os_hook._recording_dirs["macro_name"]
             
             if workflow_id:
-                def background_generation():
+                app_config = ConfigManager.load_config()
+                
+                def background_generation(cfg: AppConfig):
                     try:
                         logger.info(f"Kicking background macro generation workflow for ID: {workflow_id}")
-                        log_integrator.generate_macro_workflow(workflow_id)
+                        log_integrator.generate_macro_workflow(workflow_id, cfg)
                         logger.info(f"Background macro generation successfully completed for ID: {workflow_id}")
                         self.load_macros()
                     except Exception as gen_err:
                         logger.error(f"Unhandled exception during background macro generation for {workflow_id}: {gen_err}")
                 
-                gen_thread = threading.Thread(target=background_generation, daemon=True)
+                gen_thread = threading.Thread(target=background_generation, args=(app_config,), daemon=True)
                 gen_thread.start()
             else:
                 logger.warning("Recording stopped, but target workflow_id could not be resolved from os_hook.")
@@ -141,9 +144,11 @@ class MainViewModel(QObject):
         try:
             logger.info(f'Executing macro: {self._selected_macro} (Resolved ID: {workflow_id})')
             
-            def background_execution():
+            app_config = ConfigManager.load_config()
+            
+            def background_execution(cfg: AppConfig):
                 try:
-                    runner.run_workflow(workflow_id)
+                    runner.run_workflow(workflow_id, cfg)
                     logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
                 except Exception as exec_err:
                     logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
@@ -151,7 +156,7 @@ class MainViewModel(QObject):
                     self.load_macros()
                     self.execution_finished.emit()
             
-            exec_thread = threading.Thread(target=background_execution, daemon=True)
+            exec_thread = threading.Thread(target=background_execution, args=(app_config,), daemon=True)
             exec_thread.start()
             
         except Exception as e:

@@ -6,7 +6,7 @@
 # 【参照先】
 #   - engines/yolo/detector.py
 #   - engines/ocr/reader.py
-#   - models/data_types.py (IntegratedEvent, Workflowモデル)
+#   - models/data_types.py (IntegratedEvent, Workflow, AppConfigモデル)
 # 
 # 【処理内容】
 #   - temp/ ディレクトリ内の input_logs.json と画像を読み込む。
@@ -15,6 +15,8 @@
 #   - 統合データから実行用の macros/wf_XXX/workflow.json を生成する。
 #   - 処理完了後、 temp/ ディレクトリを完全に破棄する（ストレージ節約）。
 
-def generate_macro_workflow(workflow_id: str):
+from models.data_types import AppConfig
+
+def generate_macro_workflow(workflow_id: str, config: AppConfig):
     """記録された生データを統合し、マクロワークフローを生成する"""
     pass
