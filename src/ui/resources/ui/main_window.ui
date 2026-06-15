@@ -94,6 +94,13 @@
       </spacer>
      </item>
      <item>
+      <widget class="QPushButton" name="btnDeleteSelected">
+       <property name="text">
+        <string>🗑 削除</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="btnRunSelected">
        <property name="text">
         <string>▶ 実行</string>
@@ -111,7 +118,7 @@
       </size>
      </property>
      <property name="columnCount">
-      <number>5</number>
+      <number>4</number>
      </property>
      <column>
       <property name="text">
@@ -131,11 +138,6 @@
      <column>
       <property name="text">
        <string>最終実行日時</string>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>削除</string>
       </property>
      </column>
     </widget>

@@ -24,19 +24,19 @@
     <number>4</number>
    </property>
    <item>
-    <widget class="QPushButton" name="btnStopRecord">
-     <property name="text">
-      <string>■ 記録停止</string>
-     </property>
-    </widget>
-   </item>
-   <item>
     <widget class="QLabel" name="lblInstructions">
      <property name="text">
       <string>記録終了ショートカット: [ Ctrl + \ ]</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="btnStopRecord">
+     <property name="text">
+      <string>■ 記録停止</string>
      </property>
     </widget>
    </item>

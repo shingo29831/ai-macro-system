@@ -7,12 +7,12 @@ QDialog#RecordDialog {
     border-radius: 6px;
 }
 
-/* 案内テキスト (ボタンと横並びになるためマージンを排除) */
+/* 案内テキスト */
 #lblInstructions {
     color: #e2e8f0;
     font-size: 12px;
     font-weight: bold;
-    padding-left: 6px;
+    padding-left: 0px; /* 左端になるためpaddingを削除 */
 }
 
 /* 終了ボタン (背面ウィンドウの操作を邪魔しないコンパクトサイズ) */
@@ -23,7 +23,7 @@ QDialog#RecordDialog {
     background-color: #ef4444;
     border: none;
     border-radius: 4px;
-    padding: 4px 12px; /* クリック可能領域を保ちつつ高さを圧縮 */
+    padding: 4px 12px;
 }
 
 #btnStopRecord:hover {
