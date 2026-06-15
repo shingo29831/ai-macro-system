@@ -3,6 +3,7 @@
 import logging
 from PySide6.QtCore import QObject, Signal, Slot
 from models.data_types import MacroSummary
+from core.recorder import os_hook
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,36 @@ class MainViewModel(QObject):
         self._current_state_index = (self._current_state_index + 1) % len(self._states)
         state = self._states[self._current_state_index]
         self.status_changed.emit(state, self._state_labels[state])
+
+    @Slot()
+    def start_recording(self):
+        """Core層のos_hookを呼び出して記録を開始し、UIステータスを更新する"""
+        try:
+            logger.info("Starting macro recording...")
+            os_hook.start_recording()
+            
+            # ステータスを「記録中」に更新
+            self._current_state_index = self._states.index('recording')
+            self.status_changed.emit('recording', self._state_labels['recording'])
+        except Exception as e:
+            logger.error(f"Failed to start recording: {e}")
+            raise
+
+    @Slot()
+    def stop_recording(self):
+        """Core層のos_hookを停止し、マクロ生成フェーズへ移行する"""
+        try:
+            logger.info("Stopping macro recording...")
+            os_hook.stop_recording()
+            
+            # TODO: ここで core.generator.log_integrator の生成処理(バックグラウンド)をキックする
+            
+            # ステータスを「待機中」に戻す
+            self._current_state_index = self._states.index('idle')
+            self.status_changed.emit('idle', self._state_labels['idle'])
+        except Exception as e:
+            logger.error(f"Failed to stop recording: {e}")
+            raise
 
     @Slot()
     def trigger_emergency_stop(self):

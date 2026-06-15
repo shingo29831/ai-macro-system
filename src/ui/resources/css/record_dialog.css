@@ -7,6 +7,14 @@ QDialog#RecordDialog {
     border-radius: 12px;
 }
 
+/* 案内テキスト */
+#lblInstructions {
+    color: #cbd5e1;
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 8px;
+}
+
 /* 終了ボタン (赤で目立たせる) */
 #btnStopRecord {
     color: #ffffff;

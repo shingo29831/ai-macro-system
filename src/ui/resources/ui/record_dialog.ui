@@ -12,6 +12,17 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
+    <widget class="QLabel" name="lblInstructions">
+     <property name="text">
+      <string>記録終了: ショートカットキー (Ctrl + \)
+または下のボタンをクリック</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QPushButton" name="btnStopRecord">
      <property name="text">
       <string>■ 記録停止</string>
