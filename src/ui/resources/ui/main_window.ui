@@ -14,13 +14,6 @@
    <item>
     <layout class="QHBoxLayout" name="headerLayout">
      <item>
-      <widget class="QPushButton" name="btnEmergencyStop">
-       <property name="text">
-        <string>緊急停止</string>
-       </property>
-      </widget>
-     </item>
-     <item>
       <spacer name="headerSpacerLeft">
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>

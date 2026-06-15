@@ -1,4 +1,4 @@
-# @role: 仕様書の画面要件に基づき、ヘッダーのステータス管理、緊急停止、マクロ一覧テーブルの初期化・描画、および設定画面への遷移を制御するメイン画面のビュークラス。
+# @role: 仕様書の画面要件に基づき、ヘッダーのステータス管理、マクロ一覧テーブルの初期化・描画、および設定画面・実行画面への遷移を制御するメイン画面のビュークラス。
 import os
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QPushButton, QTableWidget, 
@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, Qt
 from ui.views.record_dialog import RecordDialog
+from ui.views.running_dialog import RunningDialog
 from ui.views.settings_dialog import SettingsDialog
 from ui.viewmodels.main_viewmodel import MainViewModel
 
@@ -22,7 +23,6 @@ class MainWindow(QMainWindow):
         self.central_widget = self._load_ui_and_style("main_window.ui")
         self.setCentralWidget(self.central_widget)
         
-        self.btn_emergency_stop = self.central_widget.findChild(QPushButton, "btnEmergencyStop")
         self.btn_status = self.central_widget.findChild(QPushButton, "btnStatus")
         self.btn_start_record = self.central_widget.findChild(QPushButton, "btnStartRecord")
         self.btn_run_selected = self.central_widget.findChild(QPushButton, "btnRunSelected")
@@ -30,7 +30,6 @@ class MainWindow(QMainWindow):
         self.btn_settings = self.central_widget.findChild(QPushButton, "btnSettings")
         self.table_macros = self.central_widget.findChild(QTableWidget, "tableMacros")
         
-        # 起動時は何も選択されていないため、実行・削除ボタンを無効化
         if self.btn_run_selected:
             self.btn_run_selected.setEnabled(False)
         if self.btn_delete_selected:
@@ -48,14 +47,12 @@ class MainWindow(QMainWindow):
         self.viewmodel.load_macros()
 
     def _bind_viewmodel(self):
-        if self.btn_emergency_stop:
-            self.btn_emergency_stop.clicked.connect(self.viewmodel.trigger_emergency_stop)
         if self.btn_status:
             self.btn_status.clicked.connect(self.viewmodel.toggle_status)
         if self.btn_start_record:
             self.btn_start_record.clicked.connect(self.open_record_dialog)
         if self.btn_run_selected:
-            self.btn_run_selected.clicked.connect(self.viewmodel.run_selected_macro)
+            self.btn_run_selected.clicked.connect(self.open_running_dialog)
         if self.btn_delete_selected:
             self.btn_delete_selected.clicked.connect(self._on_delete_selected_clicked)
         if self.btn_settings:
@@ -67,6 +64,7 @@ class MainWindow(QMainWindow):
         self.viewmodel.macros_updated.connect(self._render_table)
         self.viewmodel.status_changed.connect(self._update_status_ui)
         self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
+        self.viewmodel.execution_finished.connect(self._on_execution_finished)
 
     def _on_table_selection_changed(self):
         selected_items = self.table_macros.selectedItems()
@@ -78,14 +76,12 @@ class MainWindow(QMainWindow):
             self.viewmodel.select_macro("")
 
     def _update_control_buttons_state(self, can_run: bool):
-        """マクロの選択状態に応じて、実行ボタンと削除ボタンの有効/無効を切り替える"""
         if self.btn_run_selected:
             self.btn_run_selected.setEnabled(can_run)
         if self.btn_delete_selected:
             self.btn_delete_selected.setEnabled(can_run)
 
     def _on_delete_selected_clicked(self):
-        """削除ボタン押下時に確認ダイアログを表示し、承諾されたらViewModelへ削除を依頼する"""
         selected_macro_name = self.viewmodel._selected_macro
         if not selected_macro_name:
             return
@@ -128,7 +124,6 @@ class MainWindow(QMainWindow):
         if not self.table_macros:
             return
             
-        # 削除ボタンをテーブル外へ移動したため、カラム数を4に変更
         self.table_macros.setRowCount(len(macros))
         self.table_macros.setColumnCount(4)
         self.table_macros.setHorizontalHeaderLabels(["マクロ名", "直近の結果", "自己修復", "最終実行日時"])
@@ -150,11 +145,9 @@ class MainWindow(QMainWindow):
         self.table_macros.setColumnWidth(2, 120)
         self.table_macros.horizontalHeader().setStretchLastSection(True)
         
-        # 再描画時に選択状態がリセットされるため、ボタンも無効化する
         self.viewmodel.select_macro("")
 
     def open_record_dialog(self):
-        """記録を開始し、ウィジェットを展開してメイン画面を非表示にする"""
         try:
             self.viewmodel.start_recording()
             
@@ -166,7 +159,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", f"記録の開始に失敗しました:\n{e}")
 
     def _on_recording_stopped(self):
-        """記録ウィジェットから停止指令を受けた際の復元処理"""
         try:
             self.viewmodel.stop_recording()
         except Exception as e:
@@ -175,6 +167,34 @@ class MainWindow(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
+
+    def open_running_dialog(self):
+        try:
+            self.viewmodel.run_selected_macro()
+            
+            self.running_dialog = RunningDialog(self, on_stop_callback=self._on_emergency_stop_triggered)
+            self.running_dialog.show()
+            
+            self.hide()
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"実行の開始に失敗しました:\n{e}")
+
+    def _on_emergency_stop_triggered(self):
+        """実行中ダイアログからのキルスイッチ発火"""
+        try:
+            self.viewmodel.trigger_emergency_stop()
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"強制停止中にエラーが発生しました:\n{e}")
+
+    def _on_execution_finished(self):
+        """ViewModelから実行完了シグナルを受け取り、ダイアログを閉じてメイン画面を復旧する"""
+        if hasattr(self, 'running_dialog') and self.running_dialog:
+            self.running_dialog.close_dialog()
+            self.running_dialog = None
+            
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def open_settings_dialog(self):
         self.settings_dialog = SettingsDialog(self)
