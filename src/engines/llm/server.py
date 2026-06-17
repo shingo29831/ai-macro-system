@@ -1,60 +1,65 @@
-# @role: 独立したバックグラウンドプロセスとして稼働し、LLM(GGUF)への推論リクエストを処理するFastAPIサーバー。
+# @role: ローカルで稼働するマクロ生成用のLLM（Gemma等）をホスティングし、FastAPIを通じて推論APIを提供する。
 #
-# 【背景】
-#   - UIスレッドのフリーズを防ぐため、アプリ本体とは別プロセスとして起動される。
-#   - llama_cpp-python は同時リクエスト時の状態管理がシビアなため、threading.Lockで排他制御を行う。
+# 【起動元】
+#   - engines/manager.py (サブプロセスとして uvicorn 経由で起動される)
 
 import threading
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Optional
 from llama_cpp import Llama
+import logging
 
-app = FastAPI()
+logger = logging.getLogger(__name__)
 
-# GGUFモデルのパス (要件に合わせて環境変数や設定ファイルからの読み込みに拡張可能)
-MODEL_PATH = "./gemma-4-E2B-it-Q4_K_M.gguf"
+# --- グローバル変数 ---
+llm_instance = None
+llm_lock = threading.Lock() # 同時リクエスト時の競合防止
 
-# AIモデルのシングルトンインスタンスと排他ロック
-llm_instance: Optional[Llama] = None
-llm_lock = threading.Lock()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """サーバーの起動時と終了時のライフサイクルを管理する"""
+    global llm_instance
+    try:
+        # プロジェクトルートに配置されたGGUFモデルを読み込む
+        # ※ モデルファイル名は必要に応じて変更してください
+        model_path = "./gemma-4-E2B-it-Q4_K_M.gguf"
+        
+        logger.info(f"Loading LLM model from {model_path} ...")
+        llm_instance = Llama(
+            model_path=model_path,
+            n_ctx=2048,
+        )
+        logger.info("LLM model loaded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load LLM model: {e}")
+        llm_instance = None
+        
+    yield  # ここでサーバーがリクエストの待ち受けを開始します
+    
+    # サーバー終了時のメモリ解放処理
+    if llm_instance:
+        logger.info("Unloading LLM model and freeing memory...")
+        del llm_instance
+
+# --- FastAPI アプリケーションの定義 ---
+app = FastAPI(lifespan=lifespan)
 
 class GenerateRequest(BaseModel):
     prompt: str
-    image: Optional[str] = None  # Base64エンコードされた画像データ
-
-@app.on_event("startup")
-def load_model():
-    """サーバー起動時にAIモデルをVRAM/RAMにロードする"""
-    global llm_instance
-    try:
-        llm_instance = Llama(
-            model_path=MODEL_PATH,
-            n_ctx=2048,
-        )
-    except Exception as e:
-        # モデルのロード失敗は致命的なため、起動時にわかるよう例外を投げる
-        raise RuntimeError(f"Failed to load LLM model from {MODEL_PATH}: {e}")
-
-@app.on_event("shutdown")
-def unload_model():
-    """サーバー終了時にメモリを安全に解放する"""
-    global llm_instance
-    if llm_instance:
-        del llm_instance
-        llm_instance = None
+    image: str | None = None  # Base64エンコードされた画像データ
 
 @app.post("/generate")
 async def generate_text(req: GenerateRequest):
-    """テキストおよび画像(マルチモーダル)を受け取り、推論結果を返す"""
     global llm_instance
     if not llm_instance:
-        raise HTTPException(status_code=503, detail="Model is not loaded")
+        return {"success": False, "error": "Model is not loaded or failed to initialize."}
     
     try:
         messages = []
         content = [{"type": "text", "text": req.prompt}]
         
+        # 画像が指定されている場合、マルチモーダル対応のフォーマットで追加
         if req.image:
             content.append({
                 "type": "image_url",
@@ -65,18 +70,13 @@ async def generate_text(req: GenerateRequest):
         
         messages.append({"role": "user", "content": content})
         
-        # 複数リクエストによるコンテキストの破壊を防ぐためロックを取得
+        # 推論の実行（スレッドセーフに実行）
         with llm_lock:
             response = llm_instance.create_chat_completion(
                 messages=messages,
                 max_tokens=1024
             )
         return {"success": True, "response": response}
-    
     except Exception as e:
+        logger.error(f"Error during LLM generation: {e}")
         return {"success": False, "error": str(e)}
-
-if __name__ == "__main__":
-    # このファイルが直接実行された場合のフォールバック設定 (通常はmanagerからuvicorn経由で起動)
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8844)
