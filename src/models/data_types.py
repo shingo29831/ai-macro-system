@@ -1,4 +1,4 @@
-# @role: システム全体で共有するデータ構造（一時生データ、コンテキスト統合データ、実行用ワークフロー、アプリケーション設定）の型定義とバリデーションを統括するデータモデル層。
+# @role: システム全体で共有するデータ構造（一時生データ、コンテキスト統合データ、実行用ワークフロー、アプリケーション設定、および学習用合成データ）の型定義とバリデーションを統括するデータモデル層。
 # 
 # 【参照元 (呼ばれる側)】
 #   - core/recorder/* (フック・スクショ等の生データ生成時)
@@ -11,8 +11,8 @@
 #   - なし (アーキテクチャの最下層として、他モジュールへの依存を持たない)
 
 import re
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from pydantic import BaseModel, Field, field_validator, SecretStr
+from typing import List, Optional, Literal
 
 # ====================================================================
 # 共通・基本データ構造
@@ -156,6 +156,24 @@ class Workflow(BaseModel):
 
 
 # ====================================================================
+# Phase 3: 合成データ・品質ゲート用データ構造
+# ====================================================================
+
+class QualityGateJudgment(BaseModel):
+    """独立したJudgeモデルによる生成データの品質評価結果"""
+    status: Literal['PASS', 'FAIL'] = Field(..., description="評価ステータス")
+    reason: Optional[str] = Field(None, description="FAILの場合の具体的な理由や不整合の指摘")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Judgeモデルの評価に対する確信度")
+
+class SyntheticTrainingSample(BaseModel):
+    """LoRAファインチューニング用にストックされる、品質ゲートを通過した合成データ"""
+    sample_id: str = Field(..., description="サンプルの一意な識別子")
+    input_context: IntegratedEvent = Field(..., description="プロンプト入力となる統合ログデータ")
+    target_output: WorkflowEvent = Field(..., description="LLMが生成すべき理想的なワークフロー出力")
+    judgment: QualityGateJudgment = Field(..., description="品質ゲートを通過した際の評価証跡")
+
+
+# ====================================================================
 # UI表示用・状態管理用データ構造
 # ====================================================================
 
@@ -176,10 +194,22 @@ class MacroSummary(BaseModel):
 class AppConfig(BaseModel):
     """UIから設定され、config.jsonとして永続化されるシステム接続情報"""
     ai_mode: str = Field(default='local', description='AIの動作モード（local または cloud）')
+    
+    # マクロ生成用AI (Phase 1, 2)
     llm_host: str = Field(default='127.0.0.1', description='マクロ生成用AI（LLM）の接続先（IPまたはホスト名）')
     llm_port: str = Field(default='8844', description='LLM APIのポート番号')
+    
+    # Computer Vision (Phase 1, 2)
     cv_host: str = Field(default='127.0.0.1', description='Computer Vision API（YOLO/OCR）の接続先（IPまたはホスト名）')
     cv_port: str = Field(default='8843', description='Computer Vision APIのポート番号')
+    
+    # 最速化推論エンジン (Phase 3)
+    vllm_host: str = Field(default='127.0.0.1', description='ファインチューニング済みローカルモデルを稼働させるvLLMの接続先')
+    vllm_port: str = Field(default='8000', description='vLLM APIのポート番号')
+    
+    # データ生成パイプライン用APIキー (Phase 3 - 機密情報保護のためSecretStrを使用)
+    generator_api_key: Optional[SecretStr] = Field(default=None, description='学習データ生成用大型モデルのAPIキー')
+    judge_api_key: Optional[SecretStr] = Field(default=None, description='品質ゲート用独立モデルのAPIキー')
 
     @field_validator('ai_mode')
     @classmethod
@@ -188,7 +218,7 @@ class AppConfig(BaseModel):
             raise ValueError(f'Invalid ai_mode: {v}')
         return v
 
-    @field_validator('llm_host', 'cv_host')
+    @field_validator('llm_host', 'cv_host', 'vllm_host')
     @classmethod
     def sanitize_host(cls, v: str) -> str:
         # OSコマンドインジェクションやSSRF攻撃の抑止
@@ -196,7 +226,7 @@ class AppConfig(BaseModel):
             raise ValueError(f'Invalid host format: {v}')
         return v
 
-    @field_validator('llm_port', 'cv_port')
+    @field_validator('llm_port', 'cv_port', 'vllm_port')
     @classmethod
     def validate_port(cls, v: str) -> str:
         if not v.isdigit() or not (1 <= int(v) <= 65535):
