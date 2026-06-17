@@ -1,12 +1,17 @@
-# @role: スクリーンショット取得・UI切り抜き・画像保存を担当する。
+# @role: スクリーンショット取得・UI切り抜き・画像保存・スクリーンショット差分率計算を担当する。
 #
-# 保存先:
-#   ../../../macros/wf_連番/temp
-#   ../../../macros/wf_連番/images
+# Crop:
+#   - クリック後に再スクリーンショットを撮らない。
+#   - os_hook.py から渡されたPre画像を元にUI切り抜きを作成する。
+#   - UIAでExplorerの行全体などが取れた場合でも、見えている内容だけに再トリミングする。
 #
-# 画像名:
-#   evt_001_pre.png
-#   evt_001_crop.png
+# Path:
+#   - JSONに書く画像パスは macrosフォルダ基準の相対パスで返す。
+#   - 例: wf_1/images/evt_001_pre.png
+#
+# Diff:
+#   - 前回スクリーンショットと今回スクリーンショットで、
+#     一定以上変化したピクセルの割合を%表記で返す。
 
 from pathlib import Path
 
@@ -26,14 +31,21 @@ AROUND_HEIGHT = 240
 MIN_UI_WIDTH = 20
 MIN_UI_HEIGHT = 15
 
-MAX_UI_WIDTH = 200
-MAX_UI_HEIGHT = 200
+MAX_UI_WIDTH = 400
+MAX_UI_HEIGHT = 300
 
 PADDING = 8
 
-FALLBACK_WIDTH = 200
-FALLBACK_HEIGHT = 180
-ENABLE_FALLBACK_TRIM = True
+DIFF_PIXEL_THRESHOLD = 25
+
+# UIAで行全体が取れた時、見えているアイコン・文字部分だけに詰める設定
+ENABLE_VISIBLE_CONTENT_TRIM = True
+VISIBLE_TRIM_PADDING = 6
+VISIBLE_TRIM_THRESHOLD = 18
+
+# トリミング後がこれ未満なら失敗扱い
+MIN_TRIMMED_WIDTH = 8
+MIN_TRIMMED_HEIGHT = 8
 
 
 # =========================
@@ -50,6 +62,9 @@ _images_dir: Path | None = None
 # =========================
 
 def get_macros_root() -> Path:
+    """
+    このファイル位置から ../../../macros を保存先にする。
+    """
     return (Path(__file__).resolve().parent / "../../../macros").resolve()
 
 
@@ -90,6 +105,12 @@ def make_directory() -> dict:
     }
 
 
+def get_current_macro_dir() -> Path:
+    if _current_macro_dir is None:
+        raise RuntimeError("macro_dir が未作成です。start_recording() を先に呼んでください。")
+    return _current_macro_dir
+
+
 def get_temp_dir() -> Path:
     if _temp_dir is None:
         raise RuntimeError("temp_dir が未作成です。start_recording() を先に呼んでください。")
@@ -102,11 +123,34 @@ def get_images_dir() -> Path:
     return _images_dir
 
 
+def to_macro_relative_path(path: Path) -> str:
+    """
+    JSONに保存するため、macrosフォルダ基準の相対パスに変換する。
+
+    例:
+      C:/.../macros/wf_1/images/evt_001_pre.png
+      -> wf_1/images/evt_001_pre.png
+    """
+    macros_root = get_macros_root()
+
+    try:
+        relative = path.resolve().relative_to(macros_root.resolve())
+        return relative.as_posix()
+    except Exception:
+        return path.name
+
+
 # =========================
 # 全画面スクリーンショット
 # =========================
 
 def take_screenshot() -> tuple[Image.Image, dict]:
+    """
+    全モニターを含むスクリーンショットを取得する。
+    戻り値:
+      - PIL.Image
+      - monitor情報
+    """
     with mss.MSS() as sct:
         monitor = sct.monitors[0]
         screenshot = sct.grab(monitor)
@@ -122,9 +166,7 @@ def take_screenshot() -> tuple[Image.Image, dict]:
 
 def save_event_pre_image(event_no: str) -> str:
     """
-    アクション直前、または録画終了タイミングの全画面画像を保存する。
-    例:
-      evt_001_pre.png
+    現在の全画面画像を evt_XXX_pre.png として保存する。
     """
     images_dir = get_images_dir()
 
@@ -133,26 +175,281 @@ def save_event_pre_image(event_no: str) -> str:
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
 
-    return str(path)
+    return to_macro_relative_path(path)
 
 
 def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
     """
-    mouse down 時点など、すでに取得済みの画像を evt_XXX_pre.png として保存する。
+    すでに取得済みの画像を evt_XXX_pre.png として保存する。
     """
     images_dir = get_images_dir()
 
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
 
-    return str(path)
+    return to_macro_relative_path(path)
 
 
 # =========================
-# UI切り抜き
+# 差分率計算
 # =========================
 
-def crop_around_click(full_img: Image.Image, monitor: dict, click_x: int, click_y: int):
+def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.Image) -> str:
+    """
+    前回スクリーンショットと今回スクリーンショットで、
+    一定以上変化したピクセルの割合を%表記で返す。
+
+    仕様:
+      - previous_img が None の場合は "100%"
+      - 画像サイズが違う場合は current_img を previous_img のサイズに合わせる
+      - RGB平均差分が DIFF_PIXEL_THRESHOLD 以上のピクセルを「変化あり」とする
+    """
+    if previous_img is None:
+        return "100%"
+
+    previous = previous_img.convert("RGB")
+    current = current_img.convert("RGB")
+
+    if current.size != previous.size:
+        current = current.resize(previous.size)
+
+    previous_np = np.array(previous).astype(np.int16)
+    current_np = np.array(current).astype(np.int16)
+
+    diff = np.abs(previous_np - current_np)
+    pixel_diff = np.mean(diff, axis=2)
+
+    changed_pixels = np.sum(pixel_diff >= DIFF_PIXEL_THRESHOLD)
+    total_pixels = pixel_diff.size
+
+    percent = float(changed_pixels / total_pixels * 100.0)
+
+    return f"{percent:.2f}%"
+
+
+# =========================
+# 表示内容トリミング
+# =========================
+
+def trim_crop_to_visible_content(
+    pil_img: Image.Image,
+    padding: int = VISIBLE_TRIM_PADDING,
+    threshold: int = VISIBLE_TRIM_THRESHOLD,
+) -> tuple[Image.Image, dict]:
+    """
+    切り抜き画像の中から、背景色と違う部分だけを残して再トリミングする。
+
+    目的:
+      - Explorer詳細表示の「行全体」切り抜きから、
+        フォルダアイコン + 文字だけを残す。
+      - UIAで大きめに取れた要素を、実際に見えている内容に詰める。
+
+    戻り値:
+      - trimmed image
+      - trim info
+    """
+    img = np.array(pil_img.convert("RGB"))
+
+    if img.size == 0:
+        return pil_img, {
+            "trimmed": False,
+            "reason": "empty_image",
+            "x": 0,
+            "y": 0,
+            "w": pil_img.width,
+            "h": pil_img.height,
+        }
+
+    h, w, _ = img.shape
+
+    if w <= 3 or h <= 3:
+        return pil_img, {
+            "trimmed": False,
+            "reason": "too_small",
+            "x": 0,
+            "y": 0,
+            "w": pil_img.width,
+            "h": pil_img.height,
+        }
+
+    corner_size = max(2, min(10, w // 5, h // 5))
+
+    corners = np.concatenate([
+        img[0:corner_size, 0:corner_size].reshape(-1, 3),
+        img[0:corner_size, w - corner_size:w].reshape(-1, 3),
+        img[h - corner_size:h, 0:corner_size].reshape(-1, 3),
+        img[h - corner_size:h, w - corner_size:w].reshape(-1, 3),
+    ], axis=0)
+
+    background_color = np.median(corners, axis=0)
+
+    diff = np.linalg.norm(
+        img.astype(np.int16) - background_color.astype(np.int16),
+        axis=2
+    )
+
+    mask = (diff >= threshold).astype(np.uint8) * 255
+
+    kernel_open = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+
+    kernel_dilate = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, kernel_dilate, iterations=1)
+
+    contours, _ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    valid_rects = []
+
+    for contour in contours:
+        x, y, rw, rh = cv2.boundingRect(contour)
+        area = rw * rh
+
+        if area < 8:
+            continue
+
+        valid_rects.append((x, y, rw, rh))
+
+    if not valid_rects:
+        return pil_img, {
+            "trimmed": False,
+            "reason": "no_visible_content",
+            "x": 0,
+            "y": 0,
+            "w": pil_img.width,
+            "h": pil_img.height,
+        }
+
+    left = min(r[0] for r in valid_rects)
+    top = min(r[1] for r in valid_rects)
+    right = max(r[0] + r[2] for r in valid_rects)
+    bottom = max(r[1] + r[3] for r in valid_rects)
+
+    left = max(0, left - padding)
+    top = max(0, top - padding)
+    right = min(w, right + padding)
+    bottom = min(h, bottom + padding)
+
+    if right <= left or bottom <= top:
+        return pil_img, {
+            "trimmed": False,
+            "reason": "invalid_rect",
+            "x": 0,
+            "y": 0,
+            "w": pil_img.width,
+            "h": pil_img.height,
+        }
+
+    trimmed = pil_img.crop((left, top, right, bottom))
+
+    return trimmed, {
+        "trimmed": True,
+        "reason": "success",
+        "x": int(left),
+        "y": int(top),
+        "w": int(right - left),
+        "h": int(bottom - top),
+    }
+
+
+def is_trimmed_image_valid(pil_img: Image.Image) -> bool:
+    """
+    トリミング後の画像が最低限使えるサイズか判定する。
+    """
+    if pil_img.width < MIN_TRIMMED_WIDTH:
+        return False
+
+    if pil_img.height < MIN_TRIMMED_HEIGHT:
+        return False
+
+    return True
+
+
+# =========================
+# UIA矩形切り抜き
+# =========================
+
+def save_ui_crop_by_rect(
+    event_no: str,
+    rect: dict,
+    full_img: Image.Image,
+    monitor: dict,
+) -> dict:
+    """
+    UIAなどで取得したUI要素矩形を、Pre画像から切り抜く。
+
+    そのままだとExplorerの詳細表示で行全体が取れることがあるため、
+    切り抜いた後に表示内容だけへ再トリミングする。
+    """
+    images_dir = get_images_dir()
+
+    screen_left = int(monitor["left"])
+    screen_top = int(monitor["top"])
+
+    left = int(rect["left"] - screen_left)
+    top = int(rect["top"] - screen_top)
+    right = int(rect["right"] - screen_left)
+    bottom = int(rect["bottom"] - screen_top)
+
+    left = max(0, min(full_img.width, left))
+    top = max(0, min(full_img.height, top))
+    right = max(0, min(full_img.width, right))
+    bottom = max(0, min(full_img.height, bottom))
+
+    if right <= left or bottom <= top:
+        return {
+            "ui_image_ref": None,
+            "detection_method": "uia_invalid_rect",
+        }
+
+    ui_img = full_img.crop((left, top, right, bottom))
+
+    detection_method = "uia_element_rect_from_pre"
+
+    if ENABLE_VISIBLE_CONTENT_TRIM:
+        trimmed_img, trim_info = trim_crop_to_visible_content(
+            ui_img,
+            padding=VISIBLE_TRIM_PADDING,
+            threshold=VISIBLE_TRIM_THRESHOLD
+        )
+
+        if trim_info.get("trimmed") and is_trimmed_image_valid(trimmed_img):
+            ui_img = trimmed_img
+            detection_method = "uia_element_rect_trimmed_from_pre"
+        else:
+            # トリミングできなかった場合でも、元のUIA切り抜きが有効なら保存する
+            if not is_trimmed_image_valid(ui_img):
+                return {
+                    "ui_image_ref": None,
+                    "detection_method": "uia_trim_failed",
+                }
+
+    ui_path = images_dir / f"evt_{event_no}_crop.png"
+    ui_img.save(ui_path)
+
+    return {
+        "ui_image_ref": to_macro_relative_path(ui_path),
+        "detection_method": detection_method,
+    }
+
+
+# =========================
+# OpenCV UI切り抜き
+# =========================
+
+def crop_around_click(
+    full_img: Image.Image,
+    monitor: dict,
+    click_x: int,
+    click_y: int
+):
+    """
+    OpenCV検出用にクリック周辺だけを一時的に切り抜く。
+    この画像自体は保存しない。
+    """
     screen_left = int(monitor["left"])
     screen_top = int(monitor["top"])
 
@@ -187,8 +484,6 @@ def crop_around_click(full_img: Image.Image, monitor: dict, click_x: int, click_
     local_click_y = max(0, min(around_img.height - 1, local_click_y))
 
     crop_info = {
-        "screen_left": int(screen_left),
-        "screen_top": int(screen_top),
         "around_left": int(left),
         "around_top": int(top),
         "around_right": int(right),
@@ -201,6 +496,9 @@ def crop_around_click(full_img: Image.Image, monitor: dict, click_x: int, click_
 
 
 def detect_ui_contours(pil_img: Image.Image) -> list[dict]:
+    """
+    OpenCVでUIらしい矩形を検出する。
+    """
     img = np.array(pil_img)
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
@@ -250,6 +548,9 @@ def contains_point(rect: dict, px: int, py: int) -> bool:
 
 
 def select_clicked_ui(candidates: list[dict], click_x: int, click_y: int) -> dict | None:
+    """
+    クリック座標を含む矩形のうち、最も小さい矩形を選ぶ。
+    """
     containing = [
         rect for rect in candidates
         if contains_point(rect, click_x, click_y)
@@ -263,6 +564,9 @@ def select_clicked_ui(candidates: list[dict], click_x: int, click_y: int) -> dic
 
 
 def crop_ui_element(pil_img: Image.Image, rect: dict):
+    """
+    検出されたUI矩形を少し余白付きで切り抜く。
+    """
     left = max(0, rect["x"] - PADDING)
     top = max(0, rect["y"] - PADDING)
     right = min(pil_img.width, rect["x"] + rect["w"] + PADDING)
@@ -280,173 +584,19 @@ def crop_ui_element(pil_img: Image.Image, rect: dict):
     return cropped, padded_rect
 
 
-def trim_ui_from_fallback_crop(pil_img: Image.Image, padding: int = 8):
-    img = np.array(pil_img)
-
-    if img.size == 0:
-        return pil_img, {
-            "x": 0,
-            "y": 0,
-            "w": pil_img.width,
-            "h": pil_img.height,
-            "trimmed": False,
-            "reason": "empty_image",
-        }
-
-    h, w, _ = img.shape
-
-    if h < 5 or w < 5:
-        return pil_img, {
-            "x": 0,
-            "y": 0,
-            "w": pil_img.width,
-            "h": pil_img.height,
-            "trimmed": False,
-            "reason": "too_small_image",
-        }
-
-    corner_size = min(10, h // 3, w // 3)
-
-    corners = np.concatenate([
-        img[0:corner_size, 0:corner_size].reshape(-1, 3),
-        img[0:corner_size, w - corner_size:w].reshape(-1, 3),
-        img[h - corner_size:h, 0:corner_size].reshape(-1, 3),
-        img[h - corner_size:h, w - corner_size:w].reshape(-1, 3),
-    ], axis=0)
-
-    background_color = np.median(corners, axis=0)
-
-    diff = np.linalg.norm(
-        img.astype(np.int16) - background_color.astype(np.int16),
-        axis=2
-    )
-
-    mask = (diff > 18).astype(np.uint8) * 255
-
-    kernel_open = np.ones((2, 2), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-
-    kernel_dilate = np.ones((5, 5), np.uint8)
-    mask = cv2.dilate(mask, kernel_dilate, iterations=1)
-
-    contours, _ = cv2.findContours(
-        mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    valid_rects = []
-
-    for contour in contours:
-        x, y, rw, rh = cv2.boundingRect(contour)
-        area = rw * rh
-
-        if area < 20:
-            continue
-
-        valid_rects.append((x, y, rw, rh))
-
-    if not valid_rects:
-        return pil_img, {
-            "x": 0,
-            "y": 0,
-            "w": pil_img.width,
-            "h": pil_img.height,
-            "trimmed": False,
-            "reason": "no_valid_rects",
-        }
-
-    left = min(r[0] for r in valid_rects)
-    top = min(r[1] for r in valid_rects)
-    right = max(r[0] + r[2] for r in valid_rects)
-    bottom = max(r[1] + r[3] for r in valid_rects)
-
-    left = max(0, left - padding)
-    top = max(0, top - padding)
-    right = min(pil_img.width, right + padding)
-    bottom = min(pil_img.height, bottom + padding)
-
-    if right <= left or bottom <= top:
-        return pil_img, {
-            "x": 0,
-            "y": 0,
-            "w": pil_img.width,
-            "h": pil_img.height,
-            "trimmed": False,
-            "reason": "invalid_trim_rect",
-        }
-
-    cropped = pil_img.crop((left, top, right, bottom))
-
-    rect = {
-        "x": int(left),
-        "y": int(top),
-        "w": int(right - left),
-        "h": int(bottom - top),
-        "trimmed": True,
-        "reason": "success",
-    }
-
-    return cropped, rect
-
-
-def crop_fallback_around_click(pil_img: Image.Image, click_x: int, click_y: int):
-    left = max(0, int(click_x - FALLBACK_WIDTH // 2))
-    top = max(0, int(click_y - FALLBACK_HEIGHT // 2))
-    right = min(pil_img.width, int(click_x + FALLBACK_WIDTH // 2))
-    bottom = min(pil_img.height, int(click_y + FALLBACK_HEIGHT // 2))
-
-    if right <= left:
-        right = min(pil_img.width, left + 1)
-
-    if bottom <= top:
-        bottom = min(pil_img.height, top + 1)
-
-    fallback_img = pil_img.crop((left, top, right, bottom))
-
-    fallback_original_rect = {
-        "x": int(left),
-        "y": int(top),
-        "w": int(right - left),
-        "h": int(bottom - top),
-    }
-
-    if not ENABLE_FALLBACK_TRIM:
-        rect = {
-            **fallback_original_rect,
-            "trimmed": False,
-            "fallback_original_rect": fallback_original_rect,
-        }
-        return fallback_img, rect
-
-    trimmed_img, trim_rect = trim_ui_from_fallback_crop(
-        fallback_img,
-        padding=8
-    )
-
-    rect = {
-        "x": int(left + trim_rect["x"]),
-        "y": int(top + trim_rect["y"]),
-        "w": int(trim_rect["w"]),
-        "h": int(trim_rect["h"]),
-        "trimmed": bool(trim_rect.get("trimmed", False)),
-        "trim_reason": trim_rect.get("reason", ""),
-        "fallback_original_rect": fallback_original_rect,
-        "trim_rect_in_fallback": trim_rect,
-    }
-
-    return trimmed_img, rect
-
-
-def save_ui_crop(event_no: str, click_x: int, click_y: int) -> dict:
+def save_ui_crop(
+    event_no: str,
+    click_x: int,
+    click_y: int,
+    full_img: Image.Image,
+    monitor: dict,
+) -> dict:
     """
-    クリック時のみUI切り抜き画像を保存する。
-    例:
-      evt_001_crop.png
+    UIAで取れなかった場合のOpenCV切り抜き。
+    クリック後に撮り直さず、Pre画像からUIらしい矩形だけを切り抜く。
+    UIらしい矩形が取れない場合はCrop=None。
     """
     images_dir = get_images_dir()
-
-    full_img, monitor = take_screenshot()
 
     around_img, crop_info = crop_around_click(
         full_img,
@@ -466,38 +616,34 @@ def save_ui_crop(event_no: str, click_x: int, click_y: int) -> dict:
         local_click_y
     )
 
-    fallback_rect = None
+    if selected_rect is None:
+        return {
+            "ui_image_ref": None,
+            "detection_method": "opencv_no_ui_rect_from_pre",
+        }
 
-    if selected_rect is not None:
-        ui_img, ui_rect = crop_ui_element(around_img, selected_rect)
-        detection_method = "contour"
-    else:
-        ui_img, fallback_rect = crop_fallback_around_click(
-            around_img,
-            local_click_x,
-            local_click_y
+    ui_img, _ = crop_ui_element(around_img, selected_rect)
+
+    if ENABLE_VISIBLE_CONTENT_TRIM:
+        trimmed_img, trim_info = trim_crop_to_visible_content(
+            ui_img,
+            padding=VISIBLE_TRIM_PADDING,
+            threshold=VISIBLE_TRIM_THRESHOLD
         )
-        ui_rect = fallback_rect
-        detection_method = "fallback_center_crop_and_trim"
+
+        if trim_info.get("trimmed") and is_trimmed_image_valid(trimmed_img):
+            ui_img = trimmed_img
+
+    if not is_trimmed_image_valid(ui_img):
+        return {
+            "ui_image_ref": None,
+            "detection_method": "opencv_trim_failed",
+        }
 
     ui_path = images_dir / f"evt_{event_no}_crop.png"
     ui_img.save(ui_path)
 
-    screen_bbox = None
-    if ui_rect is not None:
-        screen_bbox = {
-            "x": int(crop_info["around_left"] + ui_rect["x"]),
-            "y": int(crop_info["around_top"] + ui_rect["y"]),
-            "w": int(ui_rect["w"]),
-            "h": int(ui_rect["h"]),
-        }
-
     return {
-        "ui_image_ref": str(ui_path),
-        "detection_method": detection_method,
-        "ui_rect_in_around": ui_rect,
-        "screen_bbox": screen_bbox,
-        "candidate_count": len(candidates),
-        "selected_rect": selected_rect,
-        "fallback_rect": fallback_rect,
+        "ui_image_ref": to_macro_relative_path(ui_path),
+        "detection_method": "opencv_contour_rect_trimmed_from_pre",
     }

@@ -1,32 +1,40 @@
 # @role: ユーザーのOSレベルの入力操作（マウス・キーボード・ホイール）をフックし、操作ログとして記録する。
 #
-# 録画段階で取得するデータ:
-#   - TimeStamp
-#   - Type
-#   - Content
-#   - WindowName
-#   - WindowSize
-#   - WindowCoordinates
-#   - CursorCoordinates
-#
 # mouse_scroll のみ:
 #   - TimeStamp
 #   - Type
 #   - Content
 #   - WindowName
 #   のみ実データを入れる。
-#   WindowName はアクティブウィンドウではなく、カーソル地点にあるウィンドウ名。
 #   その他の項目は None。
 #
-# 画像取得:
-#   - 画面全体: アクション直前と録画終了タイミング
-#   - UI切り抜き画像: クリック時
-#   - mouse_scroll は画像なし
+# Debug:
+#   - 保存しない。
+#
+# Crop:
+#   - クリック後に再スクリーンショットを撮らない。
+#   - mouse down時に取得したPre画像からUI部分を切り抜く。
+#
+# Diff:
+#   - Images.Diff に前回スクリーンショットとの差分率を%表記で保存する。
+#   - 1回目のスクリーンショットは 100%。
+#   - mouse_scroll はスクリーンショットを取らないため Diff は None。
+#
+# End:
+#   - 最後に EventNo: "End" のログを追加する。
+#   - 終了時スクリーンショット evt_End_pre.png を保存する。
+#   - 前回スクリーンショットとの差分 Diff も保存する。
+#
+# JSON:
+#   - 画像パスは wf_○○ から始まる相対パスにする。
+#   - MacroDirectory / TempDirectory / ImagesDirectory / RecordingEndEventNo
+#     / RecordingEndFullImage / SavedAt / LogCount は保存しない。
 #
 # 保存:
 #   ../../../macros/wf_連番/temp/input_logs.json
 #   ../../../macros/wf_連番/images/evt_XXX_pre.png
 #   ../../../macros/wf_連番/images/evt_XXX_crop.png
+#   ../../../macros/wf_連番/images/evt_End_pre.png
 
 from datetime import datetime
 import json
@@ -41,8 +49,6 @@ from pynput import mouse, keyboard
 # =========================
 # import対応
 # =========================
-# python os_hook.py のように直接実行しても、
-# 同じフォルダの screen_capturer.py / process_monitor.py を読めるようにする。
 
 CURRENT_DIR = Path(__file__).resolve().parent
 
@@ -57,10 +63,60 @@ import process_monitor
 # 設定
 # =========================
 
-JSON_VERSION = "2.1"
-
 DOUBLE_CLICK_INTERVAL_SEC = 0.35
 DOUBLE_CLICK_MAX_DISTANCE = 8
+
+MODIFIER_KEYS = {
+    "ctrl",
+    "ctrl_l",
+    "ctrl_r",
+    "alt",
+    "alt_l",
+    "alt_r",
+    "shift",
+    "shift_l",
+    "shift_r",
+    "cmd",
+    "cmd_l",
+    "cmd_r",
+    "win",
+    "win_l",
+    "win_r",
+    "windows",
+}
+
+COMBO_TRIGGER_KEYS = {
+    "tab",
+    "enter",
+    "space",
+    "esc",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "a",
+    "c",
+    "v",
+    "x",
+    "z",
+    "y",
+    "s",
+    "n",
+    "o",
+    "p",
+    "r",
+    "t",
+    "w",
+    "l",
+}
 
 
 # =========================
@@ -77,9 +133,6 @@ _input_logs: list[dict] = []
 
 _recording_dirs: dict | None = None
 
-_recording_end_event_no: str | None = None
-_recording_end_full_image_ref: str | None = None
-
 _pending_click_timer: threading.Timer | None = None
 _pending_click_event: dict | None = None
 _pending_click_lock = threading.Lock()
@@ -89,6 +142,17 @@ _latest_mouse_down_lock = threading.Lock()
 
 _event_index = 0
 _event_index_lock = threading.Lock()
+
+_previous_screenshot_img = None
+_previous_screenshot_lock = threading.Lock()
+
+_pressed_keys: set[str] = set()
+_pressed_keys_lock = threading.Lock()
+
+_logged_combo_keys: set[str] = set()
+
+_processing_threads: list[threading.Thread] = []
+_processing_threads_lock = threading.Lock()
 
 
 # =========================
@@ -108,18 +172,28 @@ def mouse_button_to_string(button) -> str:
     return text
 
 
-def key_to_string(key) -> str:
+def normalize_key_name(key) -> str:
     try:
-        return key.char
+        if key.char is not None:
+            return str(key.char).lower()
     except AttributeError:
-        return str(key)
+        pass
+
+    text = str(key)
+
+    if text.startswith("Key."):
+        text = text.replace("Key.", "")
+
+    text = text.replace("cmd", "win")
+
+    return text.lower()
+
+
+def key_to_string(key) -> str:
+    return normalize_key_name(key)
 
 
 def next_event_no() -> str:
-    """
-    evt_001, evt_002... の番号を発行する。
-    何番目のアクションかを追うための番号。
-    """
     global _event_index
 
     with _event_index_lock:
@@ -127,26 +201,39 @@ def next_event_no() -> str:
         return f"{_event_index:03d}"
 
 
+def calculate_and_update_diff(current_img) -> str:
+    global _previous_screenshot_img
+
+    with _previous_screenshot_lock:
+        if _previous_screenshot_img is None:
+            diff = "100%"
+        else:
+            diff = screen_capture.calculate_diff_percent(
+                _previous_screenshot_img,
+                current_img
+            )
+
+        _previous_screenshot_img = current_img.copy()
+
+    return diff
+
+
 def build_base_log(
     event_no: str,
     dt: datetime,
     input_type: str,
-    content: dict | str,
+    content: dict | str | None,
     window_info: dict,
     cursor_x: int | None = None,
     cursor_y: int | None = None,
 ) -> dict:
-    """
-    クリック・キー入力用。
-    指定された7項目を中心にログを作る。
-    """
     window_fields = process_monitor.build_recording_window_fields(
         window_info,
         cursor_x=cursor_x,
         cursor_y=cursor_y
     )
 
-    log = {
+    return {
         "EventNo": event_no,
         "TimeStamp": dt.isoformat(),
         "Type": input_type,
@@ -158,13 +245,9 @@ def build_base_log(
         "Images": {
             "Pre": None,
             "Crop": None,
-        },
-        "Debug": {
-            "WindowDebug": window_fields["WindowDebug"],
+            "Diff": None,
         },
     }
-
-    return log
 
 
 def build_scroll_log(
@@ -175,11 +258,6 @@ def build_scroll_log(
     dx: int,
     dy: int,
 ) -> dict:
-    """
-    マウスホイール専用ログ。
-    TimeStamp, Type, Content, WindowName のみ実データ。
-    その他は None。
-    """
     point_window = process_monitor.get_window_title_at_point(x, y)
 
     if dy > 0:
@@ -213,8 +291,110 @@ def build_scroll_log(
         "Images": {
             "Pre": None,
             "Crop": None,
+            "Diff": None,
         },
-        "Debug": None,
+    }
+
+
+def sorted_combo_keys(keys: set[str]) -> list[str]:
+    order = [
+        "ctrl",
+        "ctrl_l",
+        "ctrl_r",
+        "alt",
+        "alt_l",
+        "alt_r",
+        "shift",
+        "shift_l",
+        "shift_r",
+        "win",
+        "win_l",
+        "win_r",
+    ]
+
+    def sort_key(k: str):
+        if k in order:
+            return (0, order.index(k))
+        return (1, k)
+
+    return sorted(list(keys), key=sort_key)
+
+
+def make_combo_text(keys: list[str]) -> str:
+    return "+".join(keys)
+
+
+def should_record_key_combo(pressed_keys: set[str], current_key: str) -> bool:
+    has_modifier = any(k in MODIFIER_KEYS for k in pressed_keys)
+    return has_modifier and current_key in COMBO_TRIGGER_KEYS
+
+
+def register_processing_thread(thread: threading.Thread):
+    with _processing_threads_lock:
+        _processing_threads.append(thread)
+
+
+def wait_processing_threads():
+    """
+    クリック処理スレッドが残っている場合、保存前に終わるのを待つ。
+    Endログを本当に最後にするため。
+    """
+    current = threading.current_thread()
+
+    with _processing_threads_lock:
+        threads = list(_processing_threads)
+        _processing_threads.clear()
+
+    for thread in threads:
+        if thread is current:
+            continue
+
+        if thread.is_alive():
+            thread.join(timeout=3)
+
+
+# =========================
+# Endログ
+# =========================
+
+def create_end_log() -> dict:
+    """
+    最後のログとして EventNo: "End" を作成する。
+    """
+    event_no = "End"
+    dt = now_datetime()
+
+    window_info = process_monitor.get_foreground_window_info()
+
+    end_img, _ = screen_capture.take_screenshot()
+
+    end_ref = screen_capture.save_pre_image_from_pil(
+        event_no=event_no,
+        img=end_img
+    )
+
+    diff = calculate_and_update_diff(end_img)
+
+    window_fields = process_monitor.build_recording_window_fields(
+        window_info,
+        cursor_x=None,
+        cursor_y=None
+    )
+
+    return {
+        "EventNo": event_no,
+        "TimeStamp": dt.isoformat(),
+        "Type": "recording_end",
+        "Content": None,
+        "WindowName": window_fields["WindowName"],
+        "WindowSize": window_fields["WindowSize"],
+        "WindowCoordinates": None,
+        "CursorCoordinates": None,
+        "Images": {
+            "Pre": end_ref,
+            "Crop": None,
+            "Diff": diff,
+        },
     }
 
 
@@ -239,6 +419,9 @@ def process_click_event(
 
         print(f"クリック確定: evt_{event_no}, {input_type}, x={x}, y={y}, button={button}")
 
+        pre_img = event["pre_full_img"]
+        pre_monitor = event["pre_monitor"]
+
         content = {
             "button": mouse_button_to_string(button),
             "click_count": int(click_count),
@@ -258,36 +441,43 @@ def process_click_event(
             cursor_y=y,
         )
 
-        # 画面全体: アクション直前
-        # mouse down時点で保持した画像を、確定後に evt_XXX_pre.png として保存する。
         pre_ref = screen_capture.save_pre_image_from_pil(
             event_no=event_no,
-            img=event["pre_full_img"]
+            img=pre_img
         )
 
-        # UI切り抜き画像: クリック時
-        crop = screen_capture.save_ui_crop(
-            event_no=event_no,
-            click_x=x,
-            click_y=y
-        )
+        diff = calculate_and_update_diff(pre_img)
+
+        ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
+
+        if ui_rect is not None:
+            crop = screen_capture.save_ui_crop_by_rect(
+                event_no=event_no,
+                rect=ui_rect,
+                full_img=pre_img,
+                monitor=pre_monitor
+            )
+        else:
+            crop = screen_capture.save_ui_crop(
+                event_no=event_no,
+                click_x=x,
+                click_y=y,
+                full_img=pre_img,
+                monitor=pre_monitor
+            )
 
         log["Images"] = {
             "Pre": pre_ref,
-            "Crop": crop["ui_image_ref"],
-        }
-
-        log["Debug"]["UICropDebug"] = {
-            "detection_method": crop["detection_method"],
-            "screen_bbox": crop["screen_bbox"],
-            "candidate_count": crop["candidate_count"],
-            "selected_rect": crop["selected_rect"],
-            "fallback_rect": crop["fallback_rect"],
+            "Crop": crop.get("ui_image_ref"),
+            "Diff": diff,
         }
 
         _input_logs.append(log)
 
-        print(f"クリックログ追加: evt_{event_no}")
+        print(
+            f"クリックログ追加: evt_{event_no}, "
+            f"diff={diff}, crop={crop.get('detection_method')}"
+        )
 
     except Exception:
         print("クリック処理中にエラーが発生しました")
@@ -315,6 +505,7 @@ def run_click_process_thread(
         args=(event, input_type, click_count),
         daemon=True
     )
+    register_processing_thread(thread)
     thread.start()
 
 
@@ -361,10 +552,6 @@ def process_pending_single_click():
 # =========================
 
 def on_click(x, y, button, pressed):
-    """
-    mouse down時点で「実行直前画像」とWindow情報を取得する。
-    release時点でシングル/ダブルクリック判定をする。
-    """
     global _latest_mouse_down_event
     global _pending_click_event
     global _pending_click_timer
@@ -378,7 +565,7 @@ def on_click(x, y, button, pressed):
             dt = now_datetime()
 
             window_info = process_monitor.get_foreground_window_info()
-            pre_full_img, _ = screen_capture.take_screenshot()
+            pre_full_img, pre_monitor = screen_capture.take_screenshot()
 
             down_event = {
                 "event_no": event_no,
@@ -388,6 +575,7 @@ def on_click(x, y, button, pressed):
                 "button": button,
                 "window_info": window_info,
                 "pre_full_img": pre_full_img,
+                "pre_monitor": pre_monitor,
             }
 
             with _latest_mouse_down_lock:
@@ -401,7 +589,6 @@ def on_click(x, y, button, pressed):
 
         return
 
-    # release時点
     with _latest_mouse_down_lock:
         current_event = _latest_mouse_down_event
         _latest_mouse_down_event = None
@@ -425,8 +612,6 @@ def on_click(x, y, button, pressed):
 
                 print("ダブルクリック検出")
 
-                # ダブルクリックは1回目のpre画像と同じEventNoで保存する。
-                # 2回目down時に発行されたEventNoは使わないため欠番になる可能性がある。
                 run_click_process_thread(
                     first_event,
                     input_type="mouse_double_click",
@@ -464,17 +649,6 @@ def on_click(x, y, button, pressed):
 
 
 def on_scroll(x, y, dx, dy):
-    """
-    マウスホイールログ。
-    仕様:
-      - TimeStamp
-      - Type
-      - Content
-      - WindowName
-    のみ実データを入れる。
-    その他は None。
-    WindowName はアクティブウィンドウではなく、カーソル地点のウィンドウ名。
-    """
     if not _is_recording:
         return
 
@@ -503,54 +677,112 @@ def on_scroll(x, y, dx, dy):
         traceback.print_exc()
 
 
-def on_press(key):
-    if not _is_recording:
-        return
+def record_key_event(input_type: str, key_text: str, keys: list[str] | None = None):
+    event_no = next_event_no()
+    dt = now_datetime()
 
-    if key == keyboard.Key.esc:
-        print("Esc が押されたため記録を停止します")
-        stop_recording()
-        return False
+    window_info = process_monitor.get_foreground_window_info()
 
-    try:
-        event_no = next_event_no()
-        dt = now_datetime()
-
-        key_text = key_to_string(key)
-
-        window_info = process_monitor.get_foreground_window_info()
-
+    if input_type == "key_combo":
+        content = {
+            "keys": keys or [],
+            "combo": make_combo_text(keys or []),
+        }
+    else:
         content = {
             "key": key_text,
         }
 
-        log = build_base_log(
-            event_no=event_no,
-            dt=dt,
+    log = build_base_log(
+        event_no=event_no,
+        dt=dt,
+        input_type=input_type,
+        content=content,
+        window_info=window_info,
+        cursor_x=None,
+        cursor_y=None,
+    )
+
+    pre_img, _ = screen_capture.take_screenshot()
+
+    pre_ref = screen_capture.save_pre_image_from_pil(
+        event_no=event_no,
+        img=pre_img
+    )
+
+    diff = calculate_and_update_diff(pre_img)
+
+    log["Images"] = {
+        "Pre": pre_ref,
+        "Crop": None,
+        "Diff": diff,
+    }
+
+    _input_logs.append(log)
+
+    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, content={content}, diff={diff}")
+
+
+def on_press(key):
+    global _logged_combo_keys
+
+    if not _is_recording:
+        return
+
+    key_text = key_to_string(key)
+
+    if key == keyboard.Key.esc:
+        with _pressed_keys_lock:
+            has_modifier = any(k in MODIFIER_KEYS for k in _pressed_keys)
+
+        if not has_modifier:
+            print("Esc が押されたため記録を停止します")
+            stop_recording()
+            return False
+
+    try:
+        with _pressed_keys_lock:
+            _pressed_keys.add(key_text)
+            current_keys = set(_pressed_keys)
+
+        if should_record_key_combo(current_keys, key_text):
+            combo_keys = sorted_combo_keys(current_keys)
+            combo_text = make_combo_text(combo_keys)
+
+            if combo_text not in _logged_combo_keys:
+                _logged_combo_keys.add(combo_text)
+                record_key_event(
+                    input_type="key_combo",
+                    key_text=key_text,
+                    keys=combo_keys
+                )
+            return
+
+        if key_text in MODIFIER_KEYS:
+            return
+
+        record_key_event(
             input_type="key_press",
-            content=content,
-            window_info=window_info,
-            cursor_x=None,
-            cursor_y=None,
+            key_text=key_text,
+            keys=None
         )
-
-        # 画面全体: アクション直前
-        pre_ref = screen_capture.save_event_pre_image(
-            event_no=event_no
-        )
-
-        log["Images"] = {
-            "Pre": pre_ref,
-            "Crop": None,
-        }
-
-        _input_logs.append(log)
-
-        print(f"キー入力ログ追加: evt_{event_no}, key={key_text}")
 
     except Exception:
         print("キー入力処理中にエラーが発生しました")
         traceback.print_exc()
+
+
+def on_release(key):
+    global _logged_combo_keys
+
+    key_text = key_to_string(key)
+
+    with _pressed_keys_lock:
+        if key_text in _pressed_keys:
+            _pressed_keys.remove(key_text)
+
+        if not _pressed_keys:
+            _logged_combo_keys = set()
 
 
 # =========================
@@ -562,15 +794,7 @@ def save_input_logs():
     json_path = temp_dir / "input_logs.json"
 
     output = {
-        "JsonVersion": JSON_VERSION,
         "MacroName": _recording_dirs["macro_name"] if _recording_dirs else None,
-        "MacroDirectory": _recording_dirs["macro_dir"] if _recording_dirs else None,
-        "TempDirectory": _recording_dirs["temp_dir"] if _recording_dirs else None,
-        "ImagesDirectory": _recording_dirs["images_dir"] if _recording_dirs else None,
-        "RecordingEndEventNo": _recording_end_event_no,
-        "RecordingEndFullImage": _recording_end_full_image_ref,
-        "SavedAt": now_datetime().isoformat(),
-        "LogCount": len(_input_logs),
         "Logs": _input_logs,
     }
 
@@ -585,21 +809,20 @@ def save_input_logs():
 # =========================
 
 def start_recording():
-    """
-    記録を開始し、フックリスナーを起動する。
-    """
     global _mouse_listener
     global _keyboard_listener
     global _is_recording
     global _is_processing
     global _input_logs
     global _recording_dirs
-    global _recording_end_event_no
-    global _recording_end_full_image_ref
     global _pending_click_event
     global _pending_click_timer
     global _latest_mouse_down_event
     global _event_index
+    global _previous_screenshot_img
+    global _pressed_keys
+    global _logged_combo_keys
+    global _processing_threads
 
     if _is_recording:
         print("すでに記録中です")
@@ -611,12 +834,16 @@ def start_recording():
         _input_logs = []
         _event_index = 0
 
-        _recording_end_event_no = None
-        _recording_end_full_image_ref = None
-
         _pending_click_event = None
         _pending_click_timer = None
         _latest_mouse_down_event = None
+
+        _previous_screenshot_img = None
+
+        _pressed_keys = set()
+        _logged_combo_keys = set()
+
+        _processing_threads = []
 
         _is_processing = False
 
@@ -628,7 +855,10 @@ def start_recording():
             on_click=on_click,
             on_scroll=on_scroll
         )
-        _keyboard_listener = keyboard.Listener(on_press=on_press)
+        _keyboard_listener = keyboard.Listener(
+            on_press=on_press,
+            on_release=on_release
+        )
 
         _mouse_listener.start()
         _keyboard_listener.start()
@@ -648,15 +878,10 @@ def start_recording():
 
 
 def stop_recording():
-    """
-    記録を停止し、リスナーを破棄して input_logs.json に保存する。
-    """
     global _mouse_listener
     global _keyboard_listener
     global _is_recording
     global _pending_click_timer
-    global _recording_end_event_no
-    global _recording_end_full_image_ref
 
     if not _is_recording:
         print("記録中ではありません")
@@ -670,12 +895,10 @@ def stop_recording():
             _pending_click_timer = None
             process_pending_single_click()
 
-        # 録画終了タイミング画像
-        end_event_no = next_event_no()
-        _recording_end_event_no = end_event_no
-        _recording_end_full_image_ref = screen_capture.save_event_pre_image(
-            event_no=end_event_no
-        )
+        wait_processing_threads()
+
+        end_log = create_end_log()
+        _input_logs.append(end_log)
 
         if _mouse_listener is not None:
             _mouse_listener.stop()
@@ -690,7 +913,7 @@ def stop_recording():
         save_input_logs()
 
         print("記録を停止しました")
-        print(f"recording_end: evt_{_recording_end_event_no}_pre.png")
+        print("recording_end: evt_End_pre.png")
 
     except Exception:
         print("記録停止中にエラーが発生しました")
