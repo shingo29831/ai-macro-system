@@ -3,7 +3,7 @@
 import sys
 import os
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError, SecretStr
 
 # アプリケーション実行時とモジュールのパス解決を一致させるため、src をシステムパスに追加
 sys.path.insert(0, os.path.abspath('src'))
@@ -12,11 +12,18 @@ from ui.viewmodels.settings_viewmodel import SettingsViewModel
 from models.data_types import AppConfig
 
 def test_load_current_settings_emits_signal(mocker):
-    """正常系：設定ロード時にconfig_loadedシグナルが辞書データと共に発行されるかをテストする"""
+    """正常系：設定ロード時にconfig_loadedシグナルが辞書データと共に発行され、SecretStrが復号されるかをテストする"""
     vm = SettingsViewModel()
     
     # ConfigManagerのload_configをモック化して固定のAppConfigを返すように設定
-    mock_config = AppConfig(ai_mode='cloud', llm_host='test.local', llm_port='1111')
+    mock_config = AppConfig(
+        ai_mode='cloud', 
+        llm_host='test.local', 
+        llm_port='1111',
+        vllm_host='127.0.0.1',
+        vllm_port='8000',
+        generator_api_key='dummy_key'
+    )
     mocker.patch('utils.config_manager.ConfigManager.load_config', return_value=mock_config)
 
     emitted_configs = []
@@ -29,9 +36,11 @@ def test_load_current_settings_emits_signal(mocker):
     assert len(emitted_configs) == 1
     assert emitted_configs[0]['ai_mode'] == 'cloud'
     assert emitted_configs[0]['llm_host'] == 'test.local'
+    # SecretStrがUI向けに平文の文字列として辞書にセットされているか
+    assert emitted_configs[0]['generator_api_key'] == 'dummy_key'
 
 def test_save_settings_success_emits_signal(mocker):
-    """正常系：正しい入力値が渡された場合、save_successfulシグナルが発行されるかをテストする"""
+    """正常系：正しい入力値（Phase 3拡張含む）が渡された場合、save_successfulシグナルが発行されるかをテストする"""
     vm = SettingsViewModel()
     
     # ConfigManagerのsave_configをモック化（何もしない）
@@ -49,7 +58,11 @@ def test_save_settings_success_emits_signal(mocker):
         llm_host='192.168.1.5',
         llm_port='8844',
         cv_host='127.0.0.1',
-        cv_port='8843'
+        cv_port='8843',
+        vllm_host='127.0.0.1',
+        vllm_port='8000',
+        generator_api_key='sk-test-gen',
+        judge_api_key='sk-test-judge'
     )
 
     # 保存処理が呼ばれ、成功シグナルが発行されたか
@@ -72,7 +85,11 @@ def test_save_settings_validation_error_emits_failed_signal(mocker):
         llm_host='127.0.0.1; ls', # インジェクション
         llm_port='999999',        # 範囲外
         cv_host='127.0.0.1',
-        cv_port='8843'
+        cv_port='8843',
+        vllm_host='127.0.0.1',
+        vllm_port='8000',
+        generator_api_key='',
+        judge_api_key=''
     )
 
     assert len(failed_emitted) == 1
@@ -98,7 +115,11 @@ def test_save_settings_unexpected_error_emits_failed_signal(mocker):
         llm_host='127.0.0.1',
         llm_port='8844',
         cv_host='127.0.0.1',
-        cv_port='8843'
+        cv_port='8843',
+        vllm_host='127.0.0.1',
+        vllm_port='8000',
+        generator_api_key='',
+        judge_api_key=''
     )
 
     assert len(failed_emitted) == 1
