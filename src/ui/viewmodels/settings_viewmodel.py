@@ -2,7 +2,7 @@
 
 import logging
 from PySide6.QtCore import QObject, Signal, Slot
-from pydantic import ValidationError
+from pydantic import ValidationError, SecretStr
 from models.data_types import AppConfig
 from utils.config_manager import ConfigManager
 
@@ -23,22 +23,41 @@ class SettingsViewModel(QObject):
         """現在の設定を読み込み、UIに反映させるためのシグナルを発行する"""
         try:
             self._current_config = ConfigManager.load_config()
-            self.config_loaded.emit(self._current_config.model_dump())
+            
+            # UIへ渡すために辞書化。SecretStrは表示のためにget_secret_value()で復号する。
+            # ※UI側ではAPIキーフィールドをパスワードマスク（echoMode=Password）で表示する前提。
+            config_dict = self._current_config.model_dump()
+            if self._current_config.generator_api_key:
+                config_dict['generator_api_key'] = self._current_config.generator_api_key.get_secret_value()
+            if self._current_config.judge_api_key:
+                config_dict['judge_api_key'] = self._current_config.judge_api_key.get_secret_value()
+                
+            self.config_loaded.emit(config_dict)
         except Exception as e:
             logger.error(f"設定のUI反映に失敗しました: {e}")
             self.save_failed.emit("設定の読み込みに失敗しました。")
 
-    @Slot(str, str, str, str, str)
-    def save_settings(self, ai_mode: str, llm_host: str, llm_port: str, cv_host: str, cv_port: str):
+    @Slot(str, str, str, str, str, str, str, str, str)
+    def save_settings(self, ai_mode: str, llm_host: str, llm_port: str, 
+                      cv_host: str, cv_port: str, vllm_host: str, vllm_port: str,
+                      generator_api_key: str, judge_api_key: str):
         """UIからの入力値を受け取り、検証後に保存する"""
         try:
             # AppConfigの初期化時に自動でバリデーション(pydantic)が走る
+            # 空文字のAPIキーはNoneとして扱い、入力された場合はSecretStrに変換して保護する
+            gen_key = SecretStr(generator_api_key) if generator_api_key else None
+            judge_key = SecretStr(judge_api_key) if judge_api_key else None
+
             new_config = AppConfig(
                 ai_mode=ai_mode,
                 llm_host=llm_host,
                 llm_port=llm_port,
                 cv_host=cv_host,
-                cv_port=cv_port
+                cv_port=cv_port,
+                vllm_host=vllm_host,
+                vllm_port=vllm_port,
+                generator_api_key=gen_key,
+                judge_api_key=judge_key
             )
             
             # 検証に成功した場合のみ保存処理を実行
