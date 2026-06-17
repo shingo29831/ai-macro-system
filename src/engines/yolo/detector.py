@@ -1,18 +1,43 @@
-# @role: 対象のスクリーンショット画像から、ボタンや入力欄などのUI要素を物体認識(YOLO)する外部エンジンとのインターフェース。
+# @role: 対象のスクリーンショット画像から、UI要素を物体認識(YOLO)する外部エンジンとのインターフェース。通信失敗時はリトライを行う。
 # 
 # 【参照元】
 #   - core/generator/log_integrator.py (マクロ生成時)
 #   - core/healer/recovery_manager.py (自己修復のStage 2実行時)
-# 
-# 【参照先】
-#   - models/data_types.py (YoloResult, AppConfigモデル)
-# 
-# 【処理内容】
-#   - 画像ファイルパスを受け取り、YOLOモデル（ローカル推論またはAPI）に解析リクエストを送る。
-#   - 認識されたUIの種類（type）、バウンディングボックス（boundingBox）、信頼度（confidence）を抽出する。
 
-from models.data_types import AppConfig
+import time
+import requests
+import logging
+from typing import List
+from models.data_types import UiAnalysisData
+from utils.config_manager import ConfigManager
 
-def detect_ui_elements(image_path: str, config: AppConfig):
-    """画像からUI要素を検出し、YoloResultのリストを返す"""
-    pass
+logger = logging.getLogger(__name__)
+
+def detect_ui_elements(image_path: str, max_retries: int = 3) -> List[UiAnalysisData]:
+    """画像からUI要素を検出し、UiAnalysisDataのリストを返す"""
+    config = ConfigManager.load_config()
+    # クラウドAIモードであっても、CVはローカル等で動かす柔軟な構成に対応
+    url = f"http://{config.cv_host}:{config.cv_port}/api/v1/yolo/detect"
+    payload = {"image_path": image_path}
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Requesting YOLO detection (Attempt {attempt + 1}/{max_retries}) for {image_path}")
+            response = requests.post(url, json=payload, timeout=10.0)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = []
+            for item in data.get("uiAnalysis", []):
+                results.append(UiAnalysisData(**item))
+            return results
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"YOLO API request failed: {e}")
+            if attempt == max_retries - 1:
+                logger.error("Max retries reached for YOLO API. Returning empty list.")
+                # エラー握り潰しは厳禁だが、ログ解析プロセス全体を落とさないために空配列を返す
+                return []
+            time.sleep(2 ** attempt)  # Exponential Backoff (1s, 2s, 4s...)
+    
+    return []
