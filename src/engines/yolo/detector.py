@@ -1,8 +1,4 @@
 # @role: 対象のスクリーンショット画像から、UI要素を物体認識(YOLO)する外部エンジンとのインターフェース。通信失敗時はリトライを行う。
-# 
-# 【参照元】
-#   - core/generator/log_integrator.py (マクロ生成時)
-#   - core/healer/recovery_manager.py (自己修復のStage 2実行時)
 
 import time
 import requests
@@ -23,7 +19,8 @@ def detect_ui_elements(image_path: str, max_retries: int = 3) -> List[UiAnalysis
     for attempt in range(max_retries):
         try:
             logger.info(f"Requesting YOLO detection (Attempt {attempt + 1}/{max_retries}) for {image_path}")
-            response = requests.post(url, json=payload, timeout=10.0)
+            # AIの推論は時間がかかる場合があるため、タイムアウトを60秒に延長
+            response = requests.post(url, json=payload, timeout=60.0)
             response.raise_for_status()
             
             data = response.json()
