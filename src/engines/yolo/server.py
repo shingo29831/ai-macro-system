@@ -100,7 +100,7 @@ async def read_text(req: ImageRequest):
         timestamp = int(time.time() * 1000)
         
         # NDLOCR-Lite がプロジェクト内の vendor/ndlocr-lite にあると想定
-        ndlocr_cli_path = os.path.abspath("vendor/ndlocr-lite/src/cli.py")
+        ndlocr_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../vendor/ndlocr-lite/src/ocr.py"))
         
         if not os.path.exists(ndlocr_cli_path):
             # NDLOCR-Liteが見つからない場合のフォールバック（テスト用）
