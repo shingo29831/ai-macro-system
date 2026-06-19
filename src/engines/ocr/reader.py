@@ -18,8 +18,8 @@ def read_text_from_image(image_path: str, max_retries: int = 3) -> List[TextAnal
     for attempt in range(max_retries):
         try:
             logger.info(f"Requesting OCR processing (Attempt {attempt + 1}/{max_retries}) for {image_path}")
-            # AIの推論（特にプロセスの初回起動やCPU推論）は時間がかかるため、タイムアウトを60秒に延長
-            response = requests.post(url, json=payload, timeout=60.0)
+            # サーバー側の180秒タイムアウトをカバーするため、通信側のタイムアウトを190秒に延長
+            response = requests.post(url, json=payload, timeout=190.0)
             response.raise_for_status()
             
             data = response.json()
