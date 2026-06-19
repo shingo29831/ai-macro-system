@@ -47,3 +47,5 @@ temp/
 
 # ※ macros/wf_template/ はアーキテクチャ上のテンプレートとして保持するため除外対象から外す
 !macros/wf_template/
+
+best.pt

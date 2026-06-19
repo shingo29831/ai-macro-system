@@ -1,7 +1,4 @@
 # @role: 対象のスクリーンショット画像から、テキストを認識(OCR)する外部エンジンとのインターフェース。通信失敗時はリトライを行う。
-# 
-# 【参照元】
-#   - core/generator/log_integrator.py (マクロ生成時のコンテキスト抽出)
 
 import time
 import requests
@@ -21,7 +18,8 @@ def read_text_from_image(image_path: str, max_retries: int = 3) -> List[TextAnal
     for attempt in range(max_retries):
         try:
             logger.info(f"Requesting OCR processing (Attempt {attempt + 1}/{max_retries}) for {image_path}")
-            response = requests.post(url, json=payload, timeout=10.0)
+            # AIの推論（特にプロセスの初回起動やCPU推論）は時間がかかるため、タイムアウトを60秒に延長
+            response = requests.post(url, json=payload, timeout=60.0)
             response.raise_for_status()
             
             data = response.json()
