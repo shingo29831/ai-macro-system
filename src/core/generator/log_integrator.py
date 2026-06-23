@@ -1,22 +1,42 @@
-# @role: temp/ に保存された一時生データ（入力ログ・YOLO/OCR解析等）を統合し、仕様書定義の integrated.json と workflow.json を生成する。
+# @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
+# 
+# 【参照元】
+#   - UI層からの「記録終了」シグナル受信直後（バックグラウンド処理）
+# 
+# 【参照先】
+#   - engines/yolo/detector.py (UI要素の物体認識)
+#   - engines/ocr/reader.py (画像からのテキスト抽出)
+#   - models/data_types.py (IntegratedEvent, Workflow 等の全データモデル)
+# 
+# 【処理内容】
+#   - Phase 2 (解析・生成): input_logs.json を読み込み、対応するCrop画像をYOLOとOCRにかけて意味情報を抽出する。
+#   - AIの解析結果から ui_type (button, input 等) や semantic_role (テキストやキー名) を推論し、コンテキストに付与する。
+#   - ウィンドウを基準としたDOMライクな統合データ (integrated.json) を構築する。
+#   - 実行エンジン用の最終ワークフローシナリオ (workflow.json) を構築する。
+#   - 処理完了後、 temp/ ディレクトリを破棄する。
 
 import json
 import logging
 import shutil
+import os
 from pathlib import Path
 from datetime import datetime
+
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
     EventContext, InteractedElementContext,
     IntegratedEvent, WindowContext, Size, Coordinates,
-    InteractedUiElement, BoundingBox, ActionDetail
+    InteractedUiElement, BoundingBox, ActionDetail,
+    ContextComponent
 )
+from engines.yolo.detector import detect_ui_elements
+from engines.ocr.reader import read_text_from_image
 
 logger = logging.getLogger(__name__)
 
 def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
-    """記録された生データを統合し、仕様定義に基づくマクロワークフローを生成する"""
-    logger.info(f"[{workflow_id}] Starting log integration and workflow generation...")
+    """記録された生データを統合し、AI解析結果を含めたマクロワークフローを生成する"""
+    logger.info(f"[{workflow_id}] Starting log integration and AI workflow generation...")
     
     try:
         from core.recorder.screen_capturer import get_macros_root
@@ -32,7 +52,6 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
         with open(input_logs_path, 'r', encoding='utf-8') as f:
             raw_logs = json.load(f)
 
-        # OS Hook側で保存された Logs 配列を特定
         log_entries = []
         if isinstance(raw_logs, dict) and "Logs" in raw_logs:
             log_entries = raw_logs["Logs"]
@@ -46,16 +65,14 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
         integrated_events = []
         workflow_events = []
 
-        # 2. データのパースと仕様書モデル (Phase 2) への変換
+        # 2. データのパース、AI解析、および仕様書モデルへの変換
         for i, log_entry in enumerate(log_entries):
             if not isinstance(log_entry, dict):
                 continue
                 
-            # --- 共通属性の抽出 ---
             event_no = log_entry.get("EventNo", f"{i+1:03d}")
             event_id = f"evt_{event_no}" if not str(event_no).startswith("evt_") else str(event_no)
             
-            # タイムスタンプのパース (ISO 8601 -> Unix Epoch)
             ts_val = log_entry.get("TimeStamp", 0)
             try:
                 if isinstance(ts_val, str):
@@ -66,7 +83,6 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             except Exception:
                 safe_timestamp = 0
 
-            # --- ウィンドウ・座標情報の抽出 (null対策として `or {}` を使用) ---
             window_name = log_entry.get("WindowName") or "Unknown Window"
             win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
             win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
@@ -77,11 +93,9 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             cursor_x = cursor_coord_data.get("x", 0)
             cursor_y = cursor_coord_data.get("y", 0)
 
-            # ウィンドウ内相対座標の計算
             rel_x = cursor_x - win_x
             rel_y = cursor_y - win_y
 
-            # --- 操作内容の抽出 ---
             raw_type = str(log_entry.get("Type", ""))
             content_data = log_entry.get("Content") or {}
             
@@ -90,17 +104,48 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             
             if isinstance(content_data, dict):
                 button_val = content_data.get("button", "left")
-                # キー入力の場合はキーの文字を取得し、クリックの場合はbutton名をセット
                 input_val = content_data.get("key", "") or content_data.get("text", "") or f"{button_val}_click"
             else:
                 input_val = str(content_data)
 
-            # Workflow用アクション種別
             action_type = "click" if "click" in raw_type.lower() else "key_down" if "key" in raw_type.lower() else "unknown"
 
-            # -------------------------------------------------------------
-            # [A] integrated.json (仕様書 6.4 / 6.5) 向けモデルの構築
-            # -------------------------------------------------------------
+            # --- AIによる画像解析 (YOLO & OCR) ---
+            ui_type = "unknown"
+            semantic_role = input_val
+            context_components = []
+            
+            images_data = log_entry.get("Images", {})
+            crop_path = images_data.get("Crop")
+            
+            # クロップ画像が存在する場合はローカルAIエンジンに推論をリクエスト
+            if crop_path and os.path.exists(crop_path):
+                logger.info(f"[{workflow_id}] Running AI inference for {event_id}...")
+                
+                # YOLO: UI要素のタイプを特定
+                yolo_results = detect_ui_elements(crop_path)
+                if yolo_results:
+                    best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                    ui_type = best_yolo.type
+                
+                # OCR: 要素に書かれているテキストを抽出
+                ocr_results = read_text_from_image(crop_path)
+                if ocr_results:
+                    best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                    if best_ocr.content and action_type == "click":
+                        # クリック操作の場合のみ、見えているテキストを意味的役割として上書き
+                        semantic_role = best_ocr.content
+                        
+                    for ocr_res in ocr_results:
+                        context_components.append(ContextComponent(
+                            type="text",
+                            content=ocr_res.content,
+                            relativeBoundingBox=ocr_res.boundingBox,
+                            confidence=ocr_res.confidence,
+                            parentRelevance=1.0  # クロップ画像からの抽出のため関連度は最大とする
+                        ))
+
+            # --- [A] integrated.json 向けモデルの構築 ---
             action_detail = ActionDetail(
                 inputType=raw_type,
                 inputValue=input_val,
@@ -108,13 +153,12 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
                 diffRatio=0.0
             )
 
-            # YOLO/OCR統合前のため、UI要素として仮構築
             ui_element = InteractedUiElement(
-                type="unknown",
+                type=ui_type,
                 relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
-                confidence=0.0,
+                confidence=1.0,
                 action=action_detail,
-                context=[]
+                context=context_components
             )
 
             window_context = WindowContext(
@@ -130,9 +174,7 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
                 window=window_context
             ))
 
-            # -------------------------------------------------------------
-            # [B] workflow.json (仕様書 6.6 / 6.7) 向けモデルの構築
-            # -------------------------------------------------------------
+            # --- [B] workflow.json 向けモデルの構築 ---
             action = WorkflowAction(
                 type=action_type,
                 button=button_val,
@@ -142,8 +184,8 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             context = EventContext(
                 interacted_element=InteractedElementContext(
                     element_id=f"el_{event_id}",
-                    ui_type="unknown",
-                    semantic_role=input_val, # キー入力等の意味情報を保持
+                    ui_type=ui_type,
+                    semantic_role=semantic_role,
                     location_context="screen"
                 )
             )
@@ -166,15 +208,13 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
 
-        # integrated.json は IntegratedEvent の配列として保存
         with open(integrated_path, 'w', encoding='utf-8') as f:
             json.dump([evt.model_dump() for evt in integrated_events], f, indent=4, ensure_ascii=False)
 
-        # workflow.json の保存
         with open(workflow_path, 'w', encoding='utf-8') as f:
             f.write(workflow.model_dump_json(indent=4))
             
-        logger.info(f"[{workflow_id}] Successfully generated integrated.json and workflow.json ({len(workflow_events)} events).")
+        logger.info(f"[{workflow_id}] Successfully generated integrated.json and workflow.json with AI inference ({len(workflow_events)} events).")
 
         # 5. ストレージ節約のため temp/ を削除
         if temp_dir.exists() and temp_dir.is_dir():
