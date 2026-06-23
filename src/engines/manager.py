@@ -16,7 +16,6 @@ class LocalServerManager:
         self._processes: List[subprocess.Popen] = []
 
     def start_servers(self) -> None:
-        # ConfigManagerを通じて現在の設定を安全に取得
         config = ConfigManager.load_config()
 
         ai_mode = config.ai_mode
@@ -29,45 +28,40 @@ class LocalServerManager:
 
         env = os.environ.copy()
         
-        # 【修正ポイント】srcディレクトリをPYTHONPATHに追加して、サブプロセスがモジュールを見つけられるようにする
         src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
 
         python_executable = sys.executable
 
-        # ローカルLLMサーバーの起動
         if ai_mode == 'local' and llm_host in ['127.0.0.1', 'localhost']:
             try:
                 llm_cmd = [python_executable, '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
-                # cwd=src_path を指定して実行ディレクトリもsrcに合わせる
-                llm_proc = subprocess.Popen(llm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, cwd=src_path)
+                # ★ stdout と stderr を sys.stdout/stderr に変更し、AIサーバーのログをコンソールに流す
+                llm_proc = subprocess.Popen(llm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
                 self._processes.append(llm_proc)
                 logger.info(f"Local LLM server started on port {llm_port}")
             except Exception as e:
                 logger.error(f"Failed to start local LLM server: {e}")
 
-        # CVサーバー (YOLO/OCR) の起動
         if ai_mode == 'local' and cv_host in ['127.0.0.1', 'localhost']:
             try:
-                # 注: engines.yolo.server 内で OCR エンドポイントも提供している想定
                 cv_cmd = [python_executable, '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
-                cv_proc = subprocess.Popen(cv_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, cwd=src_path)
+                # ★ ここも変更し、YOLO/OCRの通信ログや推論ログを見えるようにする
+                cv_proc = subprocess.Popen(cv_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
                 self._processes.append(cv_proc)
                 logger.info(f"Local CV server started on port {cv_port}")
             except Exception as e:
                 logger.error(f"Failed to start local CV server: {e}")
 
-        # vLLMサーバーの起動 (Phase 3用)
         if ai_mode == 'local' and vllm_host in ['127.0.0.1', 'localhost']:
             try:
                 vllm_cmd = [python_executable, '-m', 'vllm.entrypoints.openai.api_server', '--port', vllm_port]
-                vllm_proc = subprocess.Popen(vllm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, cwd=src_path)
+                vllm_proc = subprocess.Popen(vllm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
                 self._processes.append(vllm_proc)
                 logger.info(f"Local vLLM server started on port {vllm_port}")
             except Exception as e:
                 logger.error(f"Failed to start local vLLM server: {e}")
 
-        # アプリケーション終了時にプロセス群を確実にクリーンアップ
         atexit.register(self.stop_servers)
 
     def stop_servers(self) -> None:
