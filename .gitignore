@@ -50,4 +50,4 @@ temp/
 
 best.pt
 
-.gguf
+*.gguf
