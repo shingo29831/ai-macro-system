@@ -1,4 +1,4 @@
-# @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
+# @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
 
 import json
 import logging
@@ -6,7 +6,7 @@ import shutil
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, Any, List, Tuple
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
@@ -17,6 +17,7 @@ from models.data_types import (
 )
 from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
+from engines.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +53,18 @@ def generate_macro_workflow(
             raise ValueError(f"Unsupported JSON structure: {type(raw_logs)}")
 
         integrated_events = []
-        workflow_events = []
+        temp_workflow_info: List[Dict[str, Any]] = []
         
         total_events = len(log_entries)
 
         for i, log_entry in enumerate(log_entries):
-            # ユーザーからのキャンセル要求をフックして即時中断
             if check_cancel_callback and check_cancel_callback():
                 logger.info(f"[{workflow_id}] Generation cancelled by user.")
                 raise InterruptedError("Generation cancelled by user")
 
             if progress_callback:
-                progress = int((i / total_events) * 100)
-                progress_callback(progress, f"AI解析中... ({i+1}/{total_events})")
+                progress = int((i / total_events) * 80)
+                progress_callback(progress, f"AI解析中(CV)... ({i+1}/{total_events})")
 
             if not isinstance(log_entry, dict):
                 continue
@@ -117,7 +117,7 @@ def generate_macro_workflow(
             crop_path = images_data.get("Crop")
             
             if crop_path and os.path.exists(crop_path):
-                logger.info(f"[{workflow_id}] Processing AI inference: {i+1}/{total_events} (Event: {event_id})...")
+                logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                 
                 yolo_results = detect_ui_elements(crop_path)
                 if yolo_results:
@@ -167,24 +167,69 @@ def generate_macro_workflow(
                 window=window_context
             ))
 
+            temp_workflow_info.append({
+                "event_id": event_id,
+                "timestamp": safe_timestamp,
+                "raw_action": action_type,
+                "button": button_val,
+                "ui_type": ui_type,
+                "semantic_role": semantic_role
+            })
+
+        # N+1問題を防止するため、LLMには全イベントの要約を一括で送信し意味解析を実行
+        if progress_callback:
+            progress_callback(85, "AI解析中(LLM)...")
+            
+        llm_client = LLMClient(host=config.llm_host, port=int(config.llm_port))
+        llm_enhanced_data = {}
+        
+        try:
+            summary_for_llm = [{"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} for info in temp_workflow_info]
+            llm_prompt = (
+                "Analyze the following UI interaction sequence. "
+                "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
+                "based on the context of the entire sequence.\n"
+                f"{json.dumps(summary_for_llm)}"
+            )
+            llm_response = llm_client.generate(prompt=llm_prompt)
+            
+            if llm_response and isinstance(llm_response, dict):
+                content = llm_response.get("text") or llm_response.get("response") or ""
+                # JSON部分の抽出（プレーンテキストに混ざっている場合を考慮）
+                json_start = content.find('[')
+                json_end = content.rfind(']') + 1
+                if json_start != -1 and json_end != -1:
+                    parsed_array = json.loads(content[json_start:json_end])
+                    for item in parsed_array:
+                        if "id" in item and "semantic_role" in item:
+                            llm_enhanced_data[item["id"]] = item["semantic_role"]
+        except Exception as e:
+            logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
+
+        # LLMの解析結果を結合して最終的なWorkflowEventを構築
+        workflow_events = []
+        for info in temp_workflow_info:
+            event_id = info["event_id"]
+            final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
+            
             action = WorkflowAction(
-                type=action_type,
-                button=button_val,
+                type=info["raw_action"],
+                button=info["button"],
                 modifiers=[]
             )
             
             context = EventContext(
                 interacted_element=InteractedElementContext(
                     element_id=f"el_{event_id}",
-                    ui_type=ui_type,
-                    semantic_role=semantic_role,
+                    ui_type=info["ui_type"],
+                    semantic_role=final_semantic_role,
                     location_context="screen"
                 )
             )
             
             workflow_events.append(WorkflowEvent(
                 event_id=event_id,
-                timestamp=safe_timestamp,
+                timestamp=info["timestamp"],
                 action=action,
                 context=context
             ))
