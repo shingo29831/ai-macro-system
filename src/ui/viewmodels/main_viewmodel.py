@@ -88,33 +88,59 @@ class MainViewModel(QObject):
     @Slot()
     def stop_recording(self):
         try:
+            print("--- [DEBUG] stop_recording が呼び出されました ---")
             logger.info("Stopping macro recording...")
             os_hook.stop_recording()
             
             workflow_id = None
-            if os_hook._recording_dirs and "macro_name" in os_hook._recording_dirs:
-                workflow_id = os_hook._recording_dirs["macro_name"]
             
+            # 安全にworkflow_idを取得する (os_hookの内部変数に依存しないフォールバック)
+            if hasattr(os_hook, "_recording_dirs") and isinstance(os_hook._recording_dirs, dict) and "macro_name" in os_hook._recording_dirs:
+                workflow_id = os_hook._recording_dirs["macro_name"]
+            else:
+                # フォールバック: macrosフォルダから最新のwf_ディレクトリを自動取得する
+                try:
+                    from core.recorder.screen_capturer import get_macros_root
+                    macros_root = get_macros_root()
+                    wf_dirs = sorted([d for d in macros_root.glob("wf_*") if d.is_dir()], key=lambda x: x.stat().st_mtime)
+                    if wf_dirs:
+                        workflow_id = wf_dirs[-1].name
+                        print(f"--- [DEBUG] 最新のディレクトリから workflow_id を取得しました: {workflow_id} ---")
+                except Exception as e:
+                    print(f"--- [DEBUG] workflow_idのフォールバック取得に失敗しました: {e} ---")
+
+            print(f"--- [DEBUG] 最終的な workflow_id = {workflow_id} ---")
+
             if workflow_id:
                 app_config = ConfigManager.load_config()
                 
                 def background_generation(cfg: AppConfig):
                     try:
+                        print(f"--- [DEBUG] {workflow_id} のマクロ生成スレッドを開始します ---")
                         logger.info(f"Kicking background macro generation workflow for ID: {workflow_id}")
+                        
+                        # Phase 5: 生成処理の実行
                         log_integrator.generate_macro_workflow(workflow_id, cfg)
+                        
                         logger.info(f"Background macro generation successfully completed for ID: {workflow_id}")
+                        print(f"--- [DEBUG] {workflow_id} のマクロ生成が完了しました！ ---")
                         self.load_macros()
                     except Exception as gen_err:
-                        logger.error(f"Unhandled exception during background macro generation for {workflow_id}: {gen_err}")
+                        err_msg = f"Unhandled exception during background macro generation for {workflow_id}: {gen_err}"
+                        logger.error(err_msg)
+                        print(f"--- [DEBUG ERROR] マクロ生成スレッド内でエラー発生: {err_msg} ---")
                 
                 gen_thread = threading.Thread(target=background_generation, args=(app_config,), daemon=True)
                 gen_thread.start()
             else:
-                logger.warning("Recording stopped, but target workflow_id could not be resolved from os_hook.")
+                msg = "Recording stopped, but target workflow_id could not be resolved from os_hook."
+                logger.warning(msg)
+                print(f"--- [DEBUG] {msg} ---")
                 self.load_macros()
                 
         except Exception as e:
             logger.error(f"Failed to stop recording cleanly: {e}")
+            print(f"--- [DEBUG ERROR] 記録停止処理中に致命的なエラーが発生しました: {e} ---")
             raise
 
     @Slot()
