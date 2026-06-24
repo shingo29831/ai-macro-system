@@ -6,6 +6,7 @@ import shutil
 import os
 from pathlib import Path
 from datetime import datetime
+from typing import Callable, Optional
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
@@ -19,7 +20,12 @@ from engines.ocr.reader import read_text_from_image
 
 logger = logging.getLogger(__name__)
 
-def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
+def generate_macro_workflow(
+    workflow_id: str, 
+    config: AppConfig, 
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+    check_cancel_callback: Optional[Callable[[], bool]] = None
+) -> None:
     logger.info(f"[{workflow_id}] Starting log integration and AI workflow generation...")
     
     try:
@@ -48,10 +54,18 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
         integrated_events = []
         workflow_events = []
         
-        # ★ 全体のイベント数を取得
         total_events = len(log_entries)
 
         for i, log_entry in enumerate(log_entries):
+            # ユーザーからのキャンセル要求をフックして即時中断
+            if check_cancel_callback and check_cancel_callback():
+                logger.info(f"[{workflow_id}] Generation cancelled by user.")
+                raise InterruptedError("Generation cancelled by user")
+
+            if progress_callback:
+                progress = int((i / total_events) * 100)
+                progress_callback(progress, f"AI解析中... ({i+1}/{total_events})")
+
             if not isinstance(log_entry, dict):
                 continue
                 
@@ -103,7 +117,6 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             crop_path = images_data.get("Crop")
             
             if crop_path and os.path.exists(crop_path):
-                # ★ ここでAI解析の進捗ログを出力！ ★
                 logger.info(f"[{workflow_id}] Processing AI inference: {i+1}/{total_events} (Event: {event_id})...")
                 
                 yolo_results = detect_ui_elements(crop_path)
@@ -182,6 +195,9 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
             events=workflow_events
         )
 
+        if progress_callback:
+            progress_callback(95, "ワークフローを保存中...")
+
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
 
@@ -196,6 +212,9 @@ def generate_macro_workflow(workflow_id: str, config: AppConfig) -> None:
         if temp_dir.exists() and temp_dir.is_dir():
             shutil.rmtree(temp_dir)
             logger.info(f"[{workflow_id}] Cleaned up temp directory.")
+
+        if progress_callback:
+            progress_callback(100, "完了")
 
     except Exception as e:
         logger.error(f"[{workflow_id}] Failed to generate macro workflow: {e}")

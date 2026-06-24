@@ -1,0 +1,47 @@
+/* @role: プログレスダイアログの視覚的なスタイリングを定義する。 */
+
+QDialog#ProgressDialog {
+    background-color: #f8fafc;
+    color: #334155;
+    font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+    font-size: 13px;
+}
+
+QLabel#lblStatus {
+    font-size: 13px;
+    font-weight: bold;
+    color: #475569;
+}
+
+QProgressBar {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background-color: #e2e8f0;
+    text-align: center;
+    color: #1e293b;
+    font-weight: bold;
+    height: 20px;
+}
+
+QProgressBar::chunk {
+    background-color: #3b82f6;
+    border-radius: 5px;
+}
+
+QPushButton#btnCancel {
+    background-color: #ffffff;
+    color: #64748b;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-weight: bold;
+}
+
+QPushButton#btnCancel:hover {
+    background-color: #f1f5f9;
+}
+
+QPushButton#btnCancel:disabled {
+    background-color: #e2e8f0;
+    color: #94a3b8;
+}

@@ -5,10 +5,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QAbstractItemView, QLabel, QHeaderView, QMessageBox
 )
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import QFile, Qt
+from PySide6.QtCore import QFile, Qt, Slot
 from ui.views.record_dialog import RecordDialog
 from ui.views.running_dialog import RunningDialog
 from ui.views.settings_dialog import SettingsDialog
+from ui.views.progress_dialog import ProgressDialog
 from ui.viewmodels.main_viewmodel import MainViewModel
 
 class MainWindow(QMainWindow):
@@ -28,6 +29,8 @@ class MainWindow(QMainWindow):
         self.btn_delete_selected = self.central_widget.findChild(QPushButton, "btnDeleteSelected")
         self.btn_settings = self.central_widget.findChild(QPushButton, "btnSettings")
         self.table_macros = self.central_widget.findChild(QTableWidget, "tableMacros")
+        
+        self.progress_dialog = None
         
         if self.btn_run_selected:
             self.btn_run_selected.setEnabled(False)
@@ -61,6 +64,7 @@ class MainWindow(QMainWindow):
         self.viewmodel.macros_updated.connect(self._render_table)
         self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
         self.viewmodel.execution_finished.connect(self._on_execution_finished)
+        self.viewmodel.generation_finished.connect(self._on_generation_finished)
 
     def _on_table_selection_changed(self):
         selected_items = self.table_macros.selectedItems()
@@ -147,12 +151,27 @@ class MainWindow(QMainWindow):
     def _on_recording_stopped(self):
         try:
             self.viewmodel.stop_recording()
+            # 記録終了後、メインウィンドウではなくプログレスダイアログを表示して進捗を見せる
+            self.progress_dialog = ProgressDialog(self.viewmodel, self)
+            self.progress_dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"記録の停止中にエラーが発生しました:\n{e}")
-        finally:
             self.show()
             self.raise_()
             self.activateWindow()
+
+    @Slot(bool, str)
+    def _on_generation_finished(self, success: bool, message: str):
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+            
+        if not success and message != "キャンセルされました":
+            QMessageBox.warning(self, "マクロ生成エラー", f"マクロの生成に失敗しました:\n{message}")
+            
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def open_running_dialog(self):
         try:
