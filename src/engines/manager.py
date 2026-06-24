@@ -5,6 +5,7 @@ import os
 import atexit
 import logging
 import sys
+import importlib.util
 from typing import List
 
 from utils.config_manager import ConfigManager
@@ -36,7 +37,7 @@ class LocalServerManager:
         if ai_mode == 'local' and llm_host in ['127.0.0.1', 'localhost']:
             try:
                 llm_cmd = [python_executable, '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
-                # ★ stdout と stderr を sys.stdout/stderr に変更し、AIサーバーのログをコンソールに流す
+                # stdout と stderr を sys.stdout/stderr に変更し、AIサーバーのログをコンソールに流す
                 llm_proc = subprocess.Popen(llm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
                 self._processes.append(llm_proc)
                 logger.info(f"Local LLM server started on port {llm_port}")
@@ -46,7 +47,6 @@ class LocalServerManager:
         if ai_mode == 'local' and cv_host in ['127.0.0.1', 'localhost']:
             try:
                 cv_cmd = [python_executable, '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
-                # ★ ここも変更し、YOLO/OCRの通信ログや推論ログを見えるようにする
                 cv_proc = subprocess.Popen(cv_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
                 self._processes.append(cv_proc)
                 logger.info(f"Local CV server started on port {cv_port}")
@@ -54,13 +54,17 @@ class LocalServerManager:
                 logger.error(f"Failed to start local CV server: {e}")
 
         if ai_mode == 'local' and vllm_host in ['127.0.0.1', 'localhost']:
-            try:
-                vllm_cmd = [python_executable, '-m', 'vllm.entrypoints.openai.api_server', '--port', vllm_port]
-                vllm_proc = subprocess.Popen(vllm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
-                self._processes.append(vllm_proc)
-                logger.info(f"Local vLLM server started on port {vllm_port}")
-            except Exception as e:
-                logger.error(f"Failed to start local vLLM server: {e}")
+            # vLLMはWindowsネイティブサポートが限定的なため、インストールされているか事前に確認する
+            if importlib.util.find_spec('vllm') is None:
+                logger.warning("vLLM module is not installed. Skipping local vLLM server startup.")
+            else:
+                try:
+                    vllm_cmd = [python_executable, '-m', 'vllm.entrypoints.openai.api_server', '--port', vllm_port]
+                    vllm_proc = subprocess.Popen(vllm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
+                    self._processes.append(vllm_proc)
+                    logger.info(f"Local vLLM server started on port {vllm_port}")
+                except Exception as e:
+                    logger.error(f"Failed to start local vLLM server: {e}")
 
         atexit.register(self.stop_servers)
 

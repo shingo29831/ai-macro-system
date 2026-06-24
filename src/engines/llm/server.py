@@ -4,6 +4,8 @@
 #   - engines/manager.py (サブプロセスとして uvicorn 経由で起動される)
 
 import threading
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -12,20 +14,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# --- グローバル変数 ---
 llm_instance = None
-llm_lock = threading.Lock() # 同時リクエスト時の競合防止
+llm_lock = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """サーバーの起動時と終了時のライフサイクルを管理する"""
     global llm_instance
     try:
-        # プロジェクトルートに配置されたGGUFモデルを読み込む
-        # ※ モデルファイル名は必要に応じて変更してください
-        model_path = "./gemma-4-E2B-it-Q4_K_M.gguf"
+        # To avoid current directory dependency, resolve the project root dynamically.
+        # Allow overriding via environment variable for flexibility.
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        default_model_path = project_root / "gemma-4-E2B-it-Q4_K_M.gguf"
+        model_path = os.getenv("LLM_MODEL_PATH", str(default_model_path))
         
         logger.info(f"Loading LLM model from {model_path} ...")
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found at: {model_path}")
+            
         llm_instance = Llama(
             model_path=model_path,
             n_ctx=2048,
@@ -35,19 +41,17 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to load LLM model: {e}")
         llm_instance = None
         
-    yield  # ここでサーバーがリクエストの待ち受けを開始します
+    yield
     
-    # サーバー終了時のメモリ解放処理
     if llm_instance:
         logger.info("Unloading LLM model and freeing memory...")
         del llm_instance
 
-# --- FastAPI アプリケーションの定義 ---
 app = FastAPI(lifespan=lifespan)
 
 class GenerateRequest(BaseModel):
     prompt: str
-    image: str | None = None  # Base64エンコードされた画像データ
+    image: str | None = None
 
 @app.post("/generate")
 async def generate_text(req: GenerateRequest):
@@ -59,7 +63,6 @@ async def generate_text(req: GenerateRequest):
         messages = []
         content = [{"type": "text", "text": req.prompt}]
         
-        # 画像が指定されている場合、マルチモーダル対応のフォーマットで追加
         if req.image:
             content.append({
                 "type": "image_url",
@@ -70,7 +73,6 @@ async def generate_text(req: GenerateRequest):
         
         messages.append({"role": "user", "content": content})
         
-        # 推論の実行（スレッドセーフに実行）
         with llm_lock:
             response = llm_instance.create_chat_completion(
                 messages=messages,
