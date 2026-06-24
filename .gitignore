@@ -49,3 +49,5 @@ temp/
 !macros/wf_template/
 
 best.pt
+
+.gguf
