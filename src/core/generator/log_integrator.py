@@ -189,12 +189,30 @@ def generate_macro_workflow(
                 "Analyze the following UI interaction sequence. "
                 "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
                 "based on the context of the entire sequence.\n"
-                f"{json.dumps(summary_for_llm)}"
+                f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
             )
+            
+            # --- 追加: LLMへ送信するプロンプトのログ ---
+            logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
+            
             llm_response = llm_client.generate(prompt=llm_prompt)
             
-            if llm_response and isinstance(llm_response, dict):
-                content = llm_response.get("text") or llm_response.get("response") or ""
+            # --- 追加: LLMからの生レスポンスのログ ---
+            logger.info(f"[{workflow_id}] Raw LLM Response:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+            
+            if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
+                resp_data = llm_response.get("response", {})
+                
+                # llama_cpp の chat_completion の構造からテキストコンテンツを抽出
+                content = ""
+                if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
+                    content = resp_data["choices"][0].get("message", {}).get("content", "")
+                elif isinstance(resp_data, str):
+                    content = resp_data
+                    
+                # --- 追加: 抽出したテキストのログ ---
+                logger.info(f"[{workflow_id}] Extracted LLM Content:\n{content}")
+                
                 # JSON部分の抽出（プレーンテキストに混ざっている場合を考慮）
                 json_start = content.find('[')
                 json_end = content.rfind(']') + 1
@@ -203,6 +221,8 @@ def generate_macro_workflow(
                     for item in parsed_array:
                         if "id" in item and "semantic_role" in item:
                             llm_enhanced_data[item["id"]] = item["semantic_role"]
+                else:
+                    logger.warning(f"[{workflow_id}] Could not find JSON array in LLM output.")
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
