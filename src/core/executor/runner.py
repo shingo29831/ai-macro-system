@@ -1,4 +1,4 @@
-# @role: 生成されたワークフローをローカルで自律実行し、即時ポーリングによる最速化を実現する。
+# @role: 生成されたワークフローをローカルで自律実行し、タイムスタンプの間隔に基づいた正確なウェイト制御を行う。
 
 import json
 import logging
@@ -15,7 +15,6 @@ _is_running = False
 _stop_requested = False
 
 def run_workflow(workflow_id: str, config: AppConfig):
-    """指定されたIDのマクロを読み込み、自律実行を開始する"""
     global _is_running, _stop_requested
     _is_running = True
     _stop_requested = False
@@ -41,8 +40,10 @@ def run_workflow(workflow_id: str, config: AppConfig):
         with open(workflow_path, 'r', encoding='utf-8') as f:
             workflow_data = json.load(f)
             
-        event_dict = {evt.get("id"): evt for evt in integrated_data if isinstance(evt, dict)}
+        event_dict = {evt.get("id"): evt for evt in integrated_data if isinstance(evt, dict) and evt.get("id")}
         events = workflow_data.get("events", [])
+        
+        prev_timestamp = None
         
         for i, event in enumerate(events):
             if _stop_requested:
@@ -52,10 +53,36 @@ def run_workflow(workflow_id: str, config: AppConfig):
             event_id = event.get("event_id")
             action = event.get("action", {})
             action_type = action.get("type", "unknown")
+            current_timestamp = event.get("timestamp", 0)
             
+            if prev_timestamp is not None:
+                # タイムスタンプがミリ秒単位(13桁)であることを考慮し、秒単位に正規化
+                diff = current_timestamp - prev_timestamp
+                time_difference_sec = diff / 1000.0 if current_timestamp > 1e11 else diff
+                
+                # 異常な長時間の待機を防ぐためのフェイルセーフ (最大60秒に制限)
+                time_difference_sec = min(time_difference_sec, 60.0)
+                
+                if time_difference_sec > 0:
+                    logger.info(f"[{workflow_id}] Waiting {time_difference_sec:.2f} seconds based on timestamp interval...")
+                    
+                    for _ in range(int(time_difference_sec)):
+                        if _stop_requested:
+                            break
+                        time.sleep(1.0)
+                    
+                    fractional_sleep = time_difference_sec - int(time_difference_sec)
+                    if fractional_sleep > 0 and not _stop_requested:
+                        time.sleep(fractional_sleep)
+
+            if _stop_requested:
+                logger.warning(f"[{workflow_id}] Execution aborted during sleep period.")
+                break
+                
             logger.info(f"[{workflow_id}] Executing {event_id}: {action_type}")
             
-            # --- マウスクリックの実行 ---
+            prev_timestamp = current_timestamp
+            
             if action_type == "click":
                 integrated_evt = event_dict.get(event_id)
                 if not integrated_evt:
@@ -77,7 +104,7 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 target_x = win_x + rel_x
                 target_y = win_y + rel_y
                 
-                time.sleep(0.5) # クリック前の待機（人間らしさ/画面遷移待ち）
+                time.sleep(0.5) 
                 
                 button_str = action.get("button", "left")
                 btn = Button.right if button_str == "right" else Button.left
@@ -86,15 +113,12 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 time.sleep(0.05)
                 mouse.click(btn, 1)
                 
-            # --- キーボード入力の実行 ---
             elif action_type == "key_down":
-                # workflow.json の semantic_role から入力キーを取得 ("k", "Key.enter" など)
                 key_str = event.get("context", {}).get("interacted_element", {}).get("semantic_role", "")
                 
                 if key_str:
-                    time.sleep(0.1) # タイピング間の自然なディレイ
+                    time.sleep(0.1) 
                     if str(key_str).startswith("Key."):
-                        # 特殊キーの処理 (例: "Key.enter" -> Key.enter)
                         key_name = key_str.split(".")[1]
                         try:
                             special_key = getattr(Key, key_name)
@@ -103,7 +127,6 @@ def run_workflow(workflow_id: str, config: AppConfig):
                         except AttributeError:
                             logger.warning(f"Unknown special key: {key_str}")
                     else:
-                        # 通常の文字入力
                         keyboard.type(key_str)
                 
         logger.info(f"[{workflow_id}] Workflow execution finished successfully.")
@@ -116,7 +139,6 @@ def run_workflow(workflow_id: str, config: AppConfig):
         _stop_requested = False
 
 def stop_workflow():
-    """実行中のマクロに対して緊急停止（キルスイッチ）シグナルを送る"""
     global _stop_requested
     _stop_requested = True
     logger.warning("Emergency stop signal activated by user.")

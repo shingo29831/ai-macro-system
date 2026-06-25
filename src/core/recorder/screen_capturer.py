@@ -1,4 +1,4 @@
-# @role: スクリーンショット取得・UI切り抜き・画像保存を担当する。
+# @role: スクリーンショット取得・UI切り抜き・画像保存・画面変動率(diffRatio)計算を担当する。
 #
 # 保存先:
 #   ../../../macros/wf_連番/temp
@@ -43,6 +43,7 @@ ENABLE_FALLBACK_TRIM = True
 _current_macro_dir: Path | None = None
 _temp_dir: Path | None = None
 _images_dir: Path | None = None
+_last_screenshot_gray: np.ndarray | None = None
 
 
 # =========================
@@ -54,12 +55,10 @@ def get_macros_root() -> Path:
 
 
 def make_directory() -> dict:
-    """
-    ../../../macros/wf_1, wf_2, wf_3... のように連番で一意フォルダを作成する。
-    """
     global _current_macro_dir
     global _temp_dir
     global _images_dir
+    global _last_screenshot_gray
 
     macros_root = get_macros_root()
     macros_root.mkdir(parents=True, exist_ok=True)
@@ -81,6 +80,7 @@ def make_directory() -> dict:
     _current_macro_dir = macro_dir
     _temp_dir = temp_dir
     _images_dir = images_dir
+    _last_screenshot_gray = None
 
     return {
         "macro_name": macro_dir.name,
@@ -103,6 +103,33 @@ def get_images_dir() -> Path:
 
 
 # =========================
+# 変動率計算
+# =========================
+
+def calculate_diff_ratio(current_img: Image.Image) -> float:
+    global _last_screenshot_gray
+
+    current_gray = cv2.cvtColor(np.array(current_img), cv2.COLOR_RGB2GRAY)
+
+    if _last_screenshot_gray is None:
+        _last_screenshot_gray = current_gray
+        return 0.0
+
+    if _last_screenshot_gray.shape != current_gray.shape:
+        _last_screenshot_gray = current_gray
+        return 1.0
+
+    diff = cv2.absdiff(_last_screenshot_gray, current_gray)
+    _, thresholded = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+
+    changed_pixels = np.count_nonzero(thresholded)
+    total_pixels = current_gray.size
+
+    _last_screenshot_gray = current_gray
+    return float(changed_pixels) / float(total_pixels)
+
+
+# =========================
 # 全画面スクリーンショット
 # =========================
 
@@ -120,12 +147,7 @@ def take_screenshot() -> tuple[Image.Image, dict]:
         return img, monitor
 
 
-def save_event_pre_image(event_no: str) -> str:
-    """
-    アクション直前、または録画終了タイミングの全画面画像を保存する。
-    例:
-      evt_001_pre.png
-    """
+def save_event_pre_image(event_no: str) -> dict:
     images_dir = get_images_dir()
 
     img, _ = take_screenshot()
@@ -133,19 +155,26 @@ def save_event_pre_image(event_no: str) -> str:
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
 
-    return str(path)
+    diff_ratio = calculate_diff_ratio(img)
+
+    return {
+        "path": str(path),
+        "diffRatio": diff_ratio
+    }
 
 
-def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
-    """
-    mouse down 時点など、すでに取得済みの画像を evt_XXX_pre.png として保存する。
-    """
+def save_pre_image_from_pil(event_no: str, img: Image.Image) -> dict:
     images_dir = get_images_dir()
 
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
 
-    return str(path)
+    diff_ratio = calculate_diff_ratio(img)
+
+    return {
+        "path": str(path),
+        "diffRatio": diff_ratio
+    }
 
 
 # =========================
@@ -439,11 +468,6 @@ def crop_fallback_around_click(pil_img: Image.Image, click_x: int, click_y: int)
 
 
 def save_ui_crop(event_no: str, click_x: int, click_y: int) -> dict:
-    """
-    クリック時のみUI切り抜き画像を保存する。
-    例:
-      evt_001_crop.png
-    """
     images_dir = get_images_dir()
 
     full_img, monitor = take_screenshot()
