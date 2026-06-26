@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
@@ -119,12 +120,18 @@ def generate_macro_workflow(
             if crop_path and os.path.exists(crop_path):
                 logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                 
-                yolo_results = detect_ui_elements(crop_path)
+                # YOLOとOCRの推論APIリクエストを並列化し、直列実行による遅延を防止
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_yolo = executor.submit(detect_ui_elements, crop_path)
+                    future_ocr = executor.submit(read_text_from_image, crop_path)
+                    
+                    yolo_results = future_yolo.result()
+                    ocr_results = future_ocr.result()
+
                 if yolo_results:
                     best_yolo = max(yolo_results, key=lambda x: x.confidence)
                     ui_type = best_yolo.type
                 
-                ocr_results = read_text_from_image(crop_path)
                 if ocr_results:
                     best_ocr = max(ocr_results, key=lambda x: x.confidence)
                     if best_ocr.content and action_type == "click":
