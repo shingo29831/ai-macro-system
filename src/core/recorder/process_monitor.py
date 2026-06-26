@@ -1,4 +1,4 @@
-# @role: Windowsのアクティブウィンドウ情報・カーソル地点ウィンドウ情報・ETW/psutilによるプロセス起動監視を担当する。
+# @role: Windowsのアクティブウィンドウ情報・カーソル地点ウィンドウ情報・UI要素矩形取得・ETW/psutilによるプロセス起動監視を担当する。
 
 from pathlib import Path
 from datetime import datetime
@@ -78,10 +78,6 @@ def is_admin() -> bool:
 
 
 def relaunch_as_admin():
-    """
-    ETWを使う場合、環境によっては管理者権限が必要。
-    GUIアプリから使う場合は勝手に再起動しない方がよいので、通常は False 推奨。
-    """
     if is_admin():
         return
 
@@ -137,9 +133,6 @@ def _empty_window_info(error: str) -> dict:
 
 
 def get_foreground_window_info() -> dict:
-    """
-    アクティブウィンドウの名前・サイズ・絶対座標を取得する。
-    """
     try:
         user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
@@ -215,10 +208,6 @@ def build_recording_window_fields(
     cursor_x: int | None = None,
     cursor_y: int | None = None
 ) -> dict:
-    """
-    ユーザー指定のログ項目に合わせたWindow情報へ変換する。
-    CursorCoordinates はアクティブウィンドウ左上からの相対座標。
-    """
     left = int(window_info.get("rect", {}).get("left", 0))
     top = int(window_info.get("rect", {}).get("top", 0))
 
@@ -241,15 +230,6 @@ def build_recording_window_fields(
             "y": top,
         },
         "CursorCoordinates": cursor_coordinates,
-        "WindowDebug": {
-            "hwnd": window_info.get("hwnd"),
-            "class_name": window_info.get("class_name"),
-            "process_id": window_info.get("process_id"),
-            "process_name": window_info.get("process_name"),
-            "exe_path": window_info.get("exe_path"),
-            "success": window_info.get("success"),
-            "error": window_info.get("error"),
-        },
     }
 
 
@@ -257,7 +237,6 @@ def get_window_title_at_point(x: int, y: int) -> dict:
     """
     カーソル地点にあるウィンドウ名を取得する。
     mouse_scroll 用。
-    アクティブウィンドウではなく、座標上のウィンドウを取得する。
     """
     try:
         user32 = ctypes.windll.user32
@@ -296,7 +275,6 @@ def get_window_title_at_point(x: int, y: int) -> dict:
         title = title_buffer.value or ""
         root_title = root_title_buffer.value or ""
 
-        # 子要素のtitleが空になりやすいため、root側を優先的に使う
         display_title = root_title or title
 
         return {
@@ -321,6 +299,67 @@ def get_window_title_at_point(x: int, y: int) -> dict:
             "root_class_name": "",
             "error": str(e),
         }
+
+
+def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
+    """
+    カーソル地点のUI要素矩形をUI Automationで取得する。
+    取れない場合は None。
+
+    注意:
+      pywinauto が必要。
+      pip install pywinauto
+    """
+    try:
+        from pywinauto import Desktop
+
+        desktop = Desktop(backend="uia")
+        element = desktop.from_point(int(x), int(y))
+
+        rect = element.rectangle()
+
+        left = int(rect.left)
+        top = int(rect.top)
+        right = int(rect.right)
+        bottom = int(rect.bottom)
+
+        width = right - left
+        height = bottom - top
+
+        if width <= 0 or height <= 0:
+            return None
+
+        # 画面全体に近すぎる巨大要素は「UIのみ切り抜き」として不適切なため除外
+        if width > 2000 or height > 1500:
+            return None
+
+        name = ""
+        control_type = ""
+
+        try:
+            name = element.window_text() or ""
+        except Exception:
+            pass
+
+        try:
+            control_type = getattr(element.element_info, "control_type", "") or ""
+        except Exception:
+            pass
+
+        return {
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "width": width,
+            "height": height,
+            "name": name,
+            "control_type": control_type,
+            "source": "uia",
+        }
+
+    except Exception:
+        return None
 
 
 # =========================
