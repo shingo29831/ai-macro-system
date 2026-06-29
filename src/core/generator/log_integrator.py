@@ -115,42 +115,53 @@ def generate_macro_workflow(
             context_components = []
             
             images_data = log_entry.get("Images", {})
-            crop_path = images_data.get("Crop")
+            crop_path_str = images_data.get("Crop")
             
-            if crop_path and os.path.exists(crop_path):
-                logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
-                
-                # YOLOとOCRの推論APIリクエストを並列化し、直列実行による遅延を防止
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    future_yolo = executor.submit(detect_ui_elements, crop_path)
-                    future_ocr = executor.submit(read_text_from_image, crop_path)
+            if crop_path_str:
+                full_crop_path = macros_root / crop_path_str
+                if full_crop_path.exists():
+                    logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
-                    yolo_results = future_yolo.result()
-                    ocr_results = future_ocr.result()
-
-                if yolo_results:
-                    best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                    ui_type = best_yolo.type
-                
-                if ocr_results:
-                    best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                    if best_ocr.content and action_type == "click":
-                        semantic_role = best_ocr.content
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
+                        future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
                         
-                    for ocr_res in ocr_results:
-                        context_components.append(ContextComponent(
-                            type="text",
-                            content=ocr_res.content,
-                            relativeBoundingBox=ocr_res.boundingBox,
-                            confidence=ocr_res.confidence,
-                            parentRelevance=1.0
-                        ))
+                        yolo_results = future_yolo.result()
+                        ocr_results = future_ocr.result()
+
+                    if yolo_results:
+                        best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                        ui_type = best_yolo.type
+                    
+                    if ocr_results:
+                        best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                        if best_ocr.content and action_type == "click":
+                            semantic_role = best_ocr.content
+                            
+                        for ocr_res in ocr_results:
+                            context_components.append(ContextComponent(
+                                type="text",
+                                content=ocr_res.content,
+                                relativeBoundingBox=ocr_res.boundingBox,
+                                confidence=ocr_res.confidence,
+                                parentRelevance=1.0
+                            ))
+
+            # 生ログにはXX.XX%の文字列で保存されているため、float(0.0~1.0)に変換
+            raw_diff = images_data.get("Diff", "0.0%")
+            try:
+                if isinstance(raw_diff, str) and raw_diff.endswith("%"):
+                    diff_val = float(raw_diff.replace("%", "")) / 100.0
+                else:
+                    diff_val = float(raw_diff)
+            except (ValueError, TypeError):
+                diff_val = 0.0
 
             action_detail = ActionDetail(
                 inputType=raw_type,
                 inputValue=input_val,
                 cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
-                diffRatio=0.0
+                diffRatio=diff_val
             )
 
             ui_element = InteractedUiElement(
@@ -183,7 +194,6 @@ def generate_macro_workflow(
                 "semantic_role": semantic_role
             })
 
-        # N+1問題を防止するため、LLMには全イベントの要約を一括で送信し意味解析を実行
         if progress_callback:
             progress_callback(85, "AI解析中(LLM)...")
             
@@ -199,28 +209,23 @@ def generate_macro_workflow(
                 f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
             )
             
-            # --- 追加: LLMへ送信するプロンプトのログ ---
             logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
             
             llm_response = llm_client.generate(prompt=llm_prompt)
             
-            # --- 追加: LLMからの生レスポンスのログ ---
             logger.info(f"[{workflow_id}] Raw LLM Response:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
             
             if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
                 resp_data = llm_response.get("response", {})
                 
-                # llama_cpp の chat_completion の構造からテキストコンテンツを抽出
                 content = ""
                 if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
                     content = resp_data["choices"][0].get("message", {}).get("content", "")
                 elif isinstance(resp_data, str):
                     content = resp_data
                     
-                # --- 追加: 抽出したテキストのログ ---
                 logger.info(f"[{workflow_id}] Extracted LLM Content:\n{content}")
                 
-                # JSON部分の抽出（プレーンテキストに混ざっている場合を考慮）
                 json_start = content.find('[')
                 json_end = content.rfind(']') + 1
                 if json_start != -1 and json_end != -1:
@@ -233,7 +238,6 @@ def generate_macro_workflow(
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
-        # LLMの解析結果を結合して最終的なWorkflowEventを構築
         workflow_events = []
         for info in temp_workflow_info:
             event_id = info["event_id"]
