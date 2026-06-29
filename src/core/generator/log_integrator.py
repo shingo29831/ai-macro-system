@@ -117,13 +117,11 @@ def generate_macro_workflow(
             images_data = log_entry.get("Images", {})
             crop_path_str = images_data.get("Crop")
             
-            # 修正: 相対パスをmacros_rootからの絶対パスに変換して存在チェックを行う
             if crop_path_str:
                 full_crop_path = macros_root / crop_path_str
                 if full_crop_path.exists():
                     logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
-                    # YOLOとOCRの推論APIリクエストを並列化し、直列実行による遅延を防止
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
                         future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
@@ -149,11 +147,21 @@ def generate_macro_workflow(
                                 parentRelevance=1.0
                             ))
 
+            # 生ログにはXX.XX%の文字列で保存されているため、float(0.0~1.0)に変換
+            raw_diff = images_data.get("Diff", "0.0%")
+            try:
+                if isinstance(raw_diff, str) and raw_diff.endswith("%"):
+                    diff_val = float(raw_diff.replace("%", "")) / 100.0
+                else:
+                    diff_val = float(raw_diff)
+            except (ValueError, TypeError):
+                diff_val = 0.0
+
             action_detail = ActionDetail(
                 inputType=raw_type,
                 inputValue=input_val,
                 cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
-                diffRatio=0.0
+                diffRatio=diff_val
             )
 
             ui_element = InteractedUiElement(
@@ -186,7 +194,6 @@ def generate_macro_workflow(
                 "semantic_role": semantic_role
             })
 
-        # N+1問題を防止するため、LLMには全イベントの要約を一括で送信し意味解析を実行
         if progress_callback:
             progress_callback(85, "AI解析中(LLM)...")
             
@@ -231,7 +238,6 @@ def generate_macro_workflow(
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
-        # LLMの解析結果を結合して最終的なWorkflowEventを構築
         workflow_events = []
         for info in temp_workflow_info:
             event_id = info["event_id"]
