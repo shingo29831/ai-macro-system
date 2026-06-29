@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
+import cv2
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
     EventContext, InteractedElementContext,
@@ -19,6 +20,7 @@ from models.data_types import (
 from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
 from engines.llm.client import LLMClient
+from engines.cv.ui_extractor import UIExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,7 @@ def generate_macro_workflow(
             ui_type = "unknown"
             semantic_role = input_val
             context_components = []
+            best_box = None
             
             images_data = log_entry.get("Images", {})
             crop_path_str = images_data.get("Crop")
@@ -122,16 +125,32 @@ def generate_macro_workflow(
                 if full_crop_path.exists():
                     logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
+                    def run_ui_extractor(img_path: str):
+                        img = cv2.imread(img_path)
+                        if img is None:
+                            return []
+                        extractor = UIExtractor()
+                        return extractor.extract_uis(img)
+
                     with ThreadPoolExecutor(max_workers=2) as executor:
-                        future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
+                        # YOLOは後で採用する可能性もあるためコード上においでおく（現在はコメントアウト）
+                        # future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
+                        future_cv = executor.submit(run_ui_extractor, str(full_crop_path))
                         future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
                         
-                        yolo_results = future_yolo.result()
+                        # yolo_results = future_yolo.result()
+                        cv_results = future_cv.result()
                         ocr_results = future_ocr.result()
 
-                    if yolo_results:
-                        best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                        ui_type = best_yolo.type
+                    # YOLOの代わりに輪郭抽出結果(CV)を使用してUIデータを格納
+                    if cv_results:
+                        # 抽出された輪郭のうち、最も面積が大きいものを対象UIとして採用する
+                        best_cv = max(cv_results, key=lambda x: x["box"]["width"] * x["box"]["height"])
+                        ui_type = best_cv["type"]
+                        best_box = best_cv["box"]
+                    # elif yolo_results:
+                    #     best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                    #     ui_type = best_yolo.type
                     
                     if ocr_results:
                         best_ocr = max(ocr_results, key=lambda x: x.confidence)
@@ -164,9 +183,19 @@ def generate_macro_workflow(
                 diffRatio=diff_val
             )
 
+            # CVで取得したバウンディングボックスがあれば上書きし、UIsにデータを格納する
+            bbox = BoundingBox(x=rel_x, y=rel_y, width=0, height=0)
+            if best_box:
+                bbox = BoundingBox(
+                    x=best_box["x"],
+                    y=best_box["y"],
+                    width=best_box["width"],
+                    height=best_box["height"]
+                )
+
             ui_element = InteractedUiElement(
                 type=ui_type,
-                relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
+                relativeBoundingBox=bbox,
                 confidence=1.0,
                 action=action_detail,
                 context=context_components
