@@ -107,7 +107,7 @@ WHEEL_DELTA = 120
 
 # ホバー検知（軌跡の角判定）用設定
 MIN_DISTANCE_FOR_VECTOR = 40  # 手ブレを排除するためのサンプリング距離（ピクセル）
-CORNER_ANGLE_THRESHOLD = 45   # 方向転換と見なす最小角度（度）
+CORNER_ANGLE_THRESHOLD = 20   # 方向転換と見なす最小角度（度）
 
 
 # =========================
