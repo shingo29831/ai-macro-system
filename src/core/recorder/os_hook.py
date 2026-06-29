@@ -63,39 +63,6 @@ MODIFIER_KEYS = {
     "windows",
 }
 
-COMBO_TRIGGER_KEYS = {
-    "tab",
-    "enter",
-    "space",
-    "esc",
-    "f1",
-    "f2",
-    "f3",
-    "f4",
-    "f5",
-    "f6",
-    "f7",
-    "f8",
-    "f9",
-    "f10",
-    "f11",
-    "f12",
-    "a",
-    "c",
-    "v",
-    "x",
-    "z",
-    "y",
-    "s",
-    "n",
-    "o",
-    "p",
-    "r",
-    "t",
-    "w",
-    "l",
-}
-
 # Windows低レベルマウスフック
 WH_MOUSE_LL = 14
 
@@ -107,7 +74,7 @@ WHEEL_DELTA = 120
 
 # ホバー検知（軌跡の角判定）用設定
 MIN_DISTANCE_FOR_VECTOR = 40  # 手ブレを排除するためのサンプリング距離（ピクセル）
-CORNER_ANGLE_THRESHOLD = 20   # 方向転換と見なす最小角度（度）
+CORNER_ANGLE_THRESHOLD = 45   # 方向転換と見なす最小角度（度）
 
 
 # =========================
@@ -331,7 +298,9 @@ def should_record_key_combo(
         for pressed_key in pressed_keys
     )
 
-    return has_modifier and current_key in COMBO_TRIGGER_KEYS
+    # To ensure all modifier combinations (e.g., Shift+Arrow, Ctrl+S) are recorded universally
+    # instead of restricting to a hardcoded trigger key list.
+    return has_modifier and current_key not in MODIFIER_KEYS
 
 
 def append_log(log: dict):
@@ -577,7 +546,6 @@ def process_key_event(event: dict):
 
 def process_hover_event(event: dict):
     try:
-        # UI（ドロップダウン等）の展開エフェクトが完了するまでのラグを微小待機する
         time.sleep(0.2)
 
         event_no = next_event_no()
@@ -601,7 +569,6 @@ def process_hover_event(event: dict):
         except:
             pass
 
-        # 差分がほとんどない場合は delete_ を付与 (0.1% 未満)
         is_meaningless = diff_val < 0.1
         
         from core.recorder.screen_capturer import get_macros_root
@@ -743,14 +710,12 @@ def on_move(x, y):
         last_x, last_y, _ = _mouse_path[-1]
         dist = math.hypot(x - last_x, y - last_y)
         
-        # 一定距離(MIN_DISTANCE_FOR_VECTOR)進むごとにサンプリング
         if dist >= MIN_DISTANCE_FOR_VECTOR:
             _mouse_path.append((x, y, current_time))
             
-            # 3点以上あれば、なす角を計算して「方向転換」を検出
             if len(_mouse_path) >= 3:
                 p1 = _mouse_path[-3]
-                p2 = _mouse_path[-2]  # 頂点候補
+                p2 = _mouse_path[-2]
                 p3 = _mouse_path[-1]
                 
                 v1 = (p2[0] - p1[0], p2[1] - p1[1])
@@ -765,7 +730,6 @@ def on_move(x, y):
                     cos_theta = max(-1.0, min(1.0, cos_theta))
                     angle = math.degrees(math.acos(cos_theta))
                     
-                    # 進行方向が閾値以上曲がったら「角」と見なす
                     if angle >= CORNER_ANGLE_THRESHOLD:
                         _mouse_event_queue.put({
                             "type": "hover",
@@ -773,7 +737,6 @@ def on_move(x, y):
                             "y": p2[1]
                         })
                 
-                # 連続する方向転換を判定できるように最古の1点だけ捨てる
                 _mouse_path.pop(0)
 
 
@@ -798,7 +761,6 @@ def _handle_mouse_event(evt: dict):
         process_hover_event(evt)
         return
 
-    # click logic
     global _latest_mouse_down_event
     global _pending_click_event
     global _pending_click_timer
@@ -1255,22 +1217,16 @@ def on_press(key):
 
     key_text = key_to_string(key)
 
-    if key == keyboard.Key.esc:
-        with _pressed_keys_lock:
-            has_modifier = any(
-                pressed_key in MODIFIER_KEYS
-                for pressed_key in _pressed_keys
-            )
-
-        if not has_modifier:
-            print("Esc が押されたため記録を停止します")
-            stop_recording()
-            return False
-
     try:
         with _pressed_keys_lock:
             _pressed_keys.add(key_text)
             current_keys = set(_pressed_keys)
+
+        has_ctrl = any(k in {"ctrl", "ctrl_l", "ctrl_r"} for k in current_keys)
+        if has_ctrl and key_text in {"\\", "¥", "yen", "_"}:
+            print("Ctrl + \\ が押されたため記録を停止します")
+            stop_recording()
+            return False
 
         capture_now = (key_text == "enter")
 
@@ -1290,6 +1246,7 @@ def on_press(key):
 
             return
 
+        # 修飾キー単体は保存しない
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"):
             return
 
@@ -1548,7 +1505,7 @@ def stop_recording():
 
 if __name__ == "__main__":
     print("記録を開始します")
-    print("終了するには Esc キーを押してください")
+    print("終了するには Ctrl + \\ を押してください")
 
     start_recording()
 
