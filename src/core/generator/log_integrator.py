@@ -88,18 +88,25 @@ def generate_macro_workflow(
             window_name = log_entry.get("WindowName") or "Unknown Window"
             win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
             win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
-            cursor_coord_data = log_entry.get("CursorCoordinates") or {"x": 0, "y": 0}
-
+            
             win_x = win_coord_data.get("x", 0)
             win_y = win_coord_data.get("y", 0)
-            cursor_x = cursor_coord_data.get("x", 0)
-            cursor_y = cursor_coord_data.get("y", 0)
-
-            rel_x = cursor_x - win_x
-            rel_y = cursor_y - win_y
 
             raw_type = str(log_entry.get("Type", ""))
             content_data = log_entry.get("Content") or {}
+            
+            # 【修正】座標の二重計算バグを防止するため、絶対座標である screen_coordinates を最優先で使用する
+            raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
+            if raw_screen_coords:
+                cursor_x = raw_screen_coords.get("x", 0)
+                cursor_y = raw_screen_coords.get("y", 0)
+            else:
+                cursor_coord_data = log_entry.get("CursorCoordinates") or {"x": 0, "y": 0}
+                cursor_x = cursor_coord_data.get("x", 0)
+                cursor_y = cursor_coord_data.get("y", 0)
+
+            rel_x = cursor_x - win_x
+            rel_y = cursor_y - win_y
             
             button_val = "left"
             input_val = "unknown"
@@ -224,7 +231,6 @@ def generate_macro_workflow(
 
             avg_diff = sum(item["diff_val"] for item in current_group) / len(current_group)
             
-            # 平均diffが30%未満の場合は連続する文字列入力（変数候補）とみなす
             if avg_diff < 0.3:
                 text = "".join([str(item["semantic_role"]) for item in current_group])
                 var_name = f"search_query_{len(variables) + 1}"
@@ -267,7 +273,6 @@ def generate_macro_workflow(
         llm_enhanced_data = {}
         
         try:
-            # クリック操作のみをLLMに推論させる（キー入力や変数をLLMのハルシネーションで上書きさせないため）
             summary_for_llm = [
                 {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
                 for info in temp_workflow_info
@@ -417,7 +422,6 @@ def generate_macro_workflow(
                 if not integ_evt:
                     continue
 
-                # 1. 待機コマンドの生成
                 current_timestamp = integ_evt.timestamp
                 if prev_timestamp is not None:
                     duration = (current_timestamp - prev_timestamp) / 1000.0
@@ -429,7 +433,6 @@ def generate_macro_workflow(
                         })
                 prev_timestamp = current_timestamp
                 
-                # 2. アクションコマンドの生成
                 cmd_type = step.action.command
                 params = step.action.parameters
 
@@ -437,6 +440,7 @@ def generate_macro_workflow(
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
+                        # 正しく計算された相対座標から絶対座標を復元
                         commands_data.append({
                             "method": "click",
                             "args": {
@@ -474,7 +478,7 @@ def generate_macro_workflow(
         except Exception as e:
              logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
 
-# 一時的にコメントアウト
+        # デバッグのため一時的にtempディレクトリの削除をコメントアウト
         # if temp_dir.exists() and temp_dir.is_dir():
         #     shutil.rmtree(temp_dir)
         #     logger.info(f"[{workflow_id}] Cleaned up temp directory.")
