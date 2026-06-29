@@ -90,11 +90,10 @@ def generate_macro_workflow(
 
             win_x = win_coord_data.get("x", 0)
             win_y = win_coord_data.get("y", 0)
-            cursor_x = cursor_coord_data.get("x", 0)
-            cursor_y = cursor_coord_data.get("y", 0)
-
-            rel_x = cursor_x - win_x
-            rel_y = cursor_y - win_y
+            
+            # CursorCoordinates already holds window-relative coordinates.
+            rel_x = cursor_coord_data.get("x", 0)
+            rel_y = cursor_coord_data.get("y", 0)
 
             raw_type = str(log_entry.get("Type", ""))
             content_data = log_entry.get("Content") or {}
@@ -120,7 +119,6 @@ def generate_macro_workflow(
             if crop_path and os.path.exists(crop_path):
                 logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                 
-                # YOLOとOCRの推論APIリクエストを並列化し、直列実行による遅延を防止
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     future_yolo = executor.submit(detect_ui_elements, crop_path)
                     future_ocr = executor.submit(read_text_from_image, crop_path)
@@ -183,7 +181,6 @@ def generate_macro_workflow(
                 "semantic_role": semantic_role
             })
 
-        # N+1問題を防止するため、LLMには全イベントの要約を一括で送信し意味解析を実行
         if progress_callback:
             progress_callback(85, "AI解析中(LLM)...")
             
@@ -199,28 +196,23 @@ def generate_macro_workflow(
                 f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
             )
             
-            # --- 追加: LLMへ送信するプロンプトのログ ---
             logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
             
             llm_response = llm_client.generate(prompt=llm_prompt)
             
-            # --- 追加: LLMからの生レスポンスのログ ---
             logger.info(f"[{workflow_id}] Raw LLM Response:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
             
             if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
                 resp_data = llm_response.get("response", {})
                 
-                # llama_cpp の chat_completion の構造からテキストコンテンツを抽出
                 content = ""
                 if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
                     content = resp_data["choices"][0].get("message", {}).get("content", "")
                 elif isinstance(resp_data, str):
                     content = resp_data
                     
-                # --- 追加: 抽出したテキストのログ ---
                 logger.info(f"[{workflow_id}] Extracted LLM Content:\n{content}")
                 
-                # JSON部分の抽出（プレーンテキストに混ざっている場合を考慮）
                 json_start = content.find('[')
                 json_end = content.rfind(']') + 1
                 if json_start != -1 and json_end != -1:
@@ -233,7 +225,6 @@ def generate_macro_workflow(
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
-        # LLMの解析結果を結合して最終的なWorkflowEventを構築
         workflow_events = []
         for info in temp_workflow_info:
             event_id = info["event_id"]
