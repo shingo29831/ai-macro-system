@@ -9,7 +9,6 @@ from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
-import cv2
 from models.data_types import (
     AppConfig, Workflow, WorkflowEvent, WorkflowAction, 
     EventContext, InteractedElementContext,
@@ -17,10 +16,12 @@ from models.data_types import (
     InteractedUiElement, BoundingBox, ActionDetail,
     ContextComponent
 )
+# AIにマクロ用JSONの構造（スキーマ）を提示し、型安全にパースするためインポート
+from models.executable_macro import ExecutableMacro
+
 from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
 from engines.llm.client import LLMClient
-from engines.cv.ui_extractor import UIExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,6 @@ def generate_macro_workflow(
             ui_type = "unknown"
             semantic_role = input_val
             context_components = []
-            best_box = None
             
             images_data = log_entry.get("Images", {})
             crop_path_str = images_data.get("Crop")
@@ -125,32 +125,16 @@ def generate_macro_workflow(
                 if full_crop_path.exists():
                     logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
-                    def run_ui_extractor(img_path: str):
-                        img = cv2.imread(img_path)
-                        if img is None:
-                            return []
-                        extractor = UIExtractor()
-                        return extractor.extract_uis(img)
-
                     with ThreadPoolExecutor(max_workers=2) as executor:
-                        # YOLOは後で採用する可能性もあるためコード上においでおく（現在はコメントアウト）
-                        # future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
-                        future_cv = executor.submit(run_ui_extractor, str(full_crop_path))
+                        future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
                         future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
                         
-                        # yolo_results = future_yolo.result()
-                        cv_results = future_cv.result()
+                        yolo_results = future_yolo.result()
                         ocr_results = future_ocr.result()
 
-                    # YOLOの代わりに輪郭抽出結果(CV)を使用してUIデータを格納
-                    if cv_results:
-                        # 抽出された輪郭のうち、最も面積が大きいものを対象UIとして採用する
-                        best_cv = max(cv_results, key=lambda x: x["box"]["width"] * x["box"]["height"])
-                        ui_type = best_cv["type"]
-                        best_box = best_cv["box"]
-                    # elif yolo_results:
-                    #     best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                    #     ui_type = best_yolo.type
+                    if yolo_results:
+                        best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                        ui_type = best_yolo.type
                     
                     if ocr_results:
                         best_ocr = max(ocr_results, key=lambda x: x.confidence)
@@ -166,7 +150,6 @@ def generate_macro_workflow(
                                 parentRelevance=1.0
                             ))
 
-            # 生ログにはXX.XX%の文字列で保存されているため、float(0.0~1.0)に変換
             raw_diff = images_data.get("Diff", "0.0%")
             try:
                 if isinstance(raw_diff, str) and raw_diff.endswith("%"):
@@ -183,19 +166,9 @@ def generate_macro_workflow(
                 diffRatio=diff_val
             )
 
-            # CVで取得したバウンディングボックスがあれば上書きし、UIsにデータを格納する
-            bbox = BoundingBox(x=rel_x, y=rel_y, width=0, height=0)
-            if best_box:
-                bbox = BoundingBox(
-                    x=best_box["x"],
-                    y=best_box["y"],
-                    width=best_box["width"],
-                    height=best_box["height"]
-                )
-
             ui_element = InteractedUiElement(
                 type=ui_type,
-                relativeBoundingBox=bbox,
+                relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
                 confidence=1.0,
                 action=action_detail,
                 context=context_components
@@ -301,7 +274,7 @@ def generate_macro_workflow(
         )
 
         if progress_callback:
-            progress_callback(95, "ワークフローを保存中...")
+            progress_callback(90, "ワークフローデータを保存中...")
 
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
@@ -313,6 +286,72 @@ def generate_macro_workflow(
             f.write(workflow.model_dump_json(indent=4))
             
         logger.info(f"[{workflow_id}] Successfully generated integrated.json and workflow.json with AI inference ({len(workflow_events)} events).")
+
+        if progress_callback:
+            progress_callback(95, "マクロ実行用コード(Executable Macro)を生成中...")
+
+        # 生成済みの情報から、実行に必要な座標と意図だけを抽出してLLMに渡し、Executable Macroを生成させる
+        try:
+            schema_str = json.dumps(ExecutableMacro.model_json_schema(), ensure_ascii=False)
+            
+            macro_prompt_data = {
+                "workflow": [
+                    {
+                        "event_id": e.event_id,
+                        "action_type": e.action.type,
+                        "button": e.action.button,
+                        "semantic_role": e.context.interacted_element.semantic_role
+                    } for e in workflow_events
+                ],
+                "integrated_data_coords": [
+                    {
+                        "event_id": e.id,
+                        "window_coords": e.window.coordinates.model_dump(),
+                        "relative_coords": e.window.UIs[0].action.cursorRelativeCoordinates.model_dump() if e.window.UIs and e.window.UIs[0].action and e.window.UIs[0].action.cursorRelativeCoordinates else None
+                    } for e in integrated_events
+                ]
+            }
+
+            executable_macro_prompt = (
+                "You are an AI that converts macro workflow data into an Executable Macro JSON.\n"
+                "Based on the following workflow intents and screen coordinates, generate a direct executable JSON.\n"
+                "You MUST adhere strictly to the following JSON schema:\n"
+                f"{schema_str}\n\n"
+                "Input Data:\n"
+                f"{json.dumps(macro_prompt_data, ensure_ascii=False)}\n\n"
+                "Calculate the absolute coordinates by adding window_coords(x,y) and relative_coords(x,y).\n"
+                "Output ONLY the raw valid JSON string, without any markdown formatting like ```json."
+            )
+
+            logger.info(f"[{workflow_id}] Sending Executable Macro prompt to LLM...")
+            exec_macro_response = llm_client.generate(prompt=executable_macro_prompt)
+
+            if exec_macro_response and isinstance(exec_macro_response, dict) and exec_macro_response.get("success"):
+                exec_resp_data = exec_macro_response.get("response", {})
+                exec_content = ""
+                if isinstance(exec_resp_data, dict) and "choices" in exec_resp_data and len(exec_resp_data["choices"]) > 0:
+                    exec_content = exec_resp_data["choices"][0].get("message", {}).get("content", "")
+                elif isinstance(exec_resp_data, str):
+                    exec_content = exec_resp_data
+
+                exec_json_start = exec_content.find('{')
+                exec_json_end = exec_content.rfind('}') + 1
+                if exec_json_start != -1 and exec_json_end != -1:
+                    exec_macro_json_str = exec_content[exec_json_start:exec_json_end]
+                    parsed_exec_macro = ExecutableMacro.model_validate_json(exec_macro_json_str)
+                    
+                    executable_macro_path = target_dir / "executable_macro.json"
+                    with open(executable_macro_path, 'w', encoding='utf-8') as f:
+                        f.write(parsed_exec_macro.model_dump_json(indent=4))
+                    logger.info(f"[{workflow_id}] Successfully generated executable_macro.json.")
+                else:
+                    logger.warning(f"[{workflow_id}] Could not find JSON object in LLM output for Executable Macro.")
+            else:
+                 logger.warning(f"[{workflow_id}] LLM failed to generate Executable Macro. Response: {exec_macro_response}")
+
+        except Exception as e:
+             logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
+
 
         if temp_dir.exists() and temp_dir.is_dir():
             shutil.rmtree(temp_dir)
