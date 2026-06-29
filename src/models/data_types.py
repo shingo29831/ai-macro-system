@@ -111,30 +111,47 @@ class IntegratedEvent(BaseModel):
 # 5.6. ワークフローデータ構造定義 (workflow.json)
 # ====================================================================
 
-class WorkflowAction(BaseModel):
-    type: str = Field(..., description="入力操作の種類（click, key_down, text_input など）")
-    button: Optional[str] = Field(None, description="使用されたマウスボタン（left, right など。キー入力時は省略可）")
-    modifiers: List[str] = Field(default_factory=list, description="同時に押下された修飾キー（ctrl, shift, alt など）の配列")
+class UniversalSelector(BaseModel):
+    semantic_role: Optional[str] = Field(None, description="要素の持つ意味的役割")
+    text_contains: Optional[str] = Field(None, description="含むべきテキスト")
+    image_template: Optional[str] = Field(None, description="画像テンプレートのパス")
+    absolute_coordinates: Optional[Coordinates] = Field(None, description="絶対座標")
 
-class InteractedElementContext(BaseModel):
-    element_id: str = Field(..., description="操作対象となったUI要素を特定する内部ID")
-    ui_type: str = Field(..., description="要素のオブジェクトタイプ（button, input, checkbox 等）")
-    semantic_role: str = Field(..., description="要素の持つ意味的役割（submit, cancel, search_box 等）")
-    location_context: str = Field(..., description="配置上の視覚的コンテキスト（bottom_right, top_nav 等）")
+class ActionParameters(BaseModel):
+    target: Optional[UniversalSelector] = None
+    destination: Optional[UniversalSelector] = None
+    button: Optional[str] = None
+    modifiers: List[str] = Field(default_factory=list)
+    key: Optional[str] = None
+    text: Optional[str] = None
+    condition: Optional[str] = None
+    timeout_ms: Optional[int] = None
 
-class EventContext(BaseModel):
-    interacted_element: InteractedElementContext
+class WorkflowCommandAction(BaseModel):
+    command: str = Field(..., description="システムのルートコマンド (例: MOUSE_CLICK, TYPE_TEXT)")
+    parameters: ActionParameters = Field(..., description="コマンドの実行に必要なペイロード")
 
-class WorkflowEvent(BaseModel):
-    event_id: str = Field(..., description="各操作イベントの一意なID。画像ファイル名との紐付けにも使用。")
-    timestamp: int = Field(..., description="イベントが検出または生成されたUnixタイムスタンプ")
-    action: WorkflowAction = Field(..., description="実行される具体的な操作内容")
-    context: EventContext = Field(..., description="操作対象要素のメタデータ情報")
+class WorkflowStepContext(BaseModel):
+    active_window_name: Optional[str] = Field(None, description="アクティブなウィンドウ名")
+
+class WorkflowStep(BaseModel):
+    step_id: int = Field(..., description="ステップの連番")
+    intent: str = Field(..., description="標準化されたアクション分類")
+    description: str = Field(..., description="自然言語の文章（英語）")
+    context: WorkflowStepContext = Field(..., description="前提条件")
+    action: WorkflowCommandAction = Field(..., description="実行内容")
+    fallback_raw_events: List[str] = Field(default_factory=list, description="根拠となった生イベントID")
+
+class WorkflowMetadata(BaseModel):
+    os: str = Field(default="Windows", description="実行OS")
+    resolution: Size = Field(..., description="画面解像度")
+    duration_ms: int = Field(default=0, description="所要時間")
 
 class Workflow(BaseModel):
-    workflow_ID: str = Field(..., description="ワークフロー（マクロ）を一意に識別するID")
-    target_ID: str = Field(..., description="操作対象となる主要なアプリケーションの識別子ID")
-    events: List[WorkflowEvent] = Field(default_factory=list, description="ワークフローを構成する一連の操作イベントの配列")
+    version: str = Field(default="2.0", description="スキーマバージョン")
+    workflow_ID: str = Field(..., description="ワークフローの識別子")
+    metadata: WorkflowMetadata = Field(..., description="実行環境メタデータ")
+    steps: List[WorkflowStep] = Field(default_factory=list, description="作業単位のステップ配列")
 
 
 # ====================================================================
