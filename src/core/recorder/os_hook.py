@@ -63,6 +63,39 @@ MODIFIER_KEYS = {
     "windows",
 }
 
+COMBO_TRIGGER_KEYS = {
+    "tab",
+    "enter",
+    "space",
+    "esc",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "a",
+    "c",
+    "v",
+    "x",
+    "z",
+    "y",
+    "s",
+    "n",
+    "o",
+    "p",
+    "r",
+    "t",
+    "w",
+    "l",
+}
+
 # Windows低レベルマウスフック
 WH_MOUSE_LL = 14
 
@@ -298,8 +331,6 @@ def should_record_key_combo(
         for pressed_key in pressed_keys
     )
 
-    # To ensure all modifier combinations (e.g., Shift+Arrow, Ctrl+S) are recorded universally
-    # instead of restricting to a hardcoded trigger key list.
     return has_modifier and current_key not in MODIFIER_KEYS
 
 
@@ -541,7 +572,7 @@ def process_key_event(event: dict):
 
 
 # =========================
-# ホバーイベントの処理
+# 軌跡変化（ホバー）イベントの処理
 # =========================
 
 def process_hover_event(event: dict):
@@ -638,10 +669,10 @@ def process_hover_event(event: dict):
 
         append_log(log)
 
-        print(f"ホバーログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
+        print(f"マウス軌跡の方向転換(角)を検知・ログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
 
     except Exception:
-        print("ホバー処理中にエラーが発生しました")
+        print("ホバー(方向転換)の処理中にエラーが発生しました")
         traceback.print_exc()
 
 
@@ -1223,7 +1254,10 @@ def on_press(key):
             current_keys = set(_pressed_keys)
 
         has_ctrl = any(k in {"ctrl", "ctrl_l", "ctrl_r"} for k in current_keys)
-        if has_ctrl and key_text in {"\\", "¥", "yen", "_"}:
+        vk = getattr(key, 'vk', None)
+        is_backslash = key_text in {"\\", "¥", "yen", "_", "\x1c"} or vk in {220, 226}
+        
+        if has_ctrl and is_backslash:
             print("Ctrl + \\ が押されたため記録を停止します")
             stop_recording()
             return False

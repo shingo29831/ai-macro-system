@@ -58,7 +58,10 @@ def run_workflow(workflow_id: str, config: AppConfig):
             _pressed_keys_for_stop.add(key_name)
 
             has_ctrl = any(k in {"ctrl", "ctrl_l", "ctrl_r"} for k in _pressed_keys_for_stop)
-            if has_ctrl and key_name in {"\\", "¥", "yen"}:
+            vk = getattr(key, 'vk', None)
+            is_backslash = key_name in {"\\", "¥", "yen", "\x1c"} or vk in {220, 226}
+            
+            if has_ctrl and is_backslash:
                 logger.warning("Emergency stop shortcut (Ctrl+\\) triggered.")
                 stop_workflow()
                 return False
