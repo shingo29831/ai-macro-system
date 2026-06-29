@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
             
         llm_instance = Llama(
             model_path=model_path,
-            n_ctx=2048,
+            n_ctx=8192,
         )
         logger.info("LLM model loaded successfully.")
     except Exception as e:
