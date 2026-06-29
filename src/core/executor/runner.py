@@ -35,12 +35,23 @@ def run_workflow(workflow_id: str, config: AppConfig):
         target_dir = macros_root / workflow_id
         
         executable_macro_path = target_dir / "executable_macro.json"
+        variables_path = target_dir / "variables.json"
         
         if not executable_macro_path.exists():
             raise FileNotFoundError(f"Missing executable_macro.json in {target_dir}")
             
         with open(executable_macro_path, 'r', encoding='utf-8') as f:
             macro_data = json.load(f)
+
+        # To resolve variables safely
+        variables = {}
+        if variables_path.exists():
+            try:
+                with open(variables_path, 'r', encoding='utf-8') as f:
+                    variables = json.load(f)
+                logger.info(f"[{workflow_id}] Loaded variables.json successfully.")
+            except Exception as e:
+                logger.warning(f"[{workflow_id}] Failed to load variables.json: {e}")
             
         commands = macro_data.get("commands", [])
         
@@ -81,18 +92,33 @@ def run_workflow(workflow_id: str, config: AppConfig):
             elif method == "type_text":
                 text = args.get("text", "")
                 if text:
+                    # To apply variables to the text
+                    for key, val in variables.items():
+                        placeholder = f"{{{{{key}}}}}"
+                        if placeholder in text:
+                            text = text.replace(placeholder, str(val))
                     keyboard.type(text)
                     
             elif method == "press_key":
                 key_str = args.get("key", "")
                 if key_str:
                     try:
-                        # "enter", "tab" 等の文字列を pynput の Key 列挙型にマッピング
-                        special_key = getattr(Key, key_str.lower())
-                        keyboard.press(special_key)
-                        keyboard.release(special_key)
-                    except AttributeError:
-                        logger.warning(f"Unknown special key: {key_str}")
+                        # Map special key strings (e.g., cmd, enter) to pynput Key enum
+                        key_name = key_str.lower()
+                        # pynputではWindowsキーは'cmd'として扱う
+                        if key_name in ["win", "windows"]:
+                            key_name = "cmd"
+                            
+                        if hasattr(Key, key_name):
+                            special_key = getattr(Key, key_name)
+                            keyboard.press(special_key)
+                            keyboard.release(special_key)
+                        else:
+                            # Fallback for normal character keys sent to press_key by mistake
+                            keyboard.press(key_str)
+                            keyboard.release(key_str)
+                    except Exception as e:
+                        logger.warning(f"Failed to press key {key_str}: {e}")
             else:
                 logger.warning(f"Unknown method: {method}")
                 

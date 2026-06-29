@@ -110,8 +110,6 @@ def generate_macro_workflow(
             else:
                 input_val = str(content_data)
 
-            # -------------------------------------------------------------
-            # 【修正】マウススクロールを明確に分離し、クリックの誤認識を防止
             raw_type_lower = raw_type.lower()
             is_scroll = "scroll" in raw_type_lower
             is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not is_scroll
@@ -125,7 +123,6 @@ def generate_macro_workflow(
                 action_type = "key_down"
             else:
                 action_type = "unknown"
-            # -------------------------------------------------------------
 
             ui_type = "unknown"
             semantic_role = input_val
@@ -208,9 +205,61 @@ def generate_macro_workflow(
                 "raw_action": action_type,
                 "button": button_val,
                 "ui_type": ui_type,
-                "semantic_role": semantic_role
+                "semantic_role": semantic_role,
+                "diff_val": diff_val
             })
 
+        # --- 変数抽出ロジック（連続する文字入力で全体的にDiffが低いものをグループ化） ---
+        variables = {}
+        processed_info = []
+        current_group = []
+
+        def flush_group():
+            if not current_group:
+                return
+            if len(current_group) == 1:
+                processed_info.append(current_group[0])
+                current_group.clear()
+                return
+
+            avg_diff = sum(item["diff_val"] for item in current_group) / len(current_group)
+            
+            # 平均diffが30%未満の場合は連続する文字列入力（変数候補）とみなす
+            if avg_diff < 0.3:
+                text = "".join([str(item["semantic_role"]) for item in current_group])
+                var_name = f"search_query_{len(variables) + 1}"
+                variables[var_name] = text
+                
+                rep = current_group[0].copy()
+                rep["semantic_role"] = f"{{{{{var_name}}}}}"
+                rep["raw_action"] = "type_text"
+                rep["fallback_events"] = [item["event_id"] for item in current_group]
+                processed_info.append(rep)
+            else:
+                processed_info.extend(current_group)
+            
+            current_group.clear()
+
+        for info in temp_workflow_info:
+            if info["raw_action"] == "key_down":
+                role_lower = str(info["semantic_role"]).lower() if info["semantic_role"] else ""
+                is_special = False
+                if role_lower.startswith("key.") or role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
+                    is_special = True
+                
+                if not is_special:
+                    current_group.append(info)
+                else:
+                    flush_group()
+                    processed_info.append(info)
+            else:
+                flush_group()
+                processed_info.append(info)
+                
+        flush_group()
+        temp_workflow_info = processed_info
+
+        # --- LLM推論フェーズ ---
         if progress_callback:
             progress_callback(85, "AI解析中(LLM)...")
             
@@ -218,34 +267,41 @@ def generate_macro_workflow(
         llm_enhanced_data = {}
         
         try:
-            summary_for_llm = [{"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} for info in temp_workflow_info]
-            llm_prompt = (
-                "Analyze the following UI interaction sequence. "
-                "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
-                "based on the context of the entire sequence.\n"
-                f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
-            )
+            # クリック操作のみをLLMに推論させる（キー入力や変数をLLMのハルシネーションで上書きさせないため）
+            summary_for_llm = [
+                {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
+                for info in temp_workflow_info
+                if info["raw_action"] == "click"
+            ]
             
-            logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
-            
-            llm_response = llm_client.generate(prompt=llm_prompt)
-            
-            if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
-                resp_data = llm_response.get("response", {})
+            if summary_for_llm:
+                llm_prompt = (
+                    "Analyze the following UI interaction sequence. "
+                    "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
+                    "based on the context of the entire sequence.\n"
+                    f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
+                )
                 
-                content = ""
-                if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
-                    content = resp_data["choices"][0].get("message", {}).get("content", "")
-                elif isinstance(resp_data, str):
-                    content = resp_data
+                logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
+                
+                llm_response = llm_client.generate(prompt=llm_prompt)
+                
+                if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
+                    resp_data = llm_response.get("response", {})
                     
-                json_start = content.find('[')
-                json_end = content.rfind(']') + 1
-                if json_start != -1 and json_end != -1:
-                    parsed_array = json.loads(content[json_start:json_end])
-                    for item in parsed_array:
-                        if "id" in item and "semantic_role" in item:
-                            llm_enhanced_data[item["id"]] = item["semantic_role"]
+                    content = ""
+                    if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
+                        content = resp_data["choices"][0].get("message", {}).get("content", "")
+                    elif isinstance(resp_data, str):
+                        content = resp_data
+                        
+                    json_start = content.find('[')
+                    json_end = content.rfind(']') + 1
+                    if json_start != -1 and json_end != -1:
+                        parsed_array = json.loads(content[json_start:json_end])
+                        for item in parsed_array:
+                            if "id" in item and "semantic_role" in item:
+                                llm_enhanced_data[item["id"]] = item["semantic_role"]
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
@@ -261,16 +317,13 @@ def generate_macro_workflow(
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
             
-            # -------------------------------------------------------------
-            # 【修正】スクロールや記録終了イベントなどのノイズを完全に除外
             if raw_action in ["unknown", "scroll"] or "recording" in raw_type:
                 continue
-            # -------------------------------------------------------------
 
             event_id = info["event_id"]
+            fallback_evts = info.get("fallback_events", [event_id])
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
-            # コマンドの決定とパラメータの構築
             if raw_action == "click":
                 cmd = "MOUSE_CLICK"
                 intent = "CLICK_UI_ELEMENT"
@@ -279,18 +332,20 @@ def generate_macro_workflow(
                     target=UniversalSelector(semantic_role=final_semantic_role),
                     button=info["button"]
                 )
+            elif raw_action == "type_text":
+                cmd = "TYPE_TEXT"
+                intent = "INPUT_TEXT"
+                desc = f"Type the text: '{final_semantic_role}'"
+                params = ActionParameters(text=final_semantic_role)
             else:
-                # -------------------------------------------------------------
-                # 【修正】Windowsキー(cmd/win)や方向キーなどの特殊キー対応を強化
                 role_lower = final_semantic_role.lower() if final_semantic_role else ""
                 is_special_key = False
                 parsed_key = role_lower
                 
-                # "Key.enter" のような形式に対応
                 if role_lower.startswith("key."):
                     is_special_key = True
                     parsed_key = role_lower.replace("key.", "")
-                elif role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "up", "down", "left", "right"]:
+                elif role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
                     is_special_key = True
 
                 if is_special_key:
@@ -303,7 +358,6 @@ def generate_macro_workflow(
                     intent = "INPUT_TEXT"
                     desc = f"Type the text: '{final_semantic_role}'"
                     params = ActionParameters(text=final_semantic_role)
-                # -------------------------------------------------------------
 
             step_context = WorkflowStepContext(
                 active_window_name=next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
@@ -315,7 +369,7 @@ def generate_macro_workflow(
                 description=desc,
                 context=step_context,
                 action=WorkflowCommandAction(command=cmd, parameters=params),
-                fallback_raw_events=[event_id]
+                fallback_raw_events=fallback_evts
             ))
             step_idx += 1
 
@@ -335,6 +389,7 @@ def generate_macro_workflow(
 
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
+        variables_path = target_dir / "variables.json"
 
         with open(integrated_path, 'w', encoding='utf-8') as f:
             json.dump([evt.model_dump() for evt in integrated_events], f, indent=4, ensure_ascii=False)
@@ -342,7 +397,10 @@ def generate_macro_workflow(
         with open(workflow_path, 'w', encoding='utf-8') as f:
             f.write(workflow.model_dump_json(indent=4))
             
-        logger.info(f"[{workflow_id}] Successfully generated integrated.json and workflow.json v2.0 ({len(workflow_steps)} steps).")
+        with open(variables_path, 'w', encoding='utf-8') as f:
+            json.dump(variables, f, indent=4, ensure_ascii=False)
+
+        logger.info(f"[{workflow_id}] Successfully generated integrated, workflow v2.0, and variables.json ({len(workflow_steps)} steps).")
 
         if progress_callback:
             progress_callback(95, "マクロ実行用コード(Executable Macro)を生成中...")

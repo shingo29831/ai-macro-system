@@ -1089,8 +1089,8 @@ def on_press(key):
 
             return
 
-        # 修飾キー単体は保存しない
-        if key_text in MODIFIER_KEYS:
+        # 修飾キー単体は保存しない（ただし、Windowsキーは検索窓等を開くため保存する）
+        if key_text in MODIFIER_KEYS and not key_text.startswith("win"):
             return
 
         enqueue_key_event(
