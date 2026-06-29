@@ -26,7 +26,7 @@
    <item>
     <widget class="QLabel" name="lblInstructions">
      <property name="text">
-      <string>記録終了ショートカット: [ Ctrl + \ ]</string>
+      <string>記録終了ショートカット: [ Ctrl + バックスラッシュ ]</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>

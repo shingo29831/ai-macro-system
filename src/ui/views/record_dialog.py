@@ -33,6 +33,19 @@ class RecordDialog:
         # 停止ボタン押下でコールバック発火後にウィジェットを閉じる
         if self.btn_stop:
             self.btn_stop.clicked.connect(self._on_stop_clicked)
+            
+        self._replace_shortcut_text()
+
+    def _replace_shortcut_text(self):
+        """UIに表示されているキーボードショートカットの文字を動的に上書きする"""
+        # PySide6の仕様に合わせ、QLabelとQPushButtonを個別に取得して結合する
+        widgets = self.dialog.findChildren(QLabel) + self.dialog.findChildren(QPushButton)
+        for widget in widgets:
+            text = widget.text()
+            if text:
+                new_text = text.replace("￥", "Ctrl + \\").replace("¥", "Ctrl + \\").replace("Esc", "Ctrl + \\")
+                if new_text != text:
+                    widget.setText(new_text)
 
     def _on_stop_clicked(self):
         if self.on_stop_callback:
