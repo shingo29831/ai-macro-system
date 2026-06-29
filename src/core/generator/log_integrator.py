@@ -1,4 +1,4 @@
-# @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、階層構造を持つ統合ログと実行可能なワークフローを生成する。
+# @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
 
 import json
 import logging
@@ -21,77 +21,6 @@ from engines.ocr.reader import read_text_from_image
 from engines.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
-
-def _calculate_overlap_ratio(child: BoundingBox, parent: BoundingBox) -> float:
-    # 矩形の交差領域の座標を算出
-    x_left = max(child.x, parent.x)
-    y_top = max(child.y, parent.y)
-    x_right = min(child.x + child.width, parent.x + parent.width)
-    y_bottom = min(child.y + child.height, parent.y + parent.height)
-
-    # 交差していない場合は0.0を返す
-    if x_right < x_left or y_bottom < y_top:
-        return 0.0
-
-    intersection_area = (x_right - x_left) * (y_bottom - y_top)
-    child_area = child.width * child.height
-
-    if child_area == 0:
-        return 0.0
-
-    # 子要素の面積に対して、親要素と重なっている部分の割合(IoA)を返す
-    return intersection_area / child_area
-
-def _is_contained(child: BoundingBox, parent: BoundingBox, threshold: float = 0.7) -> bool:
-    # AIの推論誤差(数ピクセルのはみ出し)を許容するため、面積の一定割合が重なっていれば包含とみなす
-    return _calculate_overlap_ratio(child, parent) >= threshold
-
-def _build_ui_tree(yolo_results: List[Any], ocr_results: List[Any], target_action: Optional[ActionDetail]) -> List[InteractedUiElement]:
-    elements = []
-    
-    for yolo_res in yolo_results:
-        contained_texts = []
-        for ocr_res in ocr_results:
-            # テキストの領域がYOLO要素に70%以上重なっていればコンテキストとして追加
-            if _is_contained(ocr_res.boundingBox, yolo_res.boundingBox, threshold=0.7):
-                contained_texts.append(ContextComponent(
-                    type="text",
-                    content=ocr_res.content,
-                    relativeBoundingBox=ocr_res.boundingBox,
-                    confidence=ocr_res.confidence,
-                    parentRelevance=1.0
-                ))
-        
-        elements.append(InteractedUiElement(
-            type=yolo_res.type,
-            relativeBoundingBox=yolo_res.boundingBox,
-            confidence=yolo_res.confidence,
-            action=None,
-            context=contained_texts,
-            children=[]
-        ))
-    
-    # 面積が大きい順にソート（大きい要素が親になるようにする）
-    elements.sort(key=lambda e: e.relativeBoundingBox.width * e.relativeBoundingBox.height, reverse=True)
-    
-    root_elements = []
-    for elem in elements:
-        placed = False
-        # 大きい要素から順に、自身を包含できる親を探す
-        for potential_parent in elements:
-            if elem != potential_parent and _is_contained(elem.relativeBoundingBox, potential_parent.relativeBoundingBox, threshold=0.8):
-                potential_parent.children.append(elem)
-                placed = True
-                break
-        
-        if not placed:
-            root_elements.append(elem)
-
-    # 実際の操作対象にアクションを紐付ける（プロトタイプとしてルートの最初の要素に設定）
-    if root_elements and target_action:
-        root_elements[0].action = target_action
-
-    return root_elements
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -181,41 +110,36 @@ def generate_macro_workflow(
 
             action_type = "click" if "click" in raw_type.lower() else "key_down" if "key" in raw_type.lower() else "unknown"
 
-            action_detail = ActionDetail(
-                inputType=raw_type,
-                inputValue=input_val,
-                cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
-                diffRatio=0.0
-            )
-
             ui_type = "unknown"
             semantic_role = input_val
-            ui_elements_tree = []
+            context_components = []
             
             images_data = log_entry.get("Images", {})
-            crop_path = images_data.get("Crop")
+            crop_path_str = images_data.get("Crop")
             
-            if crop_path and os.path.exists(crop_path):
-                logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
-                
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    future_yolo = executor.submit(detect_ui_elements, crop_path)
-                    future_ocr = executor.submit(read_text_from_image, crop_path)
+            # 修正: 相対パスをmacros_rootからの絶対パスに変換して存在チェックを行う
+            if crop_path_str:
+                full_crop_path = macros_root / crop_path_str
+                if full_crop_path.exists():
+                    logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
-                    yolo_results = future_yolo.result()
-                    ocr_results = future_ocr.result()
+                    # YOLOとOCRの推論APIリクエストを並列化し、直列実行による遅延を防止
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
+                        future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
+                        
+                        yolo_results = future_yolo.result()
+                        ocr_results = future_ocr.result()
 
-                if yolo_results:
-                    ui_elements_tree = _build_ui_tree(yolo_results, ocr_results, action_detail)
-                    best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                    ui_type = best_yolo.type
-                else:
-                    context_components = []
+                    if yolo_results:
+                        best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                        ui_type = best_yolo.type
+                    
                     if ocr_results:
                         best_ocr = max(ocr_results, key=lambda x: x.confidence)
                         if best_ocr.content and action_type == "click":
                             semantic_role = best_ocr.content
-                        
+                            
                         for ocr_res in ocr_results:
                             context_components.append(ContextComponent(
                                 type="text",
@@ -224,21 +148,27 @@ def generate_macro_workflow(
                                 confidence=ocr_res.confidence,
                                 parentRelevance=1.0
                             ))
-                            
-                    ui_elements_tree = [InteractedUiElement(
-                        type="unknown",
-                        relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
-                        confidence=1.0,
-                        action=action_detail,
-                        context=context_components,
-                        children=[]
-                    )]
+
+            action_detail = ActionDetail(
+                inputType=raw_type,
+                inputValue=input_val,
+                cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
+                diffRatio=0.0
+            )
+
+            ui_element = InteractedUiElement(
+                type=ui_type,
+                relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
+                confidence=1.0,
+                action=action_detail,
+                context=context_components
+            )
 
             window_context = WindowContext(
                 name=window_name,
                 size=Size(width=win_size_data.get("width", 0), height=win_size_data.get("height", 0)),
                 coordinates=Coordinates(x=win_x, y=win_y),
-                UIs=ui_elements_tree
+                UIs=[ui_element]
             )
 
             integrated_events.append(IntegratedEvent(
@@ -256,6 +186,7 @@ def generate_macro_workflow(
                 "semantic_role": semantic_role
             })
 
+        # N+1問題を防止するため、LLMには全イベントの要約を一括で送信し意味解析を実行
         if progress_callback:
             progress_callback(85, "AI解析中(LLM)...")
             
@@ -272,7 +203,9 @@ def generate_macro_workflow(
             )
             
             logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
+            
             llm_response = llm_client.generate(prompt=llm_prompt)
+            
             logger.info(f"[{workflow_id}] Raw LLM Response:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
             
             if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
@@ -298,6 +231,7 @@ def generate_macro_workflow(
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
 
+        # LLMの解析結果を結合して最終的なWorkflowEventを構築
         workflow_events = []
         for info in temp_workflow_info:
             event_id = info["event_id"]
