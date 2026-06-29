@@ -2,8 +2,7 @@
 #
 # 特徴:
 # - クリックはmouse down時にPre画像を取得し、その場でPNG保存する。
-# - 高速キー入力はキューへ積み、キー入力漏れを減らす。
-# - Enterは押下時点でスクリーンショット取得・PNG保存を行う。
+# - 高速キー入力やマウスクリックはキューへ積み、OSによるフックの強制切断（タイムアウト）を防ぐ。
 # - 物理ホイール・横ホイール・多くのタッチパッドスクロールを
 #   Windows低レベルフックで取得する。
 # - 画像パスは wf_○○/images/... の形式でJSONへ保存する。
@@ -20,6 +19,7 @@ import queue
 import sys
 import threading
 import traceback
+import time
 
 from pynput import keyboard, mouse
 
@@ -123,9 +123,6 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-# 重要:
-# SetWindowsHookExWのargtypesと、コールバック作成で使う型を
-# 同じLowLevelMouseProcに統一する。
 LowLevelMouseProc = ctypes.WINFUNCTYPE(
     LRESULT,
     ctypes.c_int,
@@ -227,7 +224,11 @@ _key_event_queue: queue.Queue = queue.Queue()
 _key_worker_thread: threading.Thread | None = None
 _key_worker_stop_event = threading.Event()
 
-# Windows低レベルスクロールフック
+# マウス入力専用キュー
+_mouse_event_queue: queue.Queue = queue.Queue()
+_mouse_worker_thread: threading.Thread | None = None
+_mouse_worker_stop_event = threading.Event()
+
 _native_scroll_hook_thread: threading.Thread | None = None
 _native_scroll_hook_thread_id: int | None = None
 _native_scroll_hook_handle = None
@@ -428,15 +429,10 @@ def build_scroll_log(
 
 
 # =========================
-# キー入力キュー
+# キー入力キュー処理
 # =========================
 
 def key_event_worker():
-    """
-    高速キー入力をキューから順番に処理する。
-    on_press側では通常キーのスクリーンショットを撮らないため、
-    キー入力漏れを減らせる。
-    """
     while (
         not _key_worker_stop_event.is_set()
         or not _key_event_queue.empty()
@@ -492,25 +488,8 @@ def enqueue_key_event(
     keys: list[str] | None = None,
     capture_now: bool = False,
 ):
-    """
-    高速入力でもキーそのものを先にキューへ保存する。
-
-    capture_now=Trueの場合:
-      Enterなどで、押下時点の画像取得・PNG保存まで行う。
-    """
     event_no = next_event_no()
     dt = now_datetime()
-
-    pre_img = None
-    pre_ref = None
-
-    if capture_now:
-        pre_img, _ = screen_capture.take_screenshot()
-
-        pre_ref = screen_capture.save_pre_image_from_pil(
-            event_no=event_no,
-            img=pre_img
-        )
 
     window_info = process_monitor.get_foreground_window_info()
 
@@ -521,16 +500,12 @@ def enqueue_key_event(
         "key": key_text,
         "keys": keys or [],
         "window_info": window_info,
-        "pre_img": pre_img,
-        "pre_ref": pre_ref,
+        "pre_img": None,
+        "pre_ref": None,
     })
 
 
 def process_key_event(event: dict):
-    """
-    キー入力ログをJSONに追加する。
-    Enter以外はワーカー側でスクリーンショットを取得する。
-    """
     event_no = event["event_no"]
     dt = event["datetime"]
     input_type = event["input_type"]
@@ -582,8 +557,172 @@ def process_key_event(event: dict):
 
 
 # =========================
-# クリック処理
+# マウス入力キュー処理 (OSフックタイムアウト回避)
 # =========================
+
+def mouse_event_worker():
+    while (
+        not _mouse_worker_stop_event.is_set()
+        or not _mouse_event_queue.empty()
+    ):
+        try:
+            event = _mouse_event_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+
+        try:
+            _handle_mouse_event(event)
+
+        except Exception:
+            print("マウス入力キュー処理中にエラーが発生しました")
+            traceback.print_exc()
+
+        finally:
+            _mouse_event_queue.task_done()
+
+def start_mouse_event_worker():
+    global _mouse_worker_thread
+
+    _mouse_worker_stop_event.clear()
+
+    _mouse_worker_thread = threading.Thread(
+        target=mouse_event_worker,
+        daemon=True
+    )
+
+    _mouse_worker_thread.start()
+
+def stop_mouse_event_worker():
+    global _mouse_worker_thread
+
+    _mouse_worker_stop_event.set()
+
+    try:
+        _mouse_event_queue.join()
+    except Exception:
+        pass
+
+    if _mouse_worker_thread is not None:
+        _mouse_worker_thread.join(timeout=10)
+
+    _mouse_worker_thread = None
+
+
+def on_click(x, y, button, pressed):
+    """
+    フックをブロックさせないため、キューに積むだけで即座にリターンする。
+    これによりWindowsの LowLevelHooksTimeout によるフック解除を防ぐ。
+    """
+    if not _is_recording:
+        return
+    
+    _mouse_event_queue.put({
+        "x": x,
+        "y": y,
+        "button": button,
+        "pressed": pressed
+    })
+
+
+def _handle_mouse_event(evt: dict):
+    global _latest_mouse_down_event
+    global _pending_click_event
+    global _pending_click_timer
+
+    x = evt["x"]
+    y = evt["y"]
+    button = evt["button"]
+    pressed = evt["pressed"]
+
+    if pressed:
+        try:
+            event_no = next_event_no()
+            dt = now_datetime()
+
+            window_info = process_monitor.get_foreground_window_info()
+
+            pre_full_img, pre_monitor = screen_capture.take_screenshot()
+
+            pre_ref = screen_capture.save_pre_image_from_pil(
+                event_no=event_no,
+                img=pre_full_img
+            )
+
+            down_event = {
+                "event_no": event_no,
+                "datetime": dt,
+                "x": int(x),
+                "y": int(y),
+                "button": button,
+                "window_info": window_info,
+                "pre_full_img": pre_full_img,
+                "pre_monitor": pre_monitor,
+                "pre_ref": pre_ref,
+            }
+
+            with _latest_mouse_down_lock:
+                _latest_mouse_down_event = down_event
+
+            print(
+                f"mouse down取得・画像保存: "
+                f"evt_{event_no}, x={x}, y={y}, button={button}"
+            )
+
+        except Exception:
+            print("mouse down取得中にエラーが発生しました")
+            traceback.print_exc()
+
+        return
+
+    with _latest_mouse_down_lock:
+        current_event = _latest_mouse_down_event
+        _latest_mouse_down_event = None
+
+    if current_event is None:
+        return
+
+    previous_event_to_process = None
+
+    with _pending_click_lock:
+        if _pending_click_event is not None:
+            if is_same_click(_pending_click_event, current_event):
+                first_event = _pending_click_event
+
+                if _pending_click_timer is not None:
+                    _pending_click_timer.cancel()
+
+                _pending_click_event = None
+                _pending_click_timer = None
+
+                run_click_process_thread(
+                    first_event,
+                    input_type="mouse_double_click",
+                    click_count=2
+                )
+
+                return
+
+            previous_event_to_process = _pending_click_event
+
+            if _pending_click_timer is not None:
+                _pending_click_timer.cancel()
+
+        _pending_click_event = current_event
+
+        _pending_click_timer = threading.Timer(
+            DOUBLE_CLICK_INTERVAL_SEC,
+            process_pending_single_click
+        )
+        _pending_click_timer.daemon = True
+        _pending_click_timer.start()
+
+    if previous_event_to_process is not None:
+        run_click_process_thread(
+            previous_event_to_process,
+            input_type="mouse_click",
+            click_count=1
+        )
+
 
 def process_click_event(
     event: dict,
@@ -603,7 +742,6 @@ def process_click_event(
         pre_img = event["pre_full_img"]
         pre_monitor = event["pre_monitor"]
 
-        # mouse down時点で既に保存済み
         pre_ref = event["pre_ref"]
 
         content = {
@@ -676,10 +814,6 @@ def run_click_process_thread(
     input_type: str,
     click_count: int
 ):
-    """
-    クリック側は以前の仕様に戻し、
-    処理中の追加クリックは無視する。
-    """
     global _is_click_processing
 
     if _is_click_processing:
@@ -770,9 +904,6 @@ def record_scroll_event(
 
 
 def on_scroll(x, y, dx, dy):
-    """
-    Windowsフック起動失敗時のpynputフォールバック。
-    """
     if _native_scroll_hook_active:
         return
 
@@ -794,9 +925,6 @@ def on_scroll(x, y, dx, dy):
 # =========================
 
 def native_scroll_hook_callback(n_code, w_param, l_param):
-    """
-    WM_MOUSEWHEEL / WM_MOUSEHWHEELを取得する。
-    """
     if n_code >= 0 and _is_recording:
         if w_param in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
             try:
@@ -846,8 +974,6 @@ def native_scroll_hook_worker():
     try:
         _native_scroll_hook_thread_id = kernel32.GetCurrentThreadId()
 
-        # コールバックをグローバルに保持する。
-        # ローカルだけにするとGCされてフックが落ちる場合がある。
         _native_scroll_hook_callback = LowLevelMouseProc(
             native_scroll_hook_callback
         )
@@ -944,106 +1070,6 @@ def stop_native_scroll_hook():
 # pynput入力イベント
 # =========================
 
-def on_click(x, y, button, pressed):
-    global _latest_mouse_down_event
-    global _pending_click_event
-    global _pending_click_timer
-
-    if not _is_recording:
-        return
-
-    if pressed:
-        try:
-            event_no = next_event_no()
-            dt = now_datetime()
-
-            window_info = process_monitor.get_foreground_window_info()
-
-            # クリック直前の画面を取得
-            pre_full_img, pre_monitor = screen_capture.take_screenshot()
-
-            # クリック時点で即PNG保存
-            pre_ref = screen_capture.save_pre_image_from_pil(
-                event_no=event_no,
-                img=pre_full_img
-            )
-
-            down_event = {
-                "event_no": event_no,
-                "datetime": dt,
-                "x": int(x),
-                "y": int(y),
-                "button": button,
-                "window_info": window_info,
-                "pre_full_img": pre_full_img,
-                "pre_monitor": pre_monitor,
-                "pre_ref": pre_ref,
-            }
-
-            with _latest_mouse_down_lock:
-                _latest_mouse_down_event = down_event
-
-            print(
-                f"mouse down取得・画像保存: "
-                f"evt_{event_no}, x={x}, y={y}, button={button}"
-            )
-
-        except Exception:
-            print("mouse down取得中にエラーが発生しました")
-            traceback.print_exc()
-
-        return
-
-    with _latest_mouse_down_lock:
-        current_event = _latest_mouse_down_event
-        _latest_mouse_down_event = None
-
-    if current_event is None:
-        return
-
-    previous_event_to_process = None
-
-    with _pending_click_lock:
-        if _pending_click_event is not None:
-            if is_same_click(_pending_click_event, current_event):
-                first_event = _pending_click_event
-
-                if _pending_click_timer is not None:
-                    _pending_click_timer.cancel()
-
-                _pending_click_event = None
-                _pending_click_timer = None
-
-                run_click_process_thread(
-                    first_event,
-                    input_type="mouse_double_click",
-                    click_count=2
-                )
-
-                return
-
-            previous_event_to_process = _pending_click_event
-
-            if _pending_click_timer is not None:
-                _pending_click_timer.cancel()
-
-        _pending_click_event = current_event
-
-        _pending_click_timer = threading.Timer(
-            DOUBLE_CLICK_INTERVAL_SEC,
-            process_pending_single_click
-        )
-        _pending_click_timer.daemon = True
-        _pending_click_timer.start()
-
-    if previous_event_to_process is not None:
-        run_click_process_thread(
-            previous_event_to_process,
-            input_type="mouse_click",
-            click_count=1
-        )
-
-
 def on_press(key):
     global _logged_combo_keys
 
@@ -1052,7 +1078,6 @@ def on_press(key):
 
     key_text = key_to_string(key)
 
-    # Esc単体で終了
     if key == keyboard.Key.esc:
         with _pressed_keys_lock:
             has_modifier = any(
@@ -1070,7 +1095,6 @@ def on_press(key):
             _pressed_keys.add(key_text)
             current_keys = set(_pressed_keys)
 
-        # Enter押下時はその場で画像取得・PNG保存
         capture_now = (key_text == "enter")
 
         if should_record_key_combo(current_keys, key_text):
@@ -1089,7 +1113,6 @@ def on_press(key):
 
             return
 
-        # 修飾キー単体は保存しない（ただし、Windowsキーは検索窓等を開くため保存する）
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"):
             return
 
@@ -1245,6 +1268,7 @@ def start_recording():
         _is_recording = True
 
         start_key_event_worker()
+        start_mouse_event_worker()
         start_native_scroll_hook()
 
         _mouse_listener = mouse.Listener(
@@ -1268,6 +1292,7 @@ def start_recording():
         _is_recording = False
 
         stop_native_scroll_hook()
+        stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
 
@@ -1290,7 +1315,6 @@ def stop_recording():
     try:
         _is_recording = False
 
-        # 未確定シングルクリックを最後に処理
         with _pending_click_lock:
             if _pending_click_timer is not None:
                 _pending_click_timer.cancel()
@@ -1317,10 +1341,9 @@ def stop_recording():
 
         stop_native_scroll_hook()
 
-        # キューに残っているキー入力をすべて処理する
         stop_key_event_worker()
+        stop_mouse_event_worker()
 
-        # クリック処理が残っていれば待つ
         while _is_click_processing:
             threading.Event().wait(0.01)
 

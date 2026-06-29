@@ -474,9 +474,10 @@ def generate_macro_workflow(
         except Exception as e:
              logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
 
-        if temp_dir.exists() and temp_dir.is_dir():
-            shutil.rmtree(temp_dir)
-            logger.info(f"[{workflow_id}] Cleaned up temp directory.")
+# 一時的にコメントアウト
+        # if temp_dir.exists() and temp_dir.is_dir():
+        #     shutil.rmtree(temp_dir)
+        #     logger.info(f"[{workflow_id}] Cleaned up temp directory.")
 
         if progress_callback:
             progress_callback(100, "完了")
