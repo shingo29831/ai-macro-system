@@ -95,7 +95,6 @@ def generate_macro_workflow(
             raw_type = str(log_entry.get("Type", ""))
             content_data = log_entry.get("Content") or {}
             
-            # 【修正】座標の二重計算バグを防止するため、絶対座標である screen_coordinates を最優先で使用する
             raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
             if raw_screen_coords:
                 cursor_x = raw_screen_coords.get("x", 0)
@@ -119,11 +118,20 @@ def generate_macro_workflow(
 
             raw_type_lower = raw_type.lower()
             is_scroll = "scroll" in raw_type_lower
-            is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not is_scroll
+            is_hover = "hover" in raw_type_lower
+            is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_hover)
             is_key = "key" in raw_type_lower
+
+            dx = 0.0
+            dy = 0.0
 
             if is_scroll:
                 action_type = "scroll"
+                if isinstance(content_data, dict):
+                    dx = content_data.get("dx", 0.0)
+                    dy = content_data.get("dy", 0.0)
+            elif is_hover:
+                action_type = "hover"
             elif is_click:
                 action_type = "click"
             elif is_key:
@@ -137,6 +145,22 @@ def generate_macro_workflow(
             
             images_data = log_entry.get("Images", {})
             crop_path_str = images_data.get("Crop")
+
+            raw_diff = images_data.get("Diff", "0.0%")
+            try:
+                if isinstance(raw_diff, str) and raw_diff.endswith("%"):
+                    diff_val = float(raw_diff.replace("%", "")) / 100.0
+                else:
+                    diff_val = float(raw_diff)
+            except (ValueError, TypeError):
+                diff_val = 0.0
+
+            # --- Deleteマーカーが付いている無意味なホバーイベントはスキップ ---
+            if action_type == "hover":
+                if crop_path_str and "delete_" in crop_path_str:
+                    continue
+                if diff_val < 0.001:  # 0.1%未満のノイズ差分
+                    continue
             
             if crop_path_str:
                 full_crop_path = macros_root / crop_path_str
@@ -156,7 +180,7 @@ def generate_macro_workflow(
                     
                     if ocr_results:
                         best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                        if best_ocr.content and action_type == "click":
+                        if best_ocr.content and action_type in ["click", "hover"]:
                             semantic_role = best_ocr.content
                             
                         for ocr_res in ocr_results:
@@ -167,15 +191,6 @@ def generate_macro_workflow(
                                 confidence=ocr_res.confidence,
                                 parentRelevance=1.0
                             ))
-
-            raw_diff = images_data.get("Diff", "0.0%")
-            try:
-                if isinstance(raw_diff, str) and raw_diff.endswith("%"):
-                    diff_val = float(raw_diff.replace("%", "")) / 100.0
-                else:
-                    diff_val = float(raw_diff)
-            except (ValueError, TypeError):
-                diff_val = 0.0
 
             action_detail = ActionDetail(
                 inputType=raw_type,
@@ -213,7 +228,9 @@ def generate_macro_workflow(
                 "button": button_val,
                 "ui_type": ui_type,
                 "semantic_role": semantic_role,
-                "diff_val": diff_val
+                "diff_val": diff_val,
+                "dx": dx,
+                "dy": dy
             })
 
         # --- 変数抽出ロジック（連続する文字入力で全体的にDiffが低いものをグループ化） ---
@@ -276,7 +293,7 @@ def generate_macro_workflow(
             summary_for_llm = [
                 {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
                 for info in temp_workflow_info
-                if info["raw_action"] == "click"
+                if info["raw_action"] in ["click", "hover"]
             ]
             
             if summary_for_llm:
@@ -322,7 +339,7 @@ def generate_macro_workflow(
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
             
-            if raw_action in ["unknown", "scroll"] or "recording" in raw_type:
+            if raw_action == "unknown" or "recording" in raw_type:
                 continue
 
             event_id = info["event_id"]
@@ -337,11 +354,23 @@ def generate_macro_workflow(
                     target=UniversalSelector(semantic_role=final_semantic_role),
                     button=info["button"]
                 )
+            elif raw_action == "hover":
+                cmd = "MOUSE_HOVER"
+                intent = "HOVER_UI_ELEMENT"
+                desc = f"Hover on the {final_semantic_role} element."
+                params = ActionParameters(
+                    target=UniversalSelector(semantic_role=final_semantic_role)
+                )
             elif raw_action == "type_text":
                 cmd = "TYPE_TEXT"
                 intent = "INPUT_TEXT"
                 desc = f"Type the text: '{final_semantic_role}'"
                 params = ActionParameters(text=final_semantic_role)
+            elif raw_action == "scroll":
+                cmd = "MOUSE_SCROLL"
+                intent = "SCROLL_WINDOW"
+                desc = f"Scroll window (dx: {info['dx']}, dy: {info['dy']})"
+                params = ActionParameters(text=f"{info['dx']},{info['dy']}")
             else:
                 role_lower = final_semantic_role.lower() if final_semantic_role else ""
                 is_special_key = False
@@ -440,7 +469,6 @@ def generate_macro_workflow(
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
-                        # 正しく計算された相対座標から絶対座標を復元
                         commands_data.append({
                             "method": "click",
                             "args": {
@@ -450,6 +478,30 @@ def generate_macro_workflow(
                                 "clicks": 1
                             }
                         })
+                elif cmd_type == "MOUSE_HOVER":
+                    if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
+                        win_c = integ_evt.window.coordinates
+                        rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
+                        commands_data.append({
+                            "method": "hover",
+                            "args": {
+                                "x": win_c.x + rel_c.x,
+                                "y": win_c.y + rel_c.y
+                            }
+                        })
+                elif cmd_type == "MOUSE_SCROLL":
+                    if params.text:
+                        try:
+                            dx_str, dy_str = params.text.split(',')
+                            commands_data.append({
+                                "method": "scroll",
+                                "args": {
+                                    "dx": float(dx_str),
+                                    "dy": float(dy_str)
+                                }
+                            })
+                        except Exception:
+                            pass
                 elif cmd_type == "KEYBOARD_SHORTCUT":
                     if params.key:
                         commands_data.append({

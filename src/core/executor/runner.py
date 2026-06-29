@@ -9,6 +9,8 @@
 import json
 import logging
 import time
+import platform
+import ctypes
 from pathlib import Path
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key
@@ -16,6 +18,19 @@ from pynput.keyboard import Controller as KeyboardController, Key
 from models.data_types import AppConfig
 
 logger = logging.getLogger(__name__)
+
+# OSレベルのDPIスケーリングによるマウス座標のズレを防止
+def _set_dpi_awareness():
+    if platform.system() == "Windows":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2) # PROCESS_PER_MONITOR_DPI_AWARE
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+_set_dpi_awareness()
 
 _is_running = False
 _stop_requested = False
@@ -88,6 +103,19 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 mouse.position = (x, y)
                 time.sleep(0.05) # 移動直後の入力を安定させるための微小ウェイト
                 mouse.click(btn, clicks)
+
+            elif method == "hover":
+                x = args.get("x", 0)
+                y = args.get("y", 0)
+                
+                mouse.position = (x, y)
+                time.sleep(0.5) # ホバー後、UI（ドロップダウン等）が展開されるのを待つ
+                
+            elif method == "scroll":
+                dx = args.get("dx", 0.0)
+                dy = args.get("dy", 0.0)
+                mouse.scroll(dx, dy)
+                time.sleep(0.05) # スクロール直後の安定化ウェイト
                 
             elif method == "type_text":
                 text = args.get("text", "")
