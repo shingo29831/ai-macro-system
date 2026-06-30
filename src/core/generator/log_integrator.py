@@ -252,10 +252,12 @@ def generate_macro_workflow(
         processed_info = []
         current_group = []
 
-        def flush_group():
+        def flush_group(current_index: int):
             if not current_group:
                 return
-            if len(current_group) == 1:
+            
+            # 特殊キーではない1文字だけの場合は変数化しない（従来通り）
+            if len(current_group) == 1 and str(current_group[0]["semantic_role"]).lower() not in ["space", "tab", "backspace", "delete"]:
                 processed_info.append(current_group[0])
                 current_group.clear()
                 return
@@ -263,26 +265,47 @@ def generate_macro_workflow(
             avg_diff = sum(item["diff_val"] for item in current_group) / len(current_group)
             
             if avg_diff < 0.3:
-                text = "".join([str(item["semantic_role"]) for item in current_group])
+                base_text = ""
+                for item in current_group:
+                    role = str(item["semantic_role"])
+                    r_lower = role.lower()
+                    if r_lower == "backspace":
+                        base_text = base_text[:-1]
+                    elif r_lower == "space":
+                        base_text += " "
+                    elif r_lower not in ["tab", "delete", "esc"]:
+                        base_text += role
                 
-                # Use OCR to read the actual text input from the screen to bypass IME or autocomplete issues
-                last_key_event = current_group[-1]
-                pre_img_rel_path = last_key_event.get("pre_img_path")
+                text = base_text
+                
+                # 文字入力の終了（エンターや次のクリックなど）をトリガーしたイベントを探す
+                # 確定操作が行われる「直前」の画面状態こそが、変換やTab補完が反映された最終状態となる
+                target_img_path_rel = None
+                for idx in range(current_index, len(temp_workflow_info)):
+                    evt = temp_workflow_info[idx]
+                    if evt.get("pre_img_path"):
+                        target_img_path_rel = evt["pre_img_path"]
+                        break
+                
+                if not target_img_path_rel:
+                    target_img_path_rel = current_group[-1].get("pre_img_path")
+                        
                 last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
                 
-                if last_click and pre_img_rel_path:
-                    pre_img_full_path = macros_root / pre_img_rel_path
-                    if pre_img_full_path.exists():
+                if last_click and target_img_path_rel:
+                    target_img_full_path = macros_root / target_img_path_rel
+                    if target_img_full_path.exists():
                         try:
-                            with Image.open(pre_img_full_path) as img:
+                            with Image.open(target_img_full_path) as img:
                                 cx, cy = last_click["cursor_x"], last_click["cursor_y"]
+                                # 補完等で文字が長くなることを考慮し、右側のクロップ範囲を広げる
                                 left = max(0, cx - 50)
                                 top = max(0, cy - 30)
-                                right = min(img.width, cx + 400)
+                                right = min(img.width, cx + 600)
                                 bottom = min(img.height, cy + 30)
                                 
                                 crop_img = img.crop((left, top, right, bottom))
-                                temp_crop_path = temp_dir / f"temp_ocr_{last_key_event['event_id']}.png"
+                                temp_crop_path = temp_dir / f"temp_ocr_{current_group[-1]['event_id']}.png"
                                 crop_img.save(temp_crop_path)
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
@@ -307,23 +330,35 @@ def generate_macro_workflow(
             
             current_group.clear()
 
-        for info in temp_workflow_info:
+        for i, info in enumerate(temp_workflow_info):
             if info["raw_action"] == "key_down":
                 role_lower = str(info["semantic_role"]).lower() if info["semantic_role"] else ""
+                
                 is_special = False
-                if role_lower.startswith("key.") or role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
+                is_text_modifier = False
+                
+                if role_lower.startswith("key."):
+                    is_special = True
+                elif role_lower in ["space", "tab", "backspace", "delete"]:
+                    # 入力文字を変化・増減させるキーは文字入力の一環とみなす
+                    is_special = True
+                    is_text_modifier = True
+                elif role_lower in ["enter", "esc", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
+                    # 確定や移動を行うキー
                     is_special = True
                 
                 if not is_special:
                     current_group.append(info)
+                elif is_text_modifier and len(current_group) > 0:
+                    current_group.append(info)
                 else:
-                    flush_group()
+                    flush_group(i)
                     processed_info.append(info)
             else:
-                flush_group()
+                flush_group(i)
                 processed_info.append(info)
                 
-        flush_group()
+        flush_group(len(temp_workflow_info))
         temp_workflow_info = processed_info
 
         if progress_callback:
