@@ -124,26 +124,24 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
             logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
             
-            # === Stage 1: 画像テンプレートマッチングとキー入力直前を含むHealerの起動 ===
+            # === Stage 1: UI部品(Crop)の局所的なテンプレートマッチングによる高精度なズレ検知 ===
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
             
-            # キーボード入力時など遷移後の画面検証も含めるように拡張
             if raw_event_id and target_id and method in ["click", "move", "type_text", "press_key"]:
                 needs_recovery = False
-                
                 crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
-                pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
                 
                 try:
                     from PIL import Image
-                    from core.recorder.screen_capturer import take_screenshot, calculate_diff_percent
+                    from core.recorder.screen_capturer import take_screenshot
                     from core.healer.recovery_manager import attempt_recovery
                     import cv2
                     import numpy as np
 
                     current_img_pil, _ = take_screenshot()
 
+                    # 全画面の差分比較（誤作動の原因）は撤廃し、UI部品(Crop)が存在する場合のみ存在検証を行う
                     if crop_image_path.exists():
                         current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
                         template_cv = cv2.imread(str(crop_image_path), cv2.IMREAD_COLOR)
@@ -162,21 +160,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 expected_x = args.get("x", 0)
                                 expected_y = args.get("y", 0)
                                 
-                                dist = ((match_center_x - expected_x)**2 + (match_center_y - expected_y)**2)**0.5
-                                
-                                if dist > 20:
-                                    logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
-                                    needs_recovery = True
+                                # 記録座標が存在しないコマンド(winキーなど)の場合は距離比較をスキップ
+                                if expected_x != 0 or expected_y != 0:
+                                    dist = ((match_center_x - expected_x)**2 + (match_center_y - expected_y)**2)**0.5
+                                    
+                                    if dist > 20:
+                                        logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
+                                        needs_recovery = True
                         else:
-                            needs_recovery = True
-                            
-                    elif pre_image_path.exists():
-                        original_img = Image.open(pre_image_path)
-                        diff_str = calculate_diff_percent(original_img, current_img_pil)
-                        diff_val = float(diff_str.replace("%", ""))
-                        
-                        if diff_val > 2.0: 
-                            logger.warning(f"[{workflow_id}] Visual drift detected (Diff: {diff_val}%). Initiating Healer...")
                             needs_recovery = True
 
                     if needs_recovery:
@@ -193,7 +184,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
                                 macro_needs_save = True
                         else:
-                            # Healerが失敗した場合、強制的にエラー終了させて誤操作（空振り）を防ぐ
                             logger.error(f"[{workflow_id}] Healer failed to recover. Aborting execution to prevent mis-clicks.")
                             if status_callback:
                                 status_callback("実行中...", False)

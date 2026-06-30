@@ -1,3 +1,4 @@
+# src/core/recorder/screen_capturer.py
 # @role: スクリーンショット取得・UI切り抜き・画像保存・スクリーンショット差分率計算を担当する。
 #
 # Crop:
@@ -63,9 +64,6 @@ _last_screenshot_gray: np.ndarray | None = None
 # =========================
 
 def get_macros_root() -> Path:
-    """
-    このファイル位置から ../../../macros を保存先にする。
-    """
     return (Path(__file__).resolve().parent / "../../../macros").resolve()
 
 
@@ -124,15 +122,7 @@ def get_images_dir() -> Path:
 
 
 def to_macro_relative_path(path: Path) -> str:
-    """
-    JSONに保存するため、macrosフォルダ基準の相対パスに変換する。
-
-    例:
-      C:/.../macros/wf_1/images/evt_001_pre.png
-      -> wf_1/images/evt_001_pre.png
-    """
     macros_root = get_macros_root()
-
     try:
         relative = path.resolve().relative_to(macros_root.resolve())
         return relative.as_posix()
@@ -172,49 +162,91 @@ def calculate_diff_ratio(current_img: Image.Image) -> float:
 # =========================
 
 def take_screenshot() -> tuple[Image.Image, dict]:
-    """
-    全モニターを含むスクリーンショットを取得する。
-    戻り値:
-      - PIL.Image
-      - monitor情報
-    """
     with mss.MSS() as sct:
         monitor = sct.monitors[0]
         screenshot = sct.grab(monitor)
-
-        img = Image.frombytes(
-            "RGB",
-            screenshot.size,
-            screenshot.rgb
-        )
-
+        img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
         return img, monitor
 
 
 def save_event_pre_image(event_no: str) -> str:
-    """
-    現在の全画面画像を evt_XXX_pre.png として保存する。
-    """
     images_dir = get_images_dir()
-
     img, _ = take_screenshot()
-
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
-
     return to_macro_relative_path(path)
 
 
 def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
-    """
-    すでに取得済みの画像を evt_XXX_pre.png として保存する。
-    """
     images_dir = get_images_dir()
-
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
-
     return to_macro_relative_path(path)
+
+
+def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -> dict | None:
+    """
+    キー入力前後の画像(pre_img, post_img)から変化した領域（文字が増減した箇所）を抽出し、
+    入力フィールドの領域として切り抜いて保存する。
+    """
+    images_dir = get_images_dir()
+    
+    pre_cv = cv2.cvtColor(np.array(pre_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+    post_cv = cv2.cvtColor(np.array(post_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+    
+    pre_gray = cv2.cvtColor(pre_cv, cv2.COLOR_BGR2GRAY)
+    post_gray = cv2.cvtColor(post_cv, cv2.COLOR_BGR2GRAY)
+    
+    # 差分を計算
+    diff = cv2.absdiff(pre_gray, post_gray)
+    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+    
+    # ノイズ除去と結合（文字の隙間を埋めて一つのテキストボックス矩形にする）
+    kernel = np.ones((9, 9), np.uint8)
+    thresh = cv2.dilate(thresh, kernel, iterations=3)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return None
+        
+    x_min, y_min = pre_img.width, pre_img.height
+    x_max, y_max = 0, 0
+    
+    valid_contours = 0
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if w * h < 25: # 小さすぎる変化はノイズとして無視
+            continue
+        valid_contours += 1
+        x_min = min(x_min, x)
+        y_min = min(y_min, y)
+        x_max = max(x_max, x + w)
+        y_max = max(y_max, y + h)
+        
+    if valid_contours == 0:
+        return None
+        
+    # 周囲に余白をつける
+    padding = 20
+    x_min = max(0, x_min - padding)
+    y_min = max(0, y_min - padding)
+    x_max = min(pre_img.width, x_max + padding)
+    y_max = min(pre_img.height, y_max + padding)
+    
+    # 全体の50%以上変化している場合は画面全体遷移とみなし、UI部品としての切り抜きを行わない
+    area = (x_max - x_min) * (y_max - y_min)
+    if area > (pre_img.width * pre_img.height * 0.5):
+        return None
+        
+    crop_img = post_img.crop((x_min, y_min, x_max, y_max))
+    ui_path = images_dir / f"evt_{event_no}_crop.png"
+    crop_img.save(ui_path)
+    
+    return {
+        "ui_image_ref": to_macro_relative_path(ui_path),
+        "detection_method": "diff_between_pre_and_post"
+    }
 
 
 # =========================
@@ -222,15 +254,6 @@ def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
 # =========================
 
 def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.Image) -> str:
-    """
-    前回スクリーンショットと今回スクリーンショットで、
-    一定以上変化したピクセルの割合を%表記で返す。
-
-    仕様:
-      - previous_img が None の場合は "100%"
-      - 画像サイズが違う場合は current_img を previous_img のサイズに合わせる
-      - RGB平均差分が DIFF_PIXEL_THRESHOLD 以上のピクセルを「変化あり」とする
-    """
     if previous_img is None:
         return "100%"
 
@@ -263,18 +286,6 @@ def trim_crop_to_visible_content(
     padding: int = VISIBLE_TRIM_PADDING,
     threshold: int = VISIBLE_TRIM_THRESHOLD,
 ) -> tuple[Image.Image, dict]:
-    """
-    切り抜き画像の中から、背景色と違う部分だけを残して再トリミングする。
-
-    目的:
-      - Explorer詳細表示の「行全体」切り抜きから、
-        フォルダアイコン + 文字だけを残す。
-      - UIAで大きめに取れた要素を、実際に見えている内容に詰める。
-
-    戻り値:
-      - trimmed image
-      - trim info
-    """
     img = np.array(pil_img.convert("RGB"))
 
     if img.size == 0:
@@ -383,15 +394,10 @@ def trim_crop_to_visible_content(
 
 
 def is_trimmed_image_valid(pil_img: Image.Image) -> bool:
-    """
-    トリミング後の画像が最低限使えるサイズか判定する。
-    """
     if pil_img.width < MIN_TRIMMED_WIDTH:
         return False
-
     if pil_img.height < MIN_TRIMMED_HEIGHT:
         return False
-
     return True
 
 
@@ -405,12 +411,6 @@ def save_ui_crop_by_rect(
     full_img: Image.Image,
     monitor: dict,
 ) -> dict:
-    """
-    UIAなどで取得したUI要素矩形を、Pre画像から切り抜く。
-
-    そのままだとExplorerの詳細表示で行全体が取れることがあるため、
-    切り抜いた後に表示内容だけへ再トリミングする。
-    """
     images_dir = get_images_dir()
 
     screen_left = int(monitor["left"])
@@ -433,7 +433,6 @@ def save_ui_crop_by_rect(
         }
 
     ui_img = full_img.crop((left, top, right, bottom))
-
     detection_method = "uia_element_rect_from_pre"
 
     if ENABLE_VISIBLE_CONTENT_TRIM:
@@ -447,7 +446,6 @@ def save_ui_crop_by_rect(
             ui_img = trimmed_img
             detection_method = "uia_element_rect_trimmed_from_pre"
         else:
-            # トリミングできなかった場合でも、元のUIA切り抜きが有効なら保存する
             if not is_trimmed_image_valid(ui_img):
                 return {
                     "ui_image_ref": None,
@@ -473,10 +471,6 @@ def crop_around_click(
     click_x: int,
     click_y: int
 ):
-    """
-    OpenCV検出用にクリック周辺だけを一時的に切り抜く。
-    この画像自体は保存しない。
-    """
     screen_left = int(monitor["left"])
     screen_top = int(monitor["top"])
 
@@ -523,9 +517,6 @@ def crop_around_click(
 
 
 def detect_ui_contours(pil_img: Image.Image) -> list[dict]:
-    """
-    OpenCVでUIらしい矩形を検出する。
-    """
     img = np.array(pil_img)
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
@@ -570,30 +561,21 @@ def contains_point(rect: dict, px: int, py: int) -> bool:
     y = rect["y"]
     w = rect["w"]
     h = rect["h"]
-
     return x <= px <= x + w and y <= py <= y + h
 
 
 def select_clicked_ui(candidates: list[dict], click_x: int, click_y: int) -> dict | None:
-    """
-    クリック座標を含む矩形のうち、最も小さい矩形を選ぶ。
-    """
     containing = [
         rect for rect in candidates
         if contains_point(rect, click_x, click_y)
     ]
-
     if not containing:
         return None
-
     containing.sort(key=lambda r: r["area"])
     return containing[0]
 
 
 def crop_ui_element(pil_img: Image.Image, rect: dict):
-    """
-    検出されたUI矩形を少し余白付きで切り抜く。
-    """
     left = max(0, rect["x"] - PADDING)
     top = max(0, rect["y"] - PADDING)
     right = min(pil_img.width, rect["x"] + rect["w"] + PADDING)
@@ -618,11 +600,6 @@ def save_ui_crop(
     full_img: Image.Image,
     monitor: dict,
 ) -> dict:
-    """
-    UIAで取れなかった場合のOpenCV切り抜き。
-    クリック後に撮り直さず、Pre画像からUIらしい矩形だけを切り抜く。
-    UIらしい矩形が取れない場合はCrop=None。
-    """
     images_dir = get_images_dir()
 
     around_img, crop_info = crop_around_click(

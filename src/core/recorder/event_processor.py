@@ -34,7 +34,6 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     dt = now_datetime()
     window_info = process_monitor.get_foreground_window_info()
     
-    # ページ遷移が起きる前の「キー押下直前」の正確なスクリーンショットを同期的に取得する
     try:
         pre_full_img, pre_monitor = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
@@ -58,11 +57,24 @@ def process_key_event(event: dict):
         pre_img, _ = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
         
+    # --- 修正: 文字入力がUIに反映されるのを待ってから事後画像を撮影し、変化領域を切り抜く ---
+    # 人間の連続入力に追いつくためウェイトは最小限（0.25秒）
+    time.sleep(0.25)
+    post_img, _ = screen_capturer.take_screenshot()
+    
+    crop_ref = "切り抜き失敗"
+    try:
+        crop_info = screen_capturer.save_diff_crop(event_no, pre_img, post_img)
+        if crop_info and crop_info.get("ui_image_ref"):
+            crop_ref = crop_info["ui_image_ref"]
+    except Exception as e:
+        print(f"差分切り抜き中にエラー: {e}")
+        
     diff = calculate_and_update_diff(pre_img)
 
-    log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff}
+    log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
     state.append_log(log)
-    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}")
+    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}, crop={crop_ref}")
 
 def process_move_event(event: dict):
     try:
