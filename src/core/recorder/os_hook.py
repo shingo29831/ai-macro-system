@@ -202,6 +202,7 @@ _mouse_listener: mouse.Listener | None = None
 _keyboard_listener: keyboard.Listener | None = None
 
 _is_recording = False
+_is_stopping = False
 _is_click_processing = False
 
 _input_logs: list[dict] = []
@@ -1269,11 +1270,14 @@ def on_press(key):
             )
 
         if has_ctrl:
-            print("Ctrl + \\ が押されたため記録を停止します")
-            if _shortcut_stop_callback:
-                _shortcut_stop_callback()
-            else:
-                stop_recording()
+            global _is_stopping
+            if not _is_stopping:
+                _is_stopping = True
+                print("Ctrl + \\ が押されたため記録を停止します")
+                if _shortcut_stop_callback:
+                    _shortcut_stop_callback()
+                else:
+                    stop_recording()
             return
 
     try:
@@ -1417,6 +1421,7 @@ def start_recording():
     global _mouse_listener
     global _keyboard_listener
     global _is_recording
+    global _is_stopping
     global _is_click_processing
     global _input_logs
     global _recording_dirs
@@ -1447,6 +1452,7 @@ def start_recording():
         _pending_click_timer = None
         _latest_mouse_down_event = None
 
+        _is_stopping = False
         _is_click_processing = False
 
         process_monitor.start_process_monitors()
@@ -1477,6 +1483,7 @@ def start_recording():
 
     except Exception:
         _is_recording = False
+        _is_stopping = False
 
         stop_native_scroll_hook()
         stop_mouse_event_worker()
