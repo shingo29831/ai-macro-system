@@ -19,6 +19,11 @@ from models.data_types import AppConfig
 
 logger = logging.getLogger(__name__)
 
+# Windows API Constants for Scroll Simulation
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_HWHEEL = 0x1000
+WHEEL_DELTA = 120
+
 # OSレベルのDPIスケーリングによるマウス座標のズレを防止
 def _set_dpi_awareness():
     if platform.system() == "Windows":
@@ -153,7 +158,20 @@ def run_workflow(workflow_id: str, config: AppConfig):
             elif method == "scroll":
                 dx = args.get("dx", 0.0)
                 dy = args.get("dy", 0.0)
-                mouse.scroll(dx, dy)
+                
+                if platform.system() == "Windows":
+                    # pynputの内部補正を回避し、Windows API (mouse_event) を直接叩いてネイティブなスクロール量を再現する
+                    if dy != 0.0:
+                        # 縦スクロール (1.0 = 120, -1.0 = -120)
+                        scroll_amount = int(dy * WHEEL_DELTA)
+                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+                    if dx != 0.0:
+                        # 横スクロール
+                        scroll_amount_x = int(dx * WHEEL_DELTA)
+                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, scroll_amount_x, 0)
+                else:
+                    mouse.scroll(dx, dy)
+                    
                 time.sleep(0.05) # スクロール直後の安定化ウェイト
                 
             elif method == "type_text":
