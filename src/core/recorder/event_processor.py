@@ -205,9 +205,29 @@ def process_pending_single_click():
     if event is not None:
         run_click_process_thread(event, input_type="mouse_click", click_count=1)
 
+def process_scroll_event(event: dict):
+    try:
+        x = event["x"]
+        y = event["y"]
+        dx = event["dx"]
+        dy = event["dy"]
+        source = event.get("source", "unknown")
+        
+        event_no = state.get_next_event_no()
+        log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy))
+        state.append_log(log)
+        print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
+    except Exception:
+        print("スクロール処理中にエラーが発生しました")
+        traceback.print_exc()
+
 def _handle_mouse_event(evt: dict):
-    if evt.get("type") == "hover":
+    evt_type = evt.get("type")
+    if evt_type == "hover":
         process_hover_event(evt)
+        return
+    elif evt_type == "scroll":
+        process_scroll_event(evt)
         return
 
     x, y, button, pressed = evt["x"], evt["y"], evt["button"], evt["pressed"]
@@ -297,20 +317,32 @@ def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unk
         _last_scroll_dx = dx
         _last_scroll_dy = dy
 
-    event_no = state.get_next_event_no()
-    log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy))
-    state.append_log(log)
-    print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
+    # OSのフックタイムアウトを防ぐため、直接処理せずキューに積む
+    state.mouse_event_queue.put({
+        "type": "scroll",
+        "x": x,
+        "y": y,
+        "dx": dx,
+        "dy": dy,
+        "source": source
+    })
 
 # Workers
 def key_event_worker():
-    while not state.key_worker_stop_event.is_set() or not state.key_event_queue.empty():
+    while True:
         try:
             event = state.key_event_queue.get(timeout=0.1)
+        except queue.Empty:
+            if state.key_worker_stop_event.is_set():
+                break
+            continue
+            
+        try:
             process_key_event(event)
+        except Exception:
+            traceback.print_exc()
+        finally:
             state.key_event_queue.task_done()
-        except queue.Empty: continue
-        except Exception: traceback.print_exc()
 
 def start_key_event_worker():
     state.key_worker_stop_event.clear()
@@ -325,13 +357,20 @@ def stop_key_event_worker():
     state.key_worker_thread = None
 
 def mouse_event_worker():
-    while not state.mouse_worker_stop_event.is_set() or not state.mouse_event_queue.empty():
+    while True:
         try:
             event = state.mouse_event_queue.get(timeout=0.1)
+        except queue.Empty:
+            if state.mouse_worker_stop_event.is_set():
+                break
+            continue
+            
+        try:
             _handle_mouse_event(event)
+        except Exception:
+            traceback.print_exc()
+        finally:
             state.mouse_event_queue.task_done()
-        except queue.Empty: continue
-        except Exception: traceback.print_exc()
 
 def start_mouse_event_worker():
     state.mouse_worker_stop_event.clear()
