@@ -35,6 +35,7 @@ class MainViewModel(QObject):
         self._shortcut_check_timer.timeout.connect(self._check_shortcut_status)
 
     def _check_shortcut_status(self):
+        # UIスレッド上で安全にフラグを読み取り、停止要求があればシグナルを発火する
         if os_hook.check_shortcut_stop_request():
             self._shortcut_check_timer.stop()
             self.recording_stopped_by_shortcut.emit()

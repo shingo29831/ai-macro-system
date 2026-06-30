@@ -248,18 +248,21 @@ _native_scroll_hook_active = False
 # ホバー検知（軌跡判定）用
 _mouse_path: list[tuple[float, float, float]] = []
 
+# ショートカットの停止フラグ（ポーリング用）
 _shortcut_stop_requested = False
 
+
+# =========================
+# 基本関数
+# =========================
+
 def check_shortcut_stop_request() -> bool:
+    """UIスレッドからのポーリング用関数。停止要求があればTrueを返し、フラグをリセットする。"""
     global _shortcut_stop_requested
     if _shortcut_stop_requested:
         _shortcut_stop_requested = False
         return True
     return False
-
-# =========================
-# 基本関数
-# =========================
 
 def now_datetime() -> datetime:
     return datetime.now().astimezone()
@@ -1279,7 +1282,7 @@ def on_press(key):
                 global _shortcut_stop_requested
                 _shortcut_stop_requested = True
                 print("Ctrl + \\ が押されたため記録を停止します (UIへ通知)")
-            return
+            return False  # フックリスナーを即座に破棄して多重処理を防ぐ
 
     try:
         with _pressed_keys_lock:
