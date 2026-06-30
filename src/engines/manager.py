@@ -1,80 +1,79 @@
-# @role: ローカルAI APIサーバー（LLM, YOLO/OCR, vLLM）の独立したバックグラウンドプロセスとしてのライフサイクルを管理する。
+# engines/manager.py
+# @role: Manages the lifecycle of local AI API servers as independent background processes.
 
 import subprocess
 import os
 import atexit
-import logging
-import sys
-import importlib.util
+import json
 from typing import List
-
-from utils.config_manager import ConfigManager
-
-logger = logging.getLogger(__name__)
 
 class LocalServerManager:
     def __init__(self) -> None:
         self._processes: List[subprocess.Popen] = []
 
     def start_servers(self) -> None:
-        config = ConfigManager.load_config()
+        # Load custom connection settings to determine if local servers are needed.
+        config_path = 'config.json'
+        ai_mode = 'local'
+        llm_host = '127.0.0.1'
+        llm_port = '8844'
+        cv_host = '127.0.0.1'
+        cv_port = '8843'
 
-        ai_mode = config.ai_mode
-        llm_host = config.llm_host
-        llm_port = str(config.llm_port)
-        cv_host = config.cv_host
-        cv_port = str(config.cv_port)
-        vllm_host = config.vllm_host
-        vllm_port = str(config.vllm_port)
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    ai_mode = config.get('ai_mode', 'local')
+                    llm_host = config.get('llm_host', '127.0.0.1')
+                    # Fallback to default port if explicitly empty
+                    llm_port = config.get('llm_port', '8844') or '8844'
+                    cv_host = config.get('cv_host', '127.0.0.1')
+                    cv_port = config.get('cv_port', '8843') or '8843'
+            except Exception:
+                pass
 
         env = os.environ.copy()
-        
-        src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
 
-        python_executable = sys.executable
-
+        # Start LLM server if local mode is selected and host points to local machine
         if ai_mode == 'local' and llm_host in ['127.0.0.1', 'localhost']:
-            try:
-                llm_cmd = [python_executable, '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
-                # stdout と stderr を sys.stdout/stderr に変更し、AIサーバーのログをコンソールに流す
-                llm_proc = subprocess.Popen(llm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
-                self._processes.append(llm_proc)
-                logger.info(f"Local LLM server started on port {llm_port}")
-            except Exception as e:
-                logger.error(f"Failed to start local LLM server: {e}")
+            llm_cmd = ['python', '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
+            kwargs = {}
+            if os.name == 'nt':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            llm_proc = subprocess.Popen(llm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            self._processes.append(llm_proc)
 
-        if ai_mode == 'local' and cv_host in ['127.0.0.1', 'localhost']:
-            try:
-                cv_cmd = [python_executable, '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
-                cv_proc = subprocess.Popen(cv_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
-                self._processes.append(cv_proc)
-                logger.info(f"Local CV server started on port {cv_port}")
-            except Exception as e:
-                logger.error(f"Failed to start local CV server: {e}")
-
-        if ai_mode == 'local' and vllm_host in ['127.0.0.1', 'localhost']:
-            # vLLMはWindowsネイティブサポートが限定的なため、インストールされているか事前に確認する
-            if importlib.util.find_spec('vllm') is None:
-                logger.warning("vLLM module is not installed. Skipping local vLLM server startup.")
-            else:
-                try:
-                    vllm_cmd = [python_executable, '-m', 'vllm.entrypoints.openai.api_server', '--port', vllm_port]
-                    vllm_proc = subprocess.Popen(vllm_cmd, stdout=sys.stdout, stderr=sys.stderr, env=env, cwd=src_path)
-                    self._processes.append(vllm_proc)
-                    logger.info(f"Local vLLM server started on port {vllm_port}")
-                except Exception as e:
-                    logger.error(f"Failed to start local vLLM server: {e}")
+        # Start CV server independently if host points to local machine
+        if cv_host in ['127.0.0.1', 'localhost']:
+            yolo_cmd = ['python', '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
+            kwargs = {}
+            if os.name == 'nt':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            yolo_proc = subprocess.Popen(yolo_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            self._processes.append(yolo_proc)
 
         atexit.register(self.stop_servers)
 
     def stop_servers(self) -> None:
+        """ Ensures all background server processes are strictly and completely terminated. """
         for p in self._processes:
             if p.poll() is None:
-                p.terminate()
-                try:
-                    p.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    p.kill()
+                if os.name == 'nt':
+                    # Windows requires taskkill with tree flag (/T) to kill child processes launched by uvicorn
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NO_WINDOW
+                        )
+                    except Exception:
+                        p.kill()
+                else:
+                    p.terminate()
+                    try:
+                        p.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
         self._processes.clear()
-        logger.info("All local background servers stopped.")

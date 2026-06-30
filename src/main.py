@@ -1,28 +1,28 @@
-# @role: アプリケーションのエントリポイント。QApplicationの初期化とメインウィンドウの起動処理、およびバックグラウンドサーバーの管理を制御する。
+# src/main.py
+# @role: Application entry point that initializes the PySide6 application and handles the core lifecycle.
+
 import sys
-import logging
 from PySide6.QtWidgets import QApplication
 from ui.views.main_window import MainWindow
 from ui.viewmodels.main_viewmodel import MainViewModel
 from engines.manager import LocalServerManager
 
-# グローバルロガーの基本設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-if __name__ == '__main__':
-    # UIスレッドのフリーズを防ぐため、GUI初期化前に別プロセスとしてAIサーバー群をウォームアップ
-    server_manager = LocalServerManager()
-    server_manager.start_servers()
-
+def main():
     app = QApplication(sys.argv)
     
-    app.setStyle('Fusion')
+    # Initialize and start local AI servers natively
+    server_manager = LocalServerManager()
+    server_manager.start_servers()
     
+    # Connect the application lifecycle directly to server cleanup to prevent port conflicts (Errno 10048)
+    app.aboutToQuit.connect(server_manager.stop_servers)
+    
+    # MVVMアーキテクチャの疎結合を維持するため、ViewModelを生成しViewへ注入する
     viewmodel = MainViewModel()
     window = MainWindow(viewmodel)
     window.show()
     
-    exit_code = app.exec()
-    
-    sys.exit(exit_code)
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
