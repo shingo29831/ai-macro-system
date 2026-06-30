@@ -65,6 +65,16 @@ class MainWindow(QMainWindow):
         self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
         self.viewmodel.execution_finished.connect(self._on_execution_finished)
         self.viewmodel.generation_finished.connect(self._on_generation_finished)
+        
+        # バックグラウンドスレッドからのショートカット停止信号を受信
+        self.viewmodel.recording_stopped_by_shortcut.connect(self._on_recording_stopped_by_shortcut)
+
+    @Slot()
+    def _on_recording_stopped_by_shortcut(self):
+        print("MainWindow: ショートカットによる停止信号を受信しました。画面を遷移します。")
+        if hasattr(self, 'record_dialog') and self.record_dialog:
+            self.record_dialog.dialog.close()
+        self._on_recording_stopped()
 
     def _on_table_selection_changed(self):
         selected_items = self.table_macros.selectedItems()

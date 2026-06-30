@@ -6,7 +6,7 @@ import json
 import shutil
 import threading
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot, Qt, QMetaObject
+from PySide6.QtCore import QObject, Signal, Slot, Qt
 from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
@@ -22,6 +22,9 @@ class MainViewModel(QObject):
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
     recording_stopped_by_shortcut = Signal()
+    
+    # バックグラウンドスレッドからのコールバックをQtのイベントループに乗せるための内部シグナル
+    _internal_shortcut_signal = Signal()
 
     def __init__(self):
         super().__init__()
@@ -29,16 +32,19 @@ class MainViewModel(QObject):
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
         
-        # os_hook からのコールバックを受け取り、Qtのディスパッチ機能でUIスレッドへ流す
+        # pynputのバックグラウンドスレッドで発行されるシグナルを、UIスレッドのイベントキューへ安全に繋ぐ
+        self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
         os_hook.set_shortcut_stop_callback(self._trigger_shortcut_signal)
 
     def _trigger_shortcut_signal(self):
         # pynputのバックグラウンドスレッドで実行され、UIスレッドへディスパッチされる
-        QMetaObject.invokeMethod(self, "_on_internal_shortcut", Qt.QueuedConnection)
+        print("MainViewModel: バックグラウンドスレッドからショートカット通知を受け取りました。UIスレッドへ転送します。")
+        self._internal_shortcut_signal.emit()
 
     @Slot()
     def _on_internal_shortcut(self):
         # 完全に安全なメインUIスレッド上で実行され、MainWindowへと伝達される
+        print("MainViewModel: UIスレッド上でショートカット通知を処理します。MainWindowへ送信します。")
         self.recording_stopped_by_shortcut.emit()
 
     def load_macros(self):
@@ -113,7 +119,6 @@ class MainViewModel(QObject):
             logger.info("Stopping macro recording...")
             os_hook.stop_recording()
             
-            # 分割・リファクタリングによりカプセル化された関数を利用
             workflow_id = os_hook.get_current_workflow_id()
             
             if not workflow_id:

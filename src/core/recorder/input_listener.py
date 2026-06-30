@@ -54,11 +54,12 @@ def on_press(key):
         if has_ctrl:
             if not state.is_stopping:
                 state.is_stopping = True
-                print("Ctrl + \\ が押されたため記録を停止します (UIへ通知)")
+                print("input_listener: Ctrl + \\ が押されたため記録を停止します")
                 if state.shortcut_stop_callback:
+                    print("input_listener: ViewModelのコールバックを呼び出します")
                     state.shortcut_stop_callback()
                 else:
-                    # UIなしの単体実行時用フォールバック
+                    print("input_listener: UIコールバックが未登録のため単体停止を実行します")
                     import core.recorder.os_hook as hook
                     threading.Thread(target=hook.stop_recording, daemon=True).start()
             return  # Falseは絶対に返さない(スレッド自爆防止)
