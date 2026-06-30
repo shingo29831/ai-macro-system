@@ -39,9 +39,12 @@ def on_click(x, y, button, pressed):
 
 def on_scroll(x, y, dx, dy):
     state.cancel_hover()
-    if state.native_scroll_hook_active or state.is_stopping: return
-    try: record_scroll_event(int(x), int(y), float(dx), float(dy))
-    except Exception: traceback.print_exc()
+    # ネイティブフック動作中であっても、タッチパッドの互換イベントを拾うために排他処理を解除
+    if state.is_stopping: return
+    try: 
+        record_scroll_event(int(x), int(y), float(dx), float(dy), source="pynput")
+    except Exception: 
+        traceback.print_exc()
 
 def on_press(key):
     state.cancel_hover()

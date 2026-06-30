@@ -14,6 +14,11 @@ DOUBLE_CLICK_INTERVAL_SEC = 0.35
 DOUBLE_CLICK_MAX_DISTANCE = 8
 DRAG_MIN_DISTANCE = 12
 
+_scroll_lock = threading.Lock()
+_last_scroll_time = 0.0
+_last_scroll_dx = 0.0
+_last_scroll_dy = 0.0
+
 def calculate_and_update_diff(current_img) -> str:
     with state.previous_screenshot_lock:
         if state.previous_screenshot_img is None:
@@ -278,12 +283,24 @@ def _handle_mouse_event(evt: dict):
     if previous_event_to_process is not None:
         run_click_process_thread(previous_event_to_process, input_type="mouse_click", click_count=1)
 
-def record_scroll_event(x: int, y: int, dx: float, dy: float):
+def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unknown"):
     if not state.is_recording or state.is_stopping: return
+    
+    global _last_scroll_time, _last_scroll_dx, _last_scroll_dy
+    current_time = time.time()
+    
+    with _scroll_lock:
+        # pynputとwin_scrollの両方で捕捉された場合の重複記録を防ぐ (50ms以内の同一イベントはスキップ)
+        if (current_time - _last_scroll_time < 0.05) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
+            return
+        _last_scroll_time = current_time
+        _last_scroll_dx = dx
+        _last_scroll_dy = dy
+
     event_no = state.get_next_event_no()
     log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy))
     state.append_log(log)
-    print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy}")
+    print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
 
 # Workers
 def key_event_worker():
