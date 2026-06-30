@@ -170,7 +170,7 @@ def generate_macro_workflow(
                     if diff_val < 0.001:
                         continue
                 
-                if crop_path_str:
+                if crop_path_str and crop_path_str != "切り抜き失敗":
                     full_crop_path = macros_root / crop_path_str
                     if full_crop_path.exists():
                         logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
@@ -395,9 +395,9 @@ def generate_macro_workflow(
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
-            # === UIターゲット辞書への抽出 (キー入力操作の直前比較用にも対象を拡張) ===
+            # --- 修正: キーボード入力は画像検索の対象から外す ---
             target_id = None
-            if raw_action in ["click", "move", "type_text", "key_down"]:
+            if raw_action in ["click", "move"]:
                 target_id = f"tgt_{step_idx}"
                 ui_targets_dict[target_id] = {
                     "semantic_role": final_semantic_role,
@@ -581,9 +581,7 @@ def generate_macro_workflow(
                         commands_data.append({
                             "method": "press_key",
                             "args": {
-                                "key": params.key,
-                                "target_id": target_id_for_healer,
-                                "raw_event_id": raw_event_id
+                                "key": params.key
                             }
                         })
                 elif cmd_type == "TYPE_TEXT":
@@ -591,9 +589,7 @@ def generate_macro_workflow(
                         commands_data.append({
                             "method": "type_text",
                             "args": {
-                                "text": params.text,
-                                "target_id": target_id_for_healer,
-                                "raw_event_id": raw_event_id
+                                "text": params.text
                             }
                         })
 
