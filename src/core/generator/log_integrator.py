@@ -395,9 +395,8 @@ def generate_macro_workflow(
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
-            # --- 修正: キーボード入力は画像検索の対象から外す ---
             target_id = None
-            if raw_action in ["click", "move"]:
+            if raw_action in ["click", "move", "type_text", "key_down"]:
                 target_id = f"tgt_{step_idx}"
                 ui_targets_dict[target_id] = {
                     "semantic_role": final_semantic_role,
@@ -504,7 +503,7 @@ def generate_macro_workflow(
             progress_callback(98, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
 
         try:
-            commands_data = []
+            raw_commands_data = []
             prev_timestamp = None
             
             for step in workflow_steps:
@@ -517,9 +516,9 @@ def generate_macro_workflow(
                 current_timestamp = integ_evt.timestamp
                 if prev_timestamp is not None:
                     duration = (current_timestamp - prev_timestamp) / 1000.0
-                    if duration > 0.05:
+                    if duration > 0.01:
                         duration = min(duration, 1.5)
-                        commands_data.append({
+                        raw_commands_data.append({
                             "method": "wait",
                             "args": {"duration": round(duration, 3)}
                         })
@@ -533,7 +532,7 @@ def generate_macro_workflow(
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
-                        commands_data.append({
+                        raw_commands_data.append({
                             "method": "click",
                             "args": {
                                 "x": win_c.x + rel_c.x,
@@ -548,7 +547,7 @@ def generate_macro_workflow(
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
-                        commands_data.append({
+                        raw_commands_data.append({
                             "method": "move",
                             "args": {
                                 "x": win_c.x + rel_c.x,
@@ -565,7 +564,7 @@ def generate_macro_workflow(
                             dy_val = float(parts[1])
                             x_val = float(parts[2]) if len(parts) > 2 else 0.0
                             y_val = float(parts[3]) if len(parts) > 3 else 0.0
-                            commands_data.append({
+                            raw_commands_data.append({
                                 "method": "scroll",
                                 "args": {
                                     "dx": dx_val,
@@ -578,20 +577,55 @@ def generate_macro_workflow(
                             pass
                 elif cmd_type == "KEYBOARD_SHORTCUT":
                     if params.key:
-                        commands_data.append({
+                        raw_commands_data.append({
                             "method": "press_key",
                             "args": {
-                                "key": params.key
+                                "key": params.key,
+                                "target_id": target_id_for_healer,
+                                "raw_event_id": raw_event_id
                             }
                         })
                 elif cmd_type == "TYPE_TEXT":
                     if params.text:
-                        commands_data.append({
+                        raw_commands_data.append({
                             "method": "type_text",
                             "args": {
-                                "text": params.text
+                                "text": params.text,
+                                "target_id": target_id_for_healer,
+                                "raw_event_id": raw_event_id
                             }
                         })
+
+            # --- 最適化: 連続するスクロール操作および短い待機を結合する ---
+            commands_data = []
+            for cmd in raw_commands_data:
+                if not commands_data:
+                    commands_data.append(cmd)
+                    continue
+                
+                if cmd["method"] == "scroll":
+                    merged = False
+                    last_cmd = commands_data[-1]
+                    
+                    if last_cmd["method"] == "scroll":
+                        if last_cmd["args"]["x"] == cmd["args"]["x"] and last_cmd["args"]["y"] == cmd["args"]["y"]:
+                            last_cmd["args"]["dx"] = round(last_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
+                            last_cmd["args"]["dy"] = round(last_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                            merged = True
+                    elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
+                        prev_cmd = commands_data[-2]
+                        if prev_cmd["method"] == "scroll":
+                            # 1秒未満の待機であれば一連のスクロール操作とみなして結合
+                            if last_cmd["args"]["duration"] < 1.0 and prev_cmd["args"]["x"] == cmd["args"]["x"] and prev_cmd["args"]["y"] == cmd["args"]["y"]:
+                                prev_cmd["args"]["dx"] = round(prev_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
+                                prev_cmd["args"]["dy"] = round(prev_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                                commands_data.pop()
+                                merged = True
+                                
+                    if not merged:
+                        commands_data.append(cmd)
+                else:
+                    commands_data.append(cmd)
 
             exec_macro_dict = {
                 "macro_id": workflow_id,
