@@ -280,15 +280,13 @@ def generate_macro_workflow(
                 
                 # 文字入力の終了（エンターや次のクリックなど）をトリガーしたイベントを探す
                 # 確定操作が行われる「直前」の画面状態こそが、変換やTab補完が反映された最終状態となる
+                # ただし、確定後の画面遷移を踏まないように、current_index以前の最新の画像を使う
                 target_img_path_rel = None
-                for idx in range(current_index, len(temp_workflow_info)):
+                for idx in range(min(current_index, len(temp_workflow_info) - 1), -1, -1):
                     evt = temp_workflow_info[idx]
                     if evt.get("pre_img_path"):
                         target_img_path_rel = evt["pre_img_path"]
                         break
-                
-                if not target_img_path_rel:
-                    target_img_path_rel = current_group[-1].get("pre_img_path")
                         
                 last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
                 
@@ -298,10 +296,10 @@ def generate_macro_workflow(
                         try:
                             with Image.open(target_img_full_path) as img:
                                 cx, cy = last_click["cursor_x"], last_click["cursor_y"]
-                                # 補完等で文字が長くなることを考慮し、右側のクロップ範囲を広げる
-                                left = max(0, cx - 50)
+                                # 補完等で文字が長くなること、中央や右寄りをクリックしたケースを考慮し左右に広くクロップ
+                                left = max(0, cx - 400)
                                 top = max(0, cy - 30)
-                                right = min(img.width, cx + 600)
+                                right = min(img.width, cx + 400)
                                 bottom = min(img.height, cy + 30)
                                 
                                 crop_img = img.crop((left, top, right, bottom))
@@ -310,10 +308,14 @@ def generate_macro_workflow(
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
-                                    best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                                    if best_ocr.content:
-                                        text = best_ocr.content
-                                        logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
+                                    valid_texts = [res.content for res in ocr_results if res.content]
+                                    if valid_texts:
+                                        # 抽出された中で最も長い文字列を採用（入力されたテキスト文字列である可能性が最も高いため）
+                                        best_text = max(valid_texts, key=len)
+                                        # 明らかに無関係な1文字のゴミでなければ採用する
+                                        if len(best_text) >= 2 or len(base_text) <= 2:
+                                            text = best_text
+                                            logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
                         except Exception as e:
                             logger.error(f"[{workflow_id}] Failed to extract text via OCR: {e}")
 

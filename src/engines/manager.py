@@ -1,15 +1,18 @@
-# engines/manager.py
+# src/engines/manager.py
 # @role: Manages the lifecycle of local AI API servers as independent background processes.
 
 import subprocess
 import os
+import sys
 import atexit
 import json
+from pathlib import Path
 from typing import List
 
 class LocalServerManager:
     def __init__(self) -> None:
         self._processes: List[subprocess.Popen] = []
+        self._log_files = []
 
     def start_servers(self) -> None:
         # Load custom connection settings to determine if local servers are needed.
@@ -33,24 +36,38 @@ class LocalServerManager:
             except Exception:
                 pass
 
+        # ログ出力用のディレクトリを作成
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+
+        # 実行中の仮想環境のPythonインタープリタを確実に使用する
+        python_exe = sys.executable
         env = os.environ.copy()
+        
+        # 'src' ディレクトリのパスを取得し、PYTHONPATHに追加する（ModuleNotFoundError対策）
+        src_dir = str(Path(__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
 
         # Start LLM server if local mode is selected and host points to local machine
         if ai_mode == 'local' and llm_host in ['127.0.0.1', 'localhost']:
-            llm_cmd = ['python', '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
+            llm_log = open(log_dir / "llm_server.log", "w", encoding="utf-8")
+            self._log_files.append(llm_log)
+            llm_cmd = [python_exe, '-m', 'uvicorn', 'engines.llm.server:app', '--port', llm_port]
             kwargs = {}
             if os.name == 'nt':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-            llm_proc = subprocess.Popen(llm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            llm_proc = subprocess.Popen(llm_cmd, stdout=llm_log, stderr=subprocess.STDOUT, env=env, cwd=src_dir, **kwargs)
             self._processes.append(llm_proc)
 
         # Start CV server independently if host points to local machine
         if cv_host in ['127.0.0.1', 'localhost']:
-            yolo_cmd = ['python', '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
+            cv_log = open(log_dir / "cv_server.log", "w", encoding="utf-8")
+            self._log_files.append(cv_log)
+            yolo_cmd = [python_exe, '-m', 'uvicorn', 'engines.yolo.server:app', '--port', cv_port]
             kwargs = {}
             if os.name == 'nt':
                 kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-            yolo_proc = subprocess.Popen(yolo_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            yolo_proc = subprocess.Popen(yolo_cmd, stdout=cv_log, stderr=subprocess.STDOUT, env=env, cwd=src_dir, **kwargs)
             self._processes.append(yolo_proc)
 
         atexit.register(self.stop_servers)
@@ -77,3 +94,11 @@ class LocalServerManager:
                     except subprocess.TimeoutExpired:
                         p.kill()
         self._processes.clear()
+
+        # ログファイルのハンドルを解放
+        for f in self._log_files:
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._log_files.clear()
