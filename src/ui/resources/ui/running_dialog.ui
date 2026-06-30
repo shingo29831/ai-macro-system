@@ -26,7 +26,7 @@
    <item>
     <widget class="QLabel" name="lblInstructions">
      <property name="text">
-      <string>緊急停止キルスイッチ: [ Ctrl + \ ]</string>
+      <string>緊急停止キルスイッチ: [ Ctrl + バックスラッシュ ]</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>

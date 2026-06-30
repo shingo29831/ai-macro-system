@@ -33,6 +33,9 @@ def generate_macro_workflow(
     logger.info(f"[{workflow_id}] Starting log integration and AI workflow generation...")
     
     try:
+        if progress_callback:
+            progress_callback(0, "初期化中... ワークフローディレクトリの確認")
+
         from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
         target_dir = macros_root / workflow_id
@@ -41,6 +44,9 @@ def generate_macro_workflow(
 
         if not input_logs_path.exists():
             raise FileNotFoundError(f"Missing input_logs.json at {input_logs_path}")
+
+        if progress_callback:
+            progress_callback(2, "入力ログの読み込み中...")
 
         with open(input_logs_path, 'r', encoding='utf-8') as f:
             raw_logs = json.load(f)
@@ -64,10 +70,6 @@ def generate_macro_workflow(
             if check_cancel_callback and check_cancel_callback():
                 logger.info(f"[{workflow_id}] Generation cancelled by user.")
                 raise InterruptedError("Generation cancelled by user")
-
-            if progress_callback:
-                progress = int((i / total_events) * 80)
-                progress_callback(progress, f"AI解析中(CV)... ({i+1}/{total_events})")
 
             if not isinstance(log_entry, dict):
                 continue
@@ -112,7 +114,7 @@ def generate_macro_workflow(
             
             if isinstance(content_data, dict):
                 button_val = content_data.get("button", "left")
-                input_val = content_data.get("key", "") or content_data.get("text", "") or f"{button_val}_click"
+                input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or f"{button_val}_click"
             else:
                 input_val = str(content_data)
 
@@ -139,6 +141,11 @@ def generate_macro_workflow(
             else:
                 action_type = "unknown"
 
+            if progress_callback:
+                progress = int((i / total_events) * 70)
+                action_name = action_type if action_type != "unknown" else raw_type
+                progress_callback(progress, f"画像解析中(CV)... {action_name}イベントの処理 ({i+1}/{total_events})")
+
             ui_type = "unknown"
             semantic_role = input_val
             context_components = []
@@ -155,11 +162,10 @@ def generate_macro_workflow(
             except (ValueError, TypeError):
                 diff_val = 0.0
 
-            # --- Deleteマーカーが付いている無意味なホバーイベントはスキップ ---
             if action_type == "hover":
                 if crop_path_str and "delete_" in crop_path_str:
                     continue
-                if diff_val < 0.001:  # 0.1%未満のノイズ差分
+                if diff_val < 0.001:
                     continue
             
             if crop_path_str:
@@ -234,6 +240,9 @@ def generate_macro_workflow(
             })
 
         # --- 変数抽出ロジック（連続する文字入力で全体的にDiffが低いものをグループ化） ---
+        if progress_callback:
+            progress_callback(75, "入力ログの最適化... 変数候補の抽出とグループ化")
+
         variables = {}
         processed_info = []
         current_group = []
@@ -282,9 +291,9 @@ def generate_macro_workflow(
         flush_group()
         temp_workflow_info = processed_info
 
-        # --- LLM推論フェーズ ---
+        # --- LLM推論フェーズ（ハルシネーション防護と自動リトライ付き） ---
         if progress_callback:
-            progress_callback(85, "AI解析中(LLM)...")
+            progress_callback(80, "AI推論準備(LLM)... 文脈データの構築中")
             
         llm_client = LLMClient(host=config.llm_host, port=int(config.llm_port))
         llm_enhanced_data = {}
@@ -304,30 +313,75 @@ def generate_macro_workflow(
                     f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
                 )
                 
-                logger.info(f"[{workflow_id}] Sending prompt to LLM:\n{llm_prompt}")
+                max_retries = 3
+                is_valid_response = False
                 
-                llm_response = llm_client.generate(prompt=llm_prompt)
-                
-                if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
-                    resp_data = llm_response.get("response", {})
+                for attempt in range(max_retries):
+                    if progress_callback:
+                        retry_text = f" (再生成 {attempt}/{max_retries})" if attempt > 0 else ""
+                        progress_callback(80 + attempt * 2, f"AI推論中(LLM)... UIの役割を解釈中{retry_text}")
+
+                    logger.info(f"[{workflow_id}] Sending prompt to LLM (Attempt {attempt+1}/{max_retries})...")
+                    llm_response = llm_client.generate(prompt=llm_prompt)
                     
-                    content = ""
-                    if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
-                        content = resp_data["choices"][0].get("message", {}).get("content", "")
-                    elif isinstance(resp_data, str):
-                        content = resp_data
+                    if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
+                        resp_data = llm_response.get("response", {})
                         
-                    json_start = content.find('[')
-                    json_end = content.rfind(']') + 1
-                    if json_start != -1 and json_end != -1:
-                        parsed_array = json.loads(content[json_start:json_end])
-                        for item in parsed_array:
-                            if "id" in item and "semantic_role" in item:
-                                llm_enhanced_data[item["id"]] = item["semantic_role"]
+                        content = ""
+                        if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
+                            content = resp_data["choices"][0].get("message", {}).get("content", "")
+                        elif isinstance(resp_data, str):
+                            content = resp_data
+                            
+                        json_start = content.find('[')
+                        json_end = content.rfind(']') + 1
+                        
+                        if progress_callback:
+                            progress_callback(86 + attempt, f"AI推論の検証中(LLM)... ハルシネーション検査{retry_text}")
+
+                        if json_start != -1 and json_end != -1:
+                            try:
+                                parsed_array = json.loads(content[json_start:json_end])
+                                
+                                if len(parsed_array) != len(summary_for_llm):
+                                    raise ValueError(f"Array length mismatch. Expected {len(summary_for_llm)}, got {len(parsed_array)}")
+                                
+                                temp_enhanced_data = {}
+                                for item in parsed_array:
+                                    if "id" not in item or "semantic_role" not in item:
+                                        raise ValueError("Missing 'id' or 'semantic_role' in JSON object")
+                                    
+                                    role = str(item["semantic_role"])
+                                    
+                                    if len(role) > 30:
+                                        raise ValueError(f"semantic_role too long (hallucination suspected): {role}")
+                                    
+                                    role_lower = role.lower()
+                                    if any(word in role_lower for word in ["入力", "type", "enter", "text", "テキスト"]):
+                                        raise ValueError(f"Action confusion (hallucination suspected): {role}")
+                                        
+                                    temp_enhanced_data[item["id"]] = role
+                                
+                                llm_enhanced_data = temp_enhanced_data
+                                is_valid_response = True
+                                logger.info(f"[{workflow_id}] LLM inference successful and validated.")
+                                break
+                                
+                            except json.JSONDecodeError:
+                                logger.warning(f"[{workflow_id}] JSON parsing failed on attempt {attempt+1}")
+                            except ValueError as ve:
+                                logger.warning(f"[{workflow_id}] Validation failed on attempt {attempt+1}: {ve}")
+                
+                if not is_valid_response:
+                    logger.warning(f"[{workflow_id}] All LLM retry attempts failed due to hallucination. Falling back to raw CV data.")
+                    
         except Exception as e:
-            logger.warning(f"[{workflow_id}] LLM inference failed or returned invalid format. Falling back to CV results. Error: {e}")
+            logger.warning(f"[{workflow_id}] LLM inference encountered fatal error. Falling back to CV results. Error: {e}")
 
         # === ワークフロー(Omnipotent Workflow)の構築 ===
+        if progress_callback:
+            progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
+
         workflow_steps = []
         start_time = integrated_events[0].timestamp if integrated_events else 0
         end_time = integrated_events[-1].timestamp if integrated_events else 0
@@ -344,6 +398,7 @@ def generate_macro_workflow(
 
             event_id = info["event_id"]
             fallback_evts = info.get("fallback_events", [event_id])
+            
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
             if raw_action == "click":
@@ -388,6 +443,10 @@ def generate_macro_workflow(
                     desc = f"Press the {parsed_key} key."
                     params = ActionParameters(key=parsed_key)
                 else:
+                    if len(final_semantic_role) > 1 and not (final_semantic_role.startswith("{{") and final_semantic_role.endswith("}}")):
+                        logger.warning(f"[{workflow_id}] Dropped invalid type_text string (system ghost/hallucination): {final_semantic_role}")
+                        continue
+
                     cmd = "TYPE_TEXT"
                     intent = "INPUT_TEXT"
                     desc = f"Type the text: '{final_semantic_role}'"
@@ -419,7 +478,7 @@ def generate_macro_workflow(
         )
 
         if progress_callback:
-            progress_callback(90, "ワークフローデータを保存中...")
+            progress_callback(95, "ファイル出力中... integrated.json / workflow.json")
 
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
@@ -437,7 +496,7 @@ def generate_macro_workflow(
         logger.info(f"[{workflow_id}] Successfully generated integrated, workflow v2.0, and variables.json ({len(workflow_steps)} steps).")
 
         if progress_callback:
-            progress_callback(95, "マクロ実行用コード(Executable Macro)を生成中...")
+            progress_callback(98, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
 
         # === Executable Macro の決定論的生成 ===
         try:

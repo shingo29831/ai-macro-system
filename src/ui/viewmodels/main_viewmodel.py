@@ -6,7 +6,7 @@ import json
 import shutil
 import threading
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, Qt
 from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
@@ -21,12 +21,31 @@ class MainViewModel(QObject):
     execution_finished = Signal()
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
+    recording_stopped_by_shortcut = Signal()
+    
+    # バックグラウンドスレッドからのコールバックをQtのイベントループに乗せるための内部シグナル
+    _internal_shortcut_signal = Signal()
 
     def __init__(self):
         super().__init__()
         self._selected_macro: str | None = None
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
+        
+        # pynputのバックグラウンドスレッドで発行されるシグナルを、UIスレッドのイベントキューへ安全に繋ぐ
+        self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
+        os_hook.set_shortcut_stop_callback(self._trigger_shortcut_signal)
+
+    def _trigger_shortcut_signal(self):
+        # pynputのバックグラウンドスレッドで実行され、UIスレッドへディスパッチされる
+        print("MainViewModel: バックグラウンドスレッドからショートカット通知を受け取りました。UIスレッドへ転送します。")
+        self._internal_shortcut_signal.emit()
+
+    @Slot()
+    def _on_internal_shortcut(self):
+        # 完全に安全なメインUIスレッド上で実行され、MainWindowへと伝達される
+        print("MainViewModel: UIスレッド上でショートカット通知を処理します。MainWindowへ送信します。")
+        self.recording_stopped_by_shortcut.emit()
 
     def load_macros(self):
         try:
@@ -100,11 +119,9 @@ class MainViewModel(QObject):
             logger.info("Stopping macro recording...")
             os_hook.stop_recording()
             
-            workflow_id = None
+            workflow_id = os_hook.get_current_workflow_id()
             
-            if hasattr(os_hook, "_recording_dirs") and isinstance(os_hook._recording_dirs, dict) and "macro_name" in os_hook._recording_dirs:
-                workflow_id = os_hook._recording_dirs["macro_name"]
-            else:
+            if not workflow_id:
                 try:
                     from core.recorder.screen_capturer import get_macros_root
                     macros_root = get_macros_root()

@@ -13,7 +13,7 @@ import platform
 import ctypes
 from pathlib import Path
 from pynput.mouse import Controller as MouseController, Button
-from pynput.keyboard import Controller as KeyboardController, Key
+from pynput.keyboard import Controller as KeyboardController, Key, Listener as KeyboardListener
 
 from models.data_types import AppConfig
 
@@ -43,6 +43,45 @@ def run_workflow(workflow_id: str, config: AppConfig):
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     mouse = MouseController()
     keyboard = KeyboardController()
+
+    # --- 緊急停止用ホットキー監視 (Ctrl + \) ---
+    _pressed_keys_for_stop = set()
+
+    def on_press(key):
+        try:
+            key_name = ""
+            if hasattr(key, 'char') and key.char is not None:
+                key_name = str(key.char).lower()
+            else:
+                key_name = str(key).replace("Key.", "").lower()
+
+            _pressed_keys_for_stop.add(key_name)
+
+            has_ctrl = any(k in {"ctrl", "ctrl_l", "ctrl_r"} for k in _pressed_keys_for_stop)
+            vk = getattr(key, 'vk', None)
+            is_backslash = key_name in {"\\", "¥", "yen", "\x1c"} or vk in {220, 226}
+            
+            if has_ctrl and is_backslash:
+                logger.warning("Emergency stop shortcut (Ctrl+\\) triggered.")
+                stop_workflow()
+                return False
+        except Exception:
+            pass
+
+    def on_release(key):
+        try:
+            key_name = ""
+            if hasattr(key, 'char') and key.char is not None:
+                key_name = str(key.char).lower()
+            else:
+                key_name = str(key).replace("Key.", "").lower()
+            _pressed_keys_for_stop.discard(key_name)
+        except Exception:
+            pass
+
+    listener = KeyboardListener(on_press=on_press, on_release=on_release)
+    listener.start()
+    # ---------------------------------------------
     
     try:
         from core.recorder.screen_capturer import get_macros_root
@@ -157,6 +196,7 @@ def run_workflow(workflow_id: str, config: AppConfig):
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
+        listener.stop()
         _is_running = False
         _stop_requested = False
 

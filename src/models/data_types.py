@@ -166,7 +166,7 @@ class QualityGateJudgment(BaseModel):
 class SyntheticTrainingSample(BaseModel):
     sample_id: str = Field(..., description="サンプルの一意な識別子")
     input_context: IntegratedEvent = Field(..., description="プロンプト入力となる統合ログデータ")
-    target_output: WorkflowEvent = Field(..., description="LLMが生成すべき理想的なワークフロー出力")
+    target_output: WorkflowStep = Field(..., description="LLMが生成すべき理想的なワークフロー出力")
     judgment: QualityGateJudgment = Field(..., description="品質ゲートを通過した際の評価証跡")
 
 

@@ -1,3 +1,6 @@
+# GUI Framework
+PySide6
+
 # Web Framework & Validation
 fastapi
 uvicorn
@@ -6,11 +9,13 @@ requests
 
 # OS Hooks & Automation
 pynput
+mss
 
 # AI Models (Local)
 llama-cpp-python
 ultralytics
+onnxruntime
 
-# CV Utils (NDLOCR-Lite等の画像処理基盤として一般的に必要な場合)
+# CV Utils
 opencv-python
 numpy
