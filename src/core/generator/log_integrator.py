@@ -535,7 +535,9 @@ def generate_macro_workflow(
                                 "x": win_c.x + rel_c.x,
                                 "y": win_c.y + rel_c.y,
                                 "button": params.button or "left",
-                                "clicks": 1
+                                "clicks": 1,
+                                "step_id": step.step_id,
+                                "raw_event_id": raw_event_id
                             }
                         })
                 elif cmd_type == "MOUSE_HOVER":
@@ -546,7 +548,9 @@ def generate_macro_workflow(
                             "method": "hover",
                             "args": {
                                 "x": win_c.x + rel_c.x,
-                                "y": win_c.y + rel_c.y
+                                "y": win_c.y + rel_c.y,
+                                "step_id": step.step_id,
+                                "raw_event_id": raw_event_id
                             }
                         })
                 elif cmd_type == "MOUSE_SCROLL":
@@ -563,7 +567,9 @@ def generate_macro_workflow(
                                     "dx": dx_val,
                                     "dy": dy_val,
                                     "x": int(x_val),
-                                    "y": int(y_val)
+                                    "y": int(y_val),
+                                    "step_id": step.step_id,
+                                    "raw_event_id": raw_event_id
                                 }
                             })
                         except Exception:
@@ -572,13 +578,21 @@ def generate_macro_workflow(
                     if params.key:
                         commands_data.append({
                             "method": "press_key",
-                            "args": {"key": params.key}
+                            "args": {
+                                "key": params.key,
+                                "step_id": step.step_id,
+                                "raw_event_id": raw_event_id
+                            }
                         })
                 elif cmd_type == "TYPE_TEXT":
                     if params.text:
                         commands_data.append({
                             "method": "type_text",
-                            "args": {"text": params.text}
+                            "args": {
+                                "text": params.text,
+                                "step_id": step.step_id,
+                                "raw_event_id": raw_event_id
+                            }
                         })
 
             exec_macro_dict = {
@@ -595,10 +609,6 @@ def generate_macro_workflow(
 
         except Exception as e:
              logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
-
-        # if temp_dir.exists() and temp_dir.is_dir():
-        #     shutil.rmtree(temp_dir)
-        #     logger.info(f"[{workflow_id}] Cleaned up temp directory.")
 
         if progress_callback:
             progress_callback(100, "完了")

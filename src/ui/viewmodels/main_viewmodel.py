@@ -1,3 +1,4 @@
+# src/ui/viewmodels/main_viewmodel.py
 # @role: メインウィンドウのUI状態を管理し、非同期スレッドを用いてビューからのアクションをビジネスロジック(Core層)へ安全に中継・結合するViewModel層。
 
 import logging
@@ -23,8 +24,8 @@ class MainViewModel(QObject):
     generation_finished = Signal(bool, str)
     recording_stopped_by_shortcut = Signal()
     
-    # バックグラウンドスレッドからのコールバックをQtのイベントループに乗せるための内部シグナル
     _internal_shortcut_signal = Signal()
+    _internal_status_signal = Signal(str, bool) # 自己修復UI通知用シグナル
 
     def __init__(self):
         super().__init__()
@@ -32,20 +33,25 @@ class MainViewModel(QObject):
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
         
-        # pynputのバックグラウンドスレッドで発行されるシグナルを、UIスレッドのイベントキューへ安全に繋ぐ
         self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
+        self._internal_status_signal.connect(self._on_internal_status, Qt.QueuedConnection)
         os_hook.set_shortcut_stop_callback(self._trigger_shortcut_signal)
 
     def _trigger_shortcut_signal(self):
-        # pynputのバックグラウンドスレッドで実行され、UIスレッドへディスパッチされる
-        print("MainViewModel: バックグラウンドスレッドからショートカット通知を受け取りました。UIスレッドへ転送します。")
         self._internal_shortcut_signal.emit()
 
     @Slot()
     def _on_internal_shortcut(self):
-        # 完全に安全なメインUIスレッド上で実行され、MainWindowへと伝達される
-        print("MainViewModel: UIスレッド上でショートカット通知を処理します。MainWindowへ送信します。")
         self.recording_stopped_by_shortcut.emit()
+
+    @Slot(str, bool)
+    def _on_internal_status(self, text: str, is_healing: bool):
+        # 完全に安全なUIスレッド上で、RunningDialogのUI要素を更新する
+        try:
+            from ui.views.running_dialog import RunningDialog
+            RunningDialog.set_status(text, is_healing)
+        except Exception as e:
+            logger.error(f"Failed to update running dialog status: {e}")
 
     def load_macros(self):
         try:
@@ -204,9 +210,12 @@ class MainViewModel(QObject):
             
             app_config = ConfigManager.load_config()
             
+            def status_cb(text: str, is_healing: bool):
+                self._internal_status_signal.emit(text, is_healing)
+            
             def background_execution(cfg: AppConfig):
                 try:
-                    runner.run_workflow(workflow_id, cfg)
+                    runner.run_workflow(workflow_id, cfg, status_callback=status_cb)
                     logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
                 except Exception as exec_err:
                     logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
@@ -228,7 +237,7 @@ class MainViewModel(QObject):
             
         workflow_id = self._macro_id_map.get(macro_name)
         if not workflow_id:
-            logger.warning(f'Delete requested, but tracking map does not contain macro: {macro_name}')
+            logger.warning(f'Delete requested, but tracking map does not macro: {macro_name}')
             return
             
         try:
