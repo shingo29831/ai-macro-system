@@ -33,10 +33,18 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     event_no = state.get_next_event_no()
     dt = now_datetime()
     window_info = process_monitor.get_foreground_window_info()
+    
+    # ページ遷移が起きる前の「キー押下直前」の正確なスクリーンショットを同期的に取得する
+    try:
+        pre_full_img, pre_monitor = screen_capturer.take_screenshot()
+        pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
+    except Exception:
+        pre_full_img, pre_monitor, pre_ref = None, None, None
+
     state.key_event_queue.put({
         "event_no": event_no, "datetime": dt, "input_type": input_type,
         "key": key_text, "keys": keys or [], "window_info": window_info,
-        "pre_img": None, "pre_ref": None,
+        "pre_img": pre_full_img, "pre_ref": pre_ref, "pre_monitor": pre_monitor
     })
 
 def process_key_event(event: dict):
@@ -44,17 +52,20 @@ def process_key_event(event: dict):
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
 
-    pre_img = event.get("pre_img") or screen_capturer.take_screenshot()[0]
-    pre_ref = event.get("pre_ref") or screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+    pre_img = event.get("pre_img")
+    pre_ref = event.get("pre_ref")
+    if not pre_img:
+        pre_img, _ = screen_capturer.take_screenshot()
+        pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+        
     diff = calculate_and_update_diff(pre_img)
 
     log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff}
     state.append_log(log)
     print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}")
 
-def process_hover_event(event: dict):
+def process_move_event(event: dict):
     try:
-        time.sleep(0.2)
         event_no = state.get_next_event_no()
         dt = now_datetime()
         x, y = int(event["x"]), int(event["y"])
@@ -76,7 +87,7 @@ def process_hover_event(event: dict):
                 old_path.rename(old_path.with_name(new_name))
                 pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
 
-        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_hover", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y)
+        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_move", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y)
         ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
 
         if ui_rect is not None:
@@ -97,9 +108,9 @@ def process_hover_event(event: dict):
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff_str}
         state.append_log(log)
-        print(f"ホバーログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
+        print(f"マウス移動ログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
     except Exception:
-        print("ホバー処理中にエラーが発生しました")
+        print("マウス移動処理中にエラーが発生しました")
         traceback.print_exc()
 
 def process_click_event(event: dict, input_type: str, click_count: int):
@@ -229,8 +240,8 @@ def process_scroll_event(event: dict):
 
 def _handle_mouse_event(evt: dict):
     evt_type = evt.get("type")
-    if evt_type == "hover":
-        process_hover_event(evt)
+    if evt_type in ["hover", "move"]:
+        process_move_event(evt)
         return
     elif evt_type == "scroll":
         process_scroll_event(evt)
@@ -316,15 +327,12 @@ def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unk
     current_time = time.time()
     
     with _scroll_lock:
-        # pynputとwin_scrollの両方で捕捉された場合の重複記録を防ぐ 
-        # (50ms->10ms に短縮して高速スクロール・慣性スクロールを取りこぼさないように調整)
         if (current_time - _last_scroll_time < 0.01) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
             return
         _last_scroll_time = current_time
         _last_scroll_dx = dx
         _last_scroll_dy = dy
 
-    # OSのフックタイムアウトを防ぐため、直接処理せずキューに積む
     state.mouse_event_queue.put({
         "type": "scroll",
         "x": x,

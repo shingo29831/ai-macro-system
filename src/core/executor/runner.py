@@ -112,8 +112,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 logger.warning(f"[{workflow_id}] Failed to load variables.json: {e}")
             
         commands = macro_data.get("commands", [])
-        
-        # 自己修復によって座標が上書きされたかを判定するフラグ
         macro_needs_save = False
         
         for i, cmd in enumerate(commands):
@@ -126,11 +124,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
             logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
             
-            # === Stage 1: 画像テンプレートマッチングによる高精度なズレ検知と自己修復(Healer)の起動 ===
+            # === Stage 1: 画像テンプレートマッチングとキー入力直前を含むHealerの起動 ===
             raw_event_id = args.get("raw_event_id")
-            step_id = args.get("step_id")
+            target_id = args.get("target_id")
             
-            if raw_event_id and step_id and method in ["click", "hover", "scroll", "type_text"]:
+            # キーボード入力時など遷移後の画面検証も含めるように拡張
+            if raw_event_id and target_id and method in ["click", "move", "type_text", "press_key"]:
                 needs_recovery = False
                 
                 crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
@@ -146,7 +145,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     current_img_pil, _ = take_screenshot()
 
                     if crop_image_path.exists():
-                        # 記録時のUIの切り抜き画像を使って現在の画面から正確な位置を探す
                         current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
                         template_cv = cv2.imread(str(crop_image_path), cv2.IMREAD_COLOR)
 
@@ -154,22 +152,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             res = cv2.matchTemplate(current_img_cv, template_cv, cv2.TM_CCOEFF_NORMED)
                             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
                             
-                            # 類似度が80%未満の場合はUIの見た目が変化した・消失したと判定
                             if max_val < 0.8:
                                 logger.warning(f"[{workflow_id}] Template match failed (Confidence: {max_val:.2f}). Initiating Healer...")
                                 needs_recovery = True
                             else:
-                                # マッチした位置の中心座標を計算
                                 match_center_x = max_loc[0] + template_cv.shape[1] // 2
                                 match_center_y = max_loc[1] + template_cv.shape[0] // 2
                                 
                                 expected_x = args.get("x", 0)
                                 expected_y = args.get("y", 0)
                                 
-                                # 本来クリックする予定の座標と、現在UIが存在する実際の座標の距離を測る
                                 dist = ((match_center_x - expected_x)**2 + (match_center_y - expected_y)**2)**0.5
                                 
-                                # 20ピクセル以上ズレていればクリックミスを防ぐために修復を起動
                                 if dist > 20:
                                     logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
                                     needs_recovery = True
@@ -177,7 +171,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             needs_recovery = True
                             
                     elif pre_image_path.exists():
-                        # 切り抜き画像がない場合は、全画面差分の閾値を 15.0% -> 2.0% に大幅に下げて敏感に検知する
                         original_img = Image.open(pre_image_path)
                         diff_str = calculate_diff_percent(original_img, current_img_pil)
                         diff_val = float(diff_str.replace("%", ""))
@@ -186,25 +179,25 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             logger.warning(f"[{workflow_id}] Visual drift detected (Diff: {diff_val}%). Initiating Healer...")
                             needs_recovery = True
 
-                    # ズレ検知時の自己修復 (Stage 2: YOLO/OCRによる意味的再検索) の実行
                     if needs_recovery:
                         if status_callback:
                             status_callback("自己修復中...", True)
                             
-                        recovery_result = attempt_recovery(workflow_id, step_id)
+                        recovery_result = attempt_recovery(workflow_id, target_id)
                         
                         if recovery_result.get("success"):
                             new_coords = recovery_result.get("new_coordinates")
-                            if new_coords and method in ["click", "hover", "scroll"]:
-                                # 記録時のテキストやYOLO情報から新しく見つけ出した座標でアクションを上書きする
+                            if new_coords and method in ["click", "move"]:
                                 args["x"] = new_coords["x"]
                                 args["y"] = new_coords["y"]
                                 logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
-                                
-                                # 成功した場合、次回の実行のためにファイルに保存するフラグを立てる
                                 macro_needs_save = True
                         else:
-                            logger.warning(f"[{workflow_id}] Healer failed to recover. Proceeding with original coordinates.")
+                            # Healerが失敗した場合、強制的にエラー終了させて誤操作（空振り）を防ぐ
+                            logger.error(f"[{workflow_id}] Healer failed to recover. Aborting execution to prevent mis-clicks.")
+                            if status_callback:
+                                status_callback("実行中...", False)
+                            raise RuntimeError("自己修復に失敗したため、安全のためにマクロの実行を停止しました。")
                         
                         if status_callback:
                             status_callback("実行中...", False)
@@ -213,6 +206,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     logger.error(f"[{workflow_id}] Error during image validation/recovery: {e}")
                     if status_callback:
                         status_callback("実行中...", False)
+                    if "安全のため" in str(e):
+                        raise e
             # =======================================
             
             if method == "wait":
@@ -238,7 +233,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 time.sleep(0.05)
                 mouse.click(btn, clicks)
 
-            elif method == "hover":
+            elif method == "move":
                 x = args.get("x", 0)
                 y = args.get("y", 0)
                 
@@ -295,7 +290,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 logger.warning(f"Unknown method: {method}")
                 
         if not _stop_requested:
-            # === 自己修復で座標が更新された場合、次回の実行のためにファイルへ上書き保存する ===
             if macro_needs_save:
                 try:
                     with open(executable_macro_path, 'w', encoding='utf-8') as f:

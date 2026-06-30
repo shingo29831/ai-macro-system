@@ -7,7 +7,6 @@
 # 【参照先】
 #   - engines/yolo/detector.py (座標上書き用UI検出)
 #   - engines/ocr/reader.py (座標上書き用テキスト検出)
-#   - core/generator/log_integrator.py (動的再生成用)
 
 import json
 import logging
@@ -21,49 +20,46 @@ from engines.ocr.reader import read_text_from_image
 
 logger = logging.getLogger(__name__)
 
-def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any]:
+def attempt_recovery(workflow_id: str, target_id: str) -> Dict[str, Any]:
     """
-    エラー発生時に自己修復ツリーを実行し、修復結果（成功/失敗と補正された座標等のアクション）を返す。
+    エラー発生時に ui_targets.json の変数を参照して画面をスキャンし、修復された座標を返す。
     """
-    logger.info(f"[{workflow_id}] Initiating self-recovery for step {current_step_index}.")
+    logger.info(f"[{workflow_id}] Initiating self-recovery using variables for target: {target_id}")
 
     macros_root = get_macros_root()
     target_dir = macros_root / workflow_id
-    workflow_path = target_dir / "workflow.json"
+    ui_targets_path = target_dir / "ui_targets.json"
     
-    if not workflow_path.exists():
-        logger.error(f"[{workflow_id}] Recovery failed: workflow.json not found.")
-        return {"success": False, "reason": "workflow_not_found"}
+    if not ui_targets_path.exists():
+        logger.error(f"[{workflow_id}] Recovery failed: ui_targets.json not found.")
+        return {"success": False, "reason": "ui_targets_not_found"}
 
     try:
-        with open(workflow_path, 'r', encoding='utf-8') as f:
-            workflow_data = json.load(f)
+        with open(ui_targets_path, 'r', encoding='utf-8') as f:
+            ui_targets = json.load(f)
     except Exception as e:
-        logger.error(f"[{workflow_id}] Recovery failed: Could not parse workflow.json. Error: {e}")
-        return {"success": False, "reason": "workflow_parse_error"}
+        logger.error(f"[{workflow_id}] Recovery failed: Could not parse ui_targets.json. Error: {e}")
+        return {"success": False, "reason": "targets_parse_error"}
 
-    target_step = next((step for step in workflow_data.get("steps", []) if step.get("step_id") == current_step_index), None)
-    
-    if not target_step:
-        logger.warning(f"[{workflow_id}] Recovery aborted: Step {current_step_index} not found.")
-        return {"success": False, "reason": "step_not_found"}
+    target_info = ui_targets.get(target_id)
+    if not target_info:
+        logger.warning(f"[{workflow_id}] Recovery aborted: Target ID {target_id} not found in variables.")
+        return {"success": False, "reason": "target_id_missing"}
 
-    action_params = target_step.get("action", {}).get("parameters", {})
-    target_selector = action_params.get("target", {})
-    semantic_role = target_selector.get("semantic_role") if isinstance(target_selector, dict) else None
+    semantic_role = target_info.get("semantic_role")
+    ui_type = target_info.get("ui_type")
 
-    # UI要素に依存しないアクション（待機やキーボードショートカットなど）の場合は修復対象外
     if not semantic_role:
-        logger.warning(f"[{workflow_id}] Recovery aborted: No semantic_role found for step {current_step_index}.")
-        return {"success": False, "reason": "no_semantic_role_target"}
+        logger.warning(f"[{workflow_id}] Recovery aborted: No semantic_role text found for {target_id}.")
+        return {"success": False, "reason": "no_semantic_role"}
 
-    logger.info(f"[{workflow_id}] Stage 2: Scanning current screen for element '{semantic_role}'...")
+    logger.info(f"[{workflow_id}] Stage 2: Scanning current screen for variable '{semantic_role}' (Type: {ui_type})...")
     
     full_img, monitor_info = take_screenshot()
     
     temp_dir = target_dir / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_img_path = temp_dir / f"recovery_s2_step{current_step_index}.png"
+    temp_img_path = temp_dir / f"recovery_s2_{target_id}.png"
     
     try:
         full_img.save(temp_img_path)
@@ -72,7 +68,6 @@ def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any
         return {"success": False, "reason": "screenshot_save_error"}
 
     try:
-        # OCRとYOLOを並列実行してボトルネックを最小化
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_ocr = executor.submit(read_text_from_image, str(temp_img_path))
             future_yolo = executor.submit(detect_ui_elements, str(temp_img_path))
@@ -84,7 +79,7 @@ def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any
         best_confidence = 0.0
         target_text_lower = str(semantic_role).lower()
 
-        # 1. OCR結果からテキストの一致を探索 (完全一致または部分一致を優先)
+        # 1. OCR結果からテキストの一致を探索
         if ocr_results:
             for ocr_res in ocr_results:
                 if not ocr_res.content:
@@ -96,10 +91,10 @@ def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any
                         best_confidence = ocr_res.confidence
                         found_box = ocr_res.boundingBox
 
-        # 2. YOLO結果から該当する役割（button, iconなど）を探す（テキストが見つからなかった場合のフォールバック）
+        # 2. YOLO結果から該当する役割（buttonなど）を探す
         if not found_box and yolo_results:
             for yolo_res in yolo_results:
-                if yolo_res.type.lower() == target_text_lower:
+                if yolo_res.type.lower() == ui_type.lower() or yolo_res.type.lower() == target_text_lower:
                     if yolo_res.confidence > best_confidence:
                         best_confidence = yolo_res.confidence
                         found_box = yolo_res.boundingBox
@@ -113,11 +108,10 @@ def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any
             monitor_left = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
             monitor_top = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
             
-            # 発見したBoundingBoxの中心座標をスクリーン絶対座標として計算
             center_x = monitor_left + b_x + (b_w // 2)
             center_y = monitor_top + b_y + (b_h // 2)
             
-            logger.info(f"[{workflow_id}] Stage 2 Success: '{semantic_role}' found at ({center_x}, {center_y}) [Confidence: {best_confidence:.2f}].")
+            logger.info(f"[{workflow_id}] Stage 2 Success: Variable '{semantic_role}' found at ({center_x}, {center_y}) [Confidence: {best_confidence:.2f}].")
             
             return {
                 "success": True,
@@ -126,9 +120,7 @@ def attempt_recovery(workflow_id: str, current_step_index: int) -> Dict[str, Any
                 "new_coordinates": {"x": int(center_x), "y": int(center_y)}
             }
 
-        logger.warning(f"[{workflow_id}] Stage 2 Failed: '{semantic_role}' not found. Escalating to Stage 3...")
-        
-        # TODO: Stage 3 (AI動的再生成) への移行ロジックをここに実装予定
+        logger.warning(f"[{workflow_id}] Stage 2 Failed: Variable '{semantic_role}' not found.")
         return {"success": False, "reason": "element_not_found"}
 
     except Exception as e:

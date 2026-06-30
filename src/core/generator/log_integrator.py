@@ -122,8 +122,8 @@ def generate_macro_workflow(
 
                 raw_type_lower = raw_type.lower()
                 is_scroll = "scroll" in raw_type_lower
-                is_hover = "hover" in raw_type_lower
-                is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_hover)
+                is_move = "hover" in raw_type_lower or "move" in raw_type_lower
+                is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_move)
                 is_key = "key" in raw_type_lower
 
                 dx = 0.0
@@ -134,8 +134,8 @@ def generate_macro_workflow(
                     if isinstance(content_data, dict):
                         dx = content_data.get("dx", 0.0)
                         dy = content_data.get("dy", 0.0)
-                elif is_hover:
-                    action_type = "hover"
+                elif is_move:
+                    action_type = "move"
                 elif is_click:
                     action_type = "click"
                 elif is_key:
@@ -164,7 +164,7 @@ def generate_macro_workflow(
                 except (ValueError, TypeError):
                     diff_val = 0.0
 
-                if action_type == "hover":
+                if action_type == "move":
                     if crop_path_str and "delete_" in crop_path_str:
                         continue
                     if diff_val < 0.001:
@@ -187,7 +187,7 @@ def generate_macro_workflow(
                         
                         if ocr_results:
                             best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                            if best_ocr.content and action_type in ["click", "hover"]:
+                            if best_ocr.content and action_type in ["click", "move"]:
                                 semantic_role = best_ocr.content
                                 
                             for ocr_res in ocr_results:
@@ -303,7 +303,7 @@ def generate_macro_workflow(
             summary_for_llm = [
                 {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
                 for info in temp_workflow_info
-                if info["raw_action"] in ["click", "hover"]
+                if info["raw_action"] in ["click", "move"]
             ]
             
             if summary_for_llm:
@@ -353,14 +353,6 @@ def generate_macro_workflow(
                                         raise ValueError("Missing 'id' or 'semantic_role' in JSON object")
                                     
                                     role = str(item["semantic_role"])
-                                    
-                                    if len(role) > 30:
-                                        raise ValueError(f"semantic_role too long (hallucination suspected): {role}")
-                                    
-                                    role_lower = role.lower()
-                                    if any(word in role_lower for word in ["入力", "type", "enter", "text", "テキスト"]):
-                                        raise ValueError(f"Action confusion (hallucination suspected): {role}")
-                                        
                                     temp_enhanced_data[item["id"]] = role
                                 
                                 llm_enhanced_data = temp_enhanced_data
@@ -383,6 +375,8 @@ def generate_macro_workflow(
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
 
         workflow_steps = []
+        ui_targets_dict = {}
+        
         start_time = integrated_events[0].timestamp if integrated_events else 0
         end_time = integrated_events[-1].timestamp if integrated_events else 0
         
@@ -401,6 +395,15 @@ def generate_macro_workflow(
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
+            # === UIターゲット辞書への抽出 (キー入力操作の直前比較用にも対象を拡張) ===
+            target_id = None
+            if raw_action in ["click", "move", "type_text", "key_down"]:
+                target_id = f"tgt_{step_idx}"
+                ui_targets_dict[target_id] = {
+                    "semantic_role": final_semantic_role,
+                    "ui_type": info.get("ui_type", "unknown")
+                }
+            
             if raw_action == "click":
                 cmd = "MOUSE_CLICK"
                 intent = "CLICK_UI_ELEMENT"
@@ -409,10 +412,10 @@ def generate_macro_workflow(
                     target=UniversalSelector(semantic_role=final_semantic_role),
                     button=info["button"]
                 )
-            elif raw_action == "hover":
-                cmd = "MOUSE_HOVER"
-                intent = "HOVER_UI_ELEMENT"
-                desc = f"Hover on the {final_semantic_role} element."
+            elif raw_action == "move":
+                cmd = "MOUSE_MOVE"
+                intent = "MOVE_CURSOR"
+                desc = f"Move cursor to the {final_semantic_role} element."
                 params = ActionParameters(
                     target=UniversalSelector(semantic_role=final_semantic_role)
                 )
@@ -445,10 +448,6 @@ def generate_macro_workflow(
                     desc = f"Press the {parsed_key} key."
                     params = ActionParameters(key=parsed_key)
                 else:
-                    if len(final_semantic_role) > 1 and not (final_semantic_role.startswith("{{") and final_semantic_role.endswith("}}")):
-                        logger.warning(f"[{workflow_id}] Dropped invalid type_text string (system ghost/hallucination): {final_semantic_role}")
-                        continue
-
                     cmd = "TYPE_TEXT"
                     intent = "INPUT_TEXT"
                     desc = f"Type the text: '{final_semantic_role}'"
@@ -480,11 +479,12 @@ def generate_macro_workflow(
         )
 
         if progress_callback:
-            progress_callback(95, "ファイル出力中... integrated.json / workflow.json")
+            progress_callback(95, "ファイル出力中... integrated.json / workflow.json / ui_targets.json")
 
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
         variables_path = target_dir / "variables.json"
+        ui_targets_path = target_dir / "ui_targets.json"
 
         with open(integrated_path, 'w', encoding='utf-8') as f:
             json.dump([evt.model_dump() for evt in integrated_events], f, indent=4, ensure_ascii=False)
@@ -494,8 +494,11 @@ def generate_macro_workflow(
             
         with open(variables_path, 'w', encoding='utf-8') as f:
             json.dump(variables, f, indent=4, ensure_ascii=False)
+            
+        with open(ui_targets_path, 'w', encoding='utf-8') as f:
+            json.dump(ui_targets_dict, f, indent=4, ensure_ascii=False)
 
-        logger.info(f"[{workflow_id}] Successfully generated integrated, workflow v2.0, and variables.json ({len(workflow_steps)} steps).")
+        logger.info(f"[{workflow_id}] Successfully generated integrated, workflow v2.0, variables, and ui_targets.json.")
 
         if progress_callback:
             progress_callback(98, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
@@ -515,7 +518,7 @@ def generate_macro_workflow(
                 if prev_timestamp is not None:
                     duration = (current_timestamp - prev_timestamp) / 1000.0
                     if duration > 0.05:
-                        duration = min(duration, 60.0)
+                        duration = min(duration, 1.5)
                         commands_data.append({
                             "method": "wait",
                             "args": {"duration": round(duration, 3)}
@@ -524,6 +527,7 @@ def generate_macro_workflow(
                 
                 cmd_type = step.action.command
                 params = step.action.parameters
+                target_id_for_healer = f"tgt_{step.step_id}"
 
                 if cmd_type == "MOUSE_CLICK":
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
@@ -536,20 +540,20 @@ def generate_macro_workflow(
                                 "y": win_c.y + rel_c.y,
                                 "button": params.button or "left",
                                 "clicks": 1,
-                                "step_id": step.step_id,
+                                "target_id": target_id_for_healer,
                                 "raw_event_id": raw_event_id
                             }
                         })
-                elif cmd_type == "MOUSE_HOVER":
+                elif cmd_type == "MOUSE_MOVE":
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
                         commands_data.append({
-                            "method": "hover",
+                            "method": "move",
                             "args": {
                                 "x": win_c.x + rel_c.x,
                                 "y": win_c.y + rel_c.y,
-                                "step_id": step.step_id,
+                                "target_id": target_id_for_healer,
                                 "raw_event_id": raw_event_id
                             }
                         })
@@ -567,9 +571,7 @@ def generate_macro_workflow(
                                     "dx": dx_val,
                                     "dy": dy_val,
                                     "x": int(x_val),
-                                    "y": int(y_val),
-                                    "step_id": step.step_id,
-                                    "raw_event_id": raw_event_id
+                                    "y": int(y_val)
                                 }
                             })
                         except Exception:
@@ -580,7 +582,7 @@ def generate_macro_workflow(
                             "method": "press_key",
                             "args": {
                                 "key": params.key,
-                                "step_id": step.step_id,
+                                "target_id": target_id_for_healer,
                                 "raw_event_id": raw_event_id
                             }
                         })
@@ -590,7 +592,7 @@ def generate_macro_workflow(
                             "method": "type_text",
                             "args": {
                                 "text": params.text,
-                                "step_id": step.step_id,
+                                "target_id": target_id_for_healer,
                                 "raw_event_id": raw_event_id
                             }
                         })
