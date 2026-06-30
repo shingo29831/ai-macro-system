@@ -7,11 +7,12 @@ import queue
 from pathlib import Path
 from core.recorder import screen_capturer, process_monitor
 from core.recorder.state import state
-from core.recorder.utils import now_datetime, mouse_button_to_string, make_combo_text
+from core.recorder.utils import now_datetime, mouse_button_to_string, make_combo_text, calculate_distance, serialize_ui_rect
 from core.recorder.log_builder import build_base_log, build_scroll_log
 
 DOUBLE_CLICK_INTERVAL_SEC = 0.35
 DOUBLE_CLICK_MAX_DISTANCE = 8
+DRAG_MIN_DISTANCE = 12
 
 def calculate_and_update_diff(current_img) -> str:
     with state.previous_screenshot_lock:
@@ -123,6 +124,68 @@ def run_click_process_thread(event: dict, input_type: str, click_count: int):
     state.is_click_processing = True
     threading.Thread(target=process_click_event, args=(event, input_type, click_count), daemon=True).start()
 
+def process_drag_event(event: dict):
+    try:
+        event_no = event["event_no"]
+        dt = event["datetime"]
+        start_x = int(event["x"])
+        start_y = int(event["y"])
+        end_x = int(event["drop_x"])
+        end_y = int(event["drop_y"])
+        button = event["button"]
+
+        pre_img = event["pre_full_img"]
+        pre_monitor = event["pre_monitor"]
+        pre_ref = event["pre_ref"]
+
+        source_window_name = event["window_info"].get("title", "")
+        drop_window = event.get("drop_window") or {}
+        target_window_name = drop_window.get("title", "")
+
+        source_ui_rect = process_monitor.get_ui_element_rect_at_point(start_x, start_y)
+
+        content = {
+            "button": mouse_button_to_string(button),
+            "start_screen_coordinates": {"x": start_x, "y": start_y},
+            "end_screen_coordinates": {"x": end_x, "y": end_y},
+            "drag_distance": round(float(event["drag_distance"]), 2),
+            "source_window_name": source_window_name,
+            "target_window_name": target_window_name,
+            "source_ui_rect": serialize_ui_rect(source_ui_rect),
+            "target_ui_rect": serialize_ui_rect(event.get("drop_ui_rect")),
+        }
+
+        log = build_base_log(
+            event_no=event_no, dt=dt, input_type="mouse_drag", content=content,
+            window_info=event["window_info"], cursor_x=start_x, cursor_y=start_y
+        )
+
+        if source_ui_rect is not None:
+            crop = screen_capturer.save_ui_crop_by_rect(event_no=event_no, rect=source_ui_rect, full_img=pre_img, monitor=pre_monitor)
+        else:
+            crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=start_x, click_y=start_y, full_img=pre_img, monitor=pre_monitor)
+
+        crop_ref = crop.get("ui_image_ref", "切り抜き失敗")
+        diff = calculate_and_update_diff(pre_img)
+
+        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
+        state.append_log(log)
+
+        print(f"ドラッグログ追加: evt_{event_no}, start=({start_x}, {start_y}), end=({end_x}, {end_y}), distance={event['drag_distance']:.1f}")
+
+    except Exception:
+        print("ドラッグ処理中にエラーが発生しました")
+        traceback.print_exc()
+    finally:
+        state.is_click_processing = False
+
+def run_drag_process_thread(event: dict):
+    if state.is_click_processing:
+        print("前のクリック/ドラッグ処理中のため、このドラッグは無視します")
+        return
+    state.is_click_processing = True
+    threading.Thread(target=process_drag_event, args=(event,), daemon=True).start()
+
 def is_same_click(first_event: dict | None, second_event: dict | None) -> bool:
     if first_event is None or second_event is None: return False
     if str(first_event["button"]) != str(second_event["button"]): return False
@@ -164,6 +227,35 @@ def _handle_mouse_event(evt: dict):
         state.latest_mouse_down_event = None
 
     if current_event is None: return
+
+    drag_distance = calculate_distance(current_event["x"], current_event["y"], x, y)
+
+    if drag_distance >= DRAG_MIN_DISTANCE:
+        with state.pending_click_lock:
+            previous_click = state.pending_click_event
+            if state.pending_click_timer:
+                state.pending_click_timer.cancel()
+            state.pending_click_event = None
+            state.pending_click_timer = None
+
+        if previous_click is not None:
+            run_click_process_thread(previous_click, input_type="mouse_click", click_count=1)
+
+        drop_window = process_monitor.get_window_title_at_point(x, y)
+        drop_ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
+
+        drag_event = {
+            **current_event,
+            "drop_x": x,
+            "drop_y": y,
+            "drag_distance": drag_distance,
+            "drop_window": drop_window,
+            "drop_ui_rect": drop_ui_rect,
+        }
+
+        run_drag_process_thread(drag_event)
+        return
+
     previous_event_to_process = None
 
     with state.pending_click_lock:
