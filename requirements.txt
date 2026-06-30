@@ -9,6 +9,7 @@ requests
 
 # OS Hooks & Automation
 pynput
+mss
 
 # AI Models (Local)
 llama-cpp-python
