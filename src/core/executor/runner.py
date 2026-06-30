@@ -113,6 +113,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
         commands = macro_data.get("commands", [])
         
+        # 自己修復によって座標が上書きされたかを判定するフラグ
+        macro_needs_save = False
+        
         for i, cmd in enumerate(commands):
             if _stop_requested:
                 logger.warning(f"[{workflow_id}] Execution aborted by user emergency stop.")
@@ -197,6 +200,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 args["x"] = new_coords["x"]
                                 args["y"] = new_coords["y"]
                                 logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
+                                
+                                # 成功した場合、次回の実行のためにファイルに保存するフラグを立てる
+                                macro_needs_save = True
                         else:
                             logger.warning(f"[{workflow_id}] Healer failed to recover. Proceeding with original coordinates.")
                         
@@ -289,6 +295,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 logger.warning(f"Unknown method: {method}")
                 
         if not _stop_requested:
+            # === 自己修復で座標が更新された場合、次回の実行のためにファイルへ上書き保存する ===
+            if macro_needs_save:
+                try:
+                    with open(executable_macro_path, 'w', encoding='utf-8') as f:
+                        json.dump(macro_data, f, indent=4, ensure_ascii=False)
+                    logger.info(f"[{workflow_id}] Successfully saved healed coordinates to executable_macro.json for future runs.")
+                except Exception as e:
+                    logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
+
             logger.info(f"[{workflow_id}] Macro execution finished successfully.")
         
     except Exception as e:
