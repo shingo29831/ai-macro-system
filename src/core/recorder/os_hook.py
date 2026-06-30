@@ -248,11 +248,14 @@ _native_scroll_hook_active = False
 # ホバー検知（軌跡判定）用
 _mouse_path: list[tuple[float, float, float]] = []
 
-_shortcut_stop_callback = None
+_shortcut_stop_requested = False
 
-def set_shortcut_stop_callback(callback):
-    global _shortcut_stop_callback
-    _shortcut_stop_callback = callback
+def check_shortcut_stop_request() -> bool:
+    global _shortcut_stop_requested
+    if _shortcut_stop_requested:
+        _shortcut_stop_requested = False
+        return True
+    return False
 
 # =========================
 # 基本関数
@@ -1273,11 +1276,9 @@ def on_press(key):
             global _is_stopping
             if not _is_stopping:
                 _is_stopping = True
-                print("Ctrl + \\ が押されたため記録を停止します")
-                if _shortcut_stop_callback:
-                    _shortcut_stop_callback()
-                else:
-                    stop_recording()
+                global _shortcut_stop_requested
+                _shortcut_stop_requested = True
+                print("Ctrl + \\ が押されたため記録を停止します (UIへ通知)")
             return
 
     try:
@@ -1432,6 +1433,7 @@ def start_recording():
     global _pending_click_event
     global _pending_click_timer
     global _latest_mouse_down_event
+    global _shortcut_stop_requested
 
     if _is_recording:
         print("すでに記録中です")
@@ -1453,6 +1455,7 @@ def start_recording():
         _latest_mouse_down_event = None
 
         _is_stopping = False
+        _shortcut_stop_requested = False
         _is_click_processing = False
 
         process_monitor.start_process_monitors()
@@ -1484,6 +1487,7 @@ def start_recording():
     except Exception:
         _is_recording = False
         _is_stopping = False
+        _shortcut_stop_requested = False
 
         stop_native_scroll_hook()
         stop_mouse_event_worker()

@@ -6,7 +6,7 @@ import json
 import shutil
 import threading
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
@@ -29,11 +29,15 @@ class MainViewModel(QObject):
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
         
-        os_hook.set_shortcut_stop_callback(self._on_shortcut_stop)
+        # pynputのバックグラウンドスレッドからQtのシステムに干渉しないように、UIスレッドから定期的にポーリングする
+        self._shortcut_check_timer = QTimer(self)
+        self._shortcut_check_timer.setInterval(200)
+        self._shortcut_check_timer.timeout.connect(self._check_shortcut_status)
 
-    def _on_shortcut_stop(self):
-        # QObjectのSignalは別スレッドからemitしても自動的にQueuedConnectionとしてUIスレッドのイベントループで処理されます
-        self.recording_stopped_by_shortcut.emit()
+    def _check_shortcut_status(self):
+        if os_hook.check_shortcut_stop_request():
+            self._shortcut_check_timer.stop()
+            self.recording_stopped_by_shortcut.emit()
 
     def load_macros(self):
         try:
@@ -91,6 +95,7 @@ class MainViewModel(QObject):
         try:
             logger.info("Starting macro recording...")
             os_hook.start_recording()
+            self._shortcut_check_timer.start()
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             raise
@@ -103,6 +108,7 @@ class MainViewModel(QObject):
     @Slot()
     def stop_recording(self):
         try:
+            self._shortcut_check_timer.stop()
             self._cancel_requested = False
             logger.info("Stopping macro recording...")
             os_hook.stop_recording()
