@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowStep, WorkflowCommandAction, 
@@ -154,6 +155,7 @@ def generate_macro_workflow(
                 
                 images_data = log_entry.get("Images", {})
                 crop_path_str = images_data.get("Crop")
+                pre_img_path_str = images_data.get("Pre")
 
                 raw_diff = images_data.get("Diff", "0.0%")
                 try:
@@ -239,7 +241,8 @@ def generate_macro_workflow(
                     "dx": dx,
                     "dy": dy,
                     "cursor_x": cursor_x,
-                    "cursor_y": cursor_y
+                    "cursor_y": cursor_y,
+                    "pre_img_path": pre_img_path_str
                 })
 
         if progress_callback:
@@ -261,6 +264,36 @@ def generate_macro_workflow(
             
             if avg_diff < 0.3:
                 text = "".join([str(item["semantic_role"]) for item in current_group])
+                
+                # Use OCR to read the actual text input from the screen to bypass IME or autocomplete issues
+                last_key_event = current_group[-1]
+                pre_img_rel_path = last_key_event.get("pre_img_path")
+                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
+                
+                if last_click and pre_img_rel_path:
+                    pre_img_full_path = macros_root / pre_img_rel_path
+                    if pre_img_full_path.exists():
+                        try:
+                            with Image.open(pre_img_full_path) as img:
+                                cx, cy = last_click["cursor_x"], last_click["cursor_y"]
+                                left = max(0, cx - 50)
+                                top = max(0, cy - 30)
+                                right = min(img.width, cx + 400)
+                                bottom = min(img.height, cy + 30)
+                                
+                                crop_img = img.crop((left, top, right, bottom))
+                                temp_crop_path = temp_dir / f"temp_ocr_{last_key_event['event_id']}.png"
+                                crop_img.save(temp_crop_path)
+                                
+                                ocr_results = read_text_from_image(str(temp_crop_path))
+                                if ocr_results:
+                                    best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                                    if best_ocr.content:
+                                        text = best_ocr.content
+                                        logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
+                        except Exception as e:
+                            logger.error(f"[{workflow_id}] Failed to extract text via OCR: {e}")
+
                 var_name = f"search_query_{len(variables) + 1}"
                 variables[var_name] = text
                 
