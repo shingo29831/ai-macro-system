@@ -66,180 +66,180 @@ def generate_macro_workflow(
         
         total_events = len(log_entries)
 
-        for i, log_entry in enumerate(log_entries):
-            if check_cancel_callback and check_cancel_callback():
-                logger.info(f"[{workflow_id}] Generation cancelled by user.")
-                raise InterruptedError("Generation cancelled by user")
+        # Optimization: Instantiate ThreadPoolExecutor once outside the loop to avoid recreation overhead per event.
+        with ThreadPoolExecutor(max_workers=4) as cv_executor:
+            for i, log_entry in enumerate(log_entries):
+                if check_cancel_callback and check_cancel_callback():
+                    logger.info(f"[{workflow_id}] Generation cancelled by user.")
+                    raise InterruptedError("Generation cancelled by user")
 
-            if not isinstance(log_entry, dict):
-                continue
-                
-            event_no = log_entry.get("EventNo", f"{i+1:03d}")
-            event_id = f"evt_{event_no}" if not str(event_no).startswith("evt_") else str(event_no)
-            
-            ts_val = log_entry.get("TimeStamp", 0)
-            try:
-                if isinstance(ts_val, str):
-                    dt = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
-                    safe_timestamp = int(dt.timestamp() * 1000)
-                else:
-                    safe_timestamp = int(ts_val)
-            except Exception:
-                safe_timestamp = 0
-
-            window_name = log_entry.get("WindowName") or "Unknown Window"
-            win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
-            win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
-            
-            win_x = win_coord_data.get("x", 0)
-            win_y = win_coord_data.get("y", 0)
-
-            raw_type = str(log_entry.get("Type", ""))
-            content_data = log_entry.get("Content") or {}
-            
-            raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
-            if raw_screen_coords:
-                cursor_x = raw_screen_coords.get("x", 0)
-                cursor_y = raw_screen_coords.get("y", 0)
-            else:
-                cursor_coord_data = log_entry.get("CursorCoordinates") or {"x": 0, "y": 0}
-                cursor_x = cursor_coord_data.get("x", 0)
-                cursor_y = cursor_coord_data.get("y", 0)
-
-            rel_x = cursor_x - win_x
-            rel_y = cursor_y - win_y
-            
-            button_val = "left"
-            input_val = "unknown"
-            
-            if isinstance(content_data, dict):
-                button_val = content_data.get("button", "left")
-                input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or f"{button_val}_click"
-            else:
-                input_val = str(content_data)
-
-            raw_type_lower = raw_type.lower()
-            is_scroll = "scroll" in raw_type_lower
-            is_hover = "hover" in raw_type_lower
-            is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_hover)
-            is_key = "key" in raw_type_lower
-
-            dx = 0.0
-            dy = 0.0
-
-            if is_scroll:
-                action_type = "scroll"
-                if isinstance(content_data, dict):
-                    dx = content_data.get("dx", 0.0)
-                    dy = content_data.get("dy", 0.0)
-            elif is_hover:
-                action_type = "hover"
-            elif is_click:
-                action_type = "click"
-            elif is_key:
-                action_type = "key_down"
-            else:
-                action_type = "unknown"
-
-            if progress_callback:
-                progress = int((i / total_events) * 70)
-                action_name = action_type if action_type != "unknown" else raw_type
-                progress_callback(progress, f"画像解析中(CV)... {action_name}イベントの処理 ({i+1}/{total_events})")
-
-            ui_type = "unknown"
-            semantic_role = input_val
-            context_components = []
-            
-            images_data = log_entry.get("Images", {})
-            crop_path_str = images_data.get("Crop")
-
-            raw_diff = images_data.get("Diff", "0.0%")
-            try:
-                if isinstance(raw_diff, str) and raw_diff.endswith("%"):
-                    diff_val = float(raw_diff.replace("%", "")) / 100.0
-                else:
-                    diff_val = float(raw_diff)
-            except (ValueError, TypeError):
-                diff_val = 0.0
-
-            if action_type == "hover":
-                if crop_path_str and "delete_" in crop_path_str:
+                if not isinstance(log_entry, dict):
                     continue
-                if diff_val < 0.001:
-                    continue
-            
-            if crop_path_str:
-                full_crop_path = macros_root / crop_path_str
-                if full_crop_path.exists():
-                    logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                     
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        future_yolo = executor.submit(detect_ui_elements, str(full_crop_path))
-                        future_ocr = executor.submit(read_text_from_image, str(full_crop_path))
+                event_no = log_entry.get("EventNo", f"{i+1:03d}")
+                event_id = f"evt_{event_no}" if not str(event_no).startswith("evt_") else str(event_no)
+                
+                ts_val = log_entry.get("TimeStamp", 0)
+                try:
+                    if isinstance(ts_val, str):
+                        dt = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+                        safe_timestamp = int(dt.timestamp() * 1000)
+                    else:
+                        safe_timestamp = int(ts_val)
+                except Exception:
+                    safe_timestamp = 0
+
+                window_name = log_entry.get("WindowName") or "Unknown Window"
+                win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
+                win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
+                
+                win_x = win_coord_data.get("x", 0)
+                win_y = win_coord_data.get("y", 0)
+
+                raw_type = str(log_entry.get("Type", ""))
+                content_data = log_entry.get("Content") or {}
+                
+                raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
+                if raw_screen_coords:
+                    cursor_x = raw_screen_coords.get("x", 0)
+                    cursor_y = raw_screen_coords.get("y", 0)
+                else:
+                    cursor_coord_data = log_entry.get("CursorCoordinates") or {"x": 0, "y": 0}
+                    cursor_x = cursor_coord_data.get("x", 0)
+                    cursor_y = cursor_coord_data.get("y", 0)
+
+                rel_x = cursor_x - win_x
+                rel_y = cursor_y - win_y
+                
+                button_val = "left"
+                input_val = "unknown"
+                
+                if isinstance(content_data, dict):
+                    button_val = content_data.get("button", "left")
+                    input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or f"{button_val}_click"
+                else:
+                    input_val = str(content_data)
+
+                raw_type_lower = raw_type.lower()
+                is_scroll = "scroll" in raw_type_lower
+                is_hover = "hover" in raw_type_lower
+                is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_hover)
+                is_key = "key" in raw_type_lower
+
+                dx = 0.0
+                dy = 0.0
+
+                if is_scroll:
+                    action_type = "scroll"
+                    if isinstance(content_data, dict):
+                        dx = content_data.get("dx", 0.0)
+                        dy = content_data.get("dy", 0.0)
+                elif is_hover:
+                    action_type = "hover"
+                elif is_click:
+                    action_type = "click"
+                elif is_key:
+                    action_type = "key_down"
+                else:
+                    action_type = "unknown"
+
+                if progress_callback:
+                    progress = int((i / total_events) * 70)
+                    action_name = action_type if action_type != "unknown" else raw_type
+                    progress_callback(progress, f"画像解析中(CV)... {action_name}イベントの処理 ({i+1}/{total_events})")
+
+                ui_type = "unknown"
+                semantic_role = input_val
+                context_components = []
+                
+                images_data = log_entry.get("Images", {})
+                crop_path_str = images_data.get("Crop")
+
+                raw_diff = images_data.get("Diff", "0.0%")
+                try:
+                    if isinstance(raw_diff, str) and raw_diff.endswith("%"):
+                        diff_val = float(raw_diff.replace("%", "")) / 100.0
+                    else:
+                        diff_val = float(raw_diff)
+                except (ValueError, TypeError):
+                    diff_val = 0.0
+
+                if action_type == "hover":
+                    if crop_path_str and "delete_" in crop_path_str:
+                        continue
+                    if diff_val < 0.001:
+                        continue
+                
+                if crop_path_str:
+                    full_crop_path = macros_root / crop_path_str
+                    if full_crop_path.exists():
+                        logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
+                        
+                        future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
+                        future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
                         
                         yolo_results = future_yolo.result()
                         ocr_results = future_ocr.result()
 
-                    if yolo_results:
-                        best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                        ui_type = best_yolo.type
-                    
-                    if ocr_results:
-                        best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                        if best_ocr.content and action_type in ["click", "hover"]:
-                            semantic_role = best_ocr.content
-                            
-                        for ocr_res in ocr_results:
-                            context_components.append(ContextComponent(
-                                type="text",
-                                content=ocr_res.content,
-                                relativeBoundingBox=ocr_res.boundingBox,
-                                confidence=ocr_res.confidence,
-                                parentRelevance=1.0
-                            ))
+                        if yolo_results:
+                            best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                            ui_type = best_yolo.type
+                        
+                        if ocr_results:
+                            best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                            if best_ocr.content and action_type in ["click", "hover"]:
+                                semantic_role = best_ocr.content
+                                
+                            for ocr_res in ocr_results:
+                                context_components.append(ContextComponent(
+                                    type="text",
+                                    content=ocr_res.content,
+                                    relativeBoundingBox=ocr_res.boundingBox,
+                                    confidence=ocr_res.confidence,
+                                    parentRelevance=1.0
+                                ))
 
-            action_detail = ActionDetail(
-                inputType=raw_type,
-                inputValue=input_val,
-                cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
-                diffRatio=diff_val
-            )
+                action_detail = ActionDetail(
+                    inputType=raw_type,
+                    inputValue=input_val,
+                    cursorRelativeCoordinates=Coordinates(x=rel_x, y=rel_y),
+                    diffRatio=diff_val
+                )
 
-            ui_element = InteractedUiElement(
-                type=ui_type,
-                relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
-                confidence=1.0,
-                action=action_detail,
-                context=context_components
-            )
+                ui_element = InteractedUiElement(
+                    type=ui_type,
+                    relativeBoundingBox=BoundingBox(x=rel_x, y=rel_y, width=0, height=0),
+                    confidence=1.0,
+                    action=action_detail,
+                    context=context_components
+                )
 
-            window_context = WindowContext(
-                name=window_name,
-                size=Size(width=win_size_data.get("width", 0), height=win_size_data.get("height", 0)),
-                coordinates=Coordinates(x=win_x, y=win_y),
-                UIs=[ui_element]
-            )
+                window_context = WindowContext(
+                    name=window_name,
+                    size=Size(width=win_size_data.get("width", 0), height=win_size_data.get("height", 0)),
+                    coordinates=Coordinates(x=win_x, y=win_y),
+                    UIs=[ui_element]
+                )
 
-            integrated_events.append(IntegratedEvent(
-                id=event_id,
-                timestamp=safe_timestamp,
-                window=window_context
-            ))
+                integrated_events.append(IntegratedEvent(
+                    id=event_id,
+                    timestamp=safe_timestamp,
+                    window=window_context
+                ))
 
-            temp_workflow_info.append({
-                "event_id": event_id,
-                "timestamp": safe_timestamp,
-                "raw_type": raw_type,
-                "raw_action": action_type,
-                "button": button_val,
-                "ui_type": ui_type,
-                "semantic_role": semantic_role,
-                "diff_val": diff_val,
-                "dx": dx,
-                "dy": dy
-            })
+                temp_workflow_info.append({
+                    "event_id": event_id,
+                    "timestamp": safe_timestamp,
+                    "raw_type": raw_type,
+                    "raw_action": action_type,
+                    "button": button_val,
+                    "ui_type": ui_type,
+                    "semantic_role": semantic_role,
+                    "diff_val": diff_val,
+                    "dx": dx,
+                    "dy": dy
+                })
 
-        # --- 変数抽出ロジック（連続する文字入力で全体的にDiffが低いものをグループ化） ---
         if progress_callback:
             progress_callback(75, "入力ログの最適化... 変数候補の抽出とグループ化")
 
@@ -291,7 +291,6 @@ def generate_macro_workflow(
         flush_group()
         temp_workflow_info = processed_info
 
-        # --- LLM推論フェーズ（ハルシネーション防護と自動リトライ付き） ---
         if progress_callback:
             progress_callback(80, "AI推論準備(LLM)... 文脈データの構築中")
             
@@ -378,7 +377,6 @@ def generate_macro_workflow(
         except Exception as e:
             logger.warning(f"[{workflow_id}] LLM inference encountered fatal error. Falling back to CV results. Error: {e}")
 
-        # === ワークフロー(Omnipotent Workflow)の構築 ===
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
 
@@ -498,7 +496,6 @@ def generate_macro_workflow(
         if progress_callback:
             progress_callback(98, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
 
-        # === Executable Macro の決定論的生成 ===
         try:
             commands_data = []
             prev_timestamp = None
@@ -589,7 +586,6 @@ def generate_macro_workflow(
         except Exception as e:
              logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
 
-        # デバッグのため一時的にtempディレクトリの削除をコメントアウト
         # if temp_dir.exists() and temp_dir.is_dir():
         #     shutil.rmtree(temp_dir)
         #     logger.info(f"[{workflow_id}] Cleaned up temp directory.")
