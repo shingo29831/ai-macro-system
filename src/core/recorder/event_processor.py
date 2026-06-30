@@ -1,3 +1,4 @@
+# src/core/recorder/event_processor.py
 # @role: キューに積まれたUI操作イベントを非同期で取り出し、スクリーンショットの差分計算・切り抜き・ログ生成を行うワーカー。
 
 import threading
@@ -83,7 +84,11 @@ def process_hover_event(event: dict):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor)
 
-        crop_ref = crop.get("ui_image_ref", "切り抜き失敗")
+        # 修正箇所: crop_refがNoneの場合は確実にデフォルトの文字列を割り当てる
+        crop_ref = crop.get("ui_image_ref")
+        if not crop_ref:
+            crop_ref = "切り抜き失敗"
+
         if is_meaningless and crop_ref != "切り抜き失敗":
             old_crop_path = macros_root / crop_ref
             if old_crop_path.exists():
@@ -114,7 +119,10 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor)
 
-        log["Images"] = {"Pre": pre_ref, "Crop": crop.get("ui_image_ref", "切り抜き失敗"), "Diff": diff}
+        # クリック側も同様にNone対策を適用（Pathの足し算はしませんが、明示的なJSON文字列として安全にするため）
+        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
+
+        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
         state.append_log(log)
         print(f"クリックログ追加: evt_{event_no}, type={input_type}, diff={diff}")
     except Exception:
@@ -170,7 +178,7 @@ def process_drag_event(event: dict):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=start_x, click_y=start_y, full_img=pre_img, monitor=pre_monitor)
 
-        crop_ref = crop.get("ui_image_ref", "切り抜き失敗")
+        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
         diff = calculate_and_update_diff(pre_img)
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
