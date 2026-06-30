@@ -1,3 +1,4 @@
+# src/core/executor/runner.py
 # @role: 生成されたExecutable Macro (executable_macro.json) を読み込み、ローカルで自律実行する実行エンジン。
 #
 # 【参照元 (呼ばれる側)】
@@ -158,6 +159,13 @@ def run_workflow(workflow_id: str, config: AppConfig):
             elif method == "scroll":
                 dx = args.get("dx", 0.0)
                 dy = args.get("dy", 0.0)
+                x = args.get("x")
+                y = args.get("y")
+                
+                # スクロール対象の要素（特定のサイドバー等）を正確に狙うため、実行前にマウス位置を復元する
+                if x is not None and y is not None and (x != 0 or y != 0):
+                    mouse.position = (x, y)
+                    time.sleep(0.01) # 移動直後のウェイト
                 
                 if platform.system() == "Windows":
                     # pynputの内部補正を回避し、Windows API (mouse_event) を直接叩いてネイティブなスクロール量を再現する
@@ -172,8 +180,6 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 else:
                     mouse.scroll(dx, dy)
                     
-                time.sleep(0.05) # スクロール直後の安定化ウェイト
-                
             elif method == "type_text":
                 text = args.get("text", "")
                 if text:

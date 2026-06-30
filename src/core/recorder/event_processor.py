@@ -84,7 +84,6 @@ def process_hover_event(event: dict):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor)
 
-        # 修正箇所: crop_refがNoneの場合は確実にデフォルトの文字列を割り当てる
         crop_ref = crop.get("ui_image_ref")
         if not crop_ref:
             crop_ref = "切り抜き失敗"
@@ -119,7 +118,6 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor)
 
-        # クリック側も同様にNone対策を適用（Pathの足し算はしませんが、明示的なJSON文字列として安全にするため）
         crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
@@ -318,8 +316,9 @@ def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unk
     current_time = time.time()
     
     with _scroll_lock:
-        # pynputとwin_scrollの両方で捕捉された場合の重複記録を防ぐ (50ms以内の同一イベントはスキップ)
-        if (current_time - _last_scroll_time < 0.05) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
+        # pynputとwin_scrollの両方で捕捉された場合の重複記録を防ぐ 
+        # (50ms->10ms に短縮して高速スクロール・慣性スクロールを取りこぼさないように調整)
+        if (current_time - _last_scroll_time < 0.01) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
             return
         _last_scroll_time = current_time
         _last_scroll_dx = dx

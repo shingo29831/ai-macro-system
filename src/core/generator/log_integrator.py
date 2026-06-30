@@ -1,3 +1,4 @@
+# src/core/generator/log_integrator.py
 # @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
 
 import json
@@ -66,7 +67,6 @@ def generate_macro_workflow(
         
         total_events = len(log_entries)
 
-        # Optimization: Instantiate ThreadPoolExecutor once outside the loop to avoid recreation overhead per event.
         with ThreadPoolExecutor(max_workers=4) as cv_executor:
             for i, log_entry in enumerate(log_entries):
                 if check_cancel_callback and check_cancel_callback():
@@ -237,7 +237,9 @@ def generate_macro_workflow(
                     "semantic_role": semantic_role,
                     "diff_val": diff_val,
                     "dx": dx,
-                    "dy": dy
+                    "dy": dy,
+                    "cursor_x": cursor_x,
+                    "cursor_y": cursor_y
                 })
 
         if progress_callback:
@@ -423,7 +425,9 @@ def generate_macro_workflow(
                 cmd = "MOUSE_SCROLL"
                 intent = "SCROLL_WINDOW"
                 desc = f"Scroll window (dx: {info['dx']}, dy: {info['dy']})"
-                params = ActionParameters(text=f"{info['dx']},{info['dy']}")
+                cursor_x = info.get("cursor_x", 0)
+                cursor_y = info.get("cursor_y", 0)
+                params = ActionParameters(text=f"{info['dx']},{info['dy']},{cursor_x},{cursor_y}")
             else:
                 role_lower = final_semantic_role.lower() if final_semantic_role else ""
                 is_special_key = False
@@ -548,12 +552,18 @@ def generate_macro_workflow(
                 elif cmd_type == "MOUSE_SCROLL":
                     if params.text:
                         try:
-                            dx_str, dy_str = params.text.split(',')
+                            parts = params.text.split(',')
+                            dx_val = float(parts[0])
+                            dy_val = float(parts[1])
+                            x_val = float(parts[2]) if len(parts) > 2 else 0.0
+                            y_val = float(parts[3]) if len(parts) > 3 else 0.0
                             commands_data.append({
                                 "method": "scroll",
                                 "args": {
-                                    "dx": float(dx_str),
-                                    "dy": float(dy_str)
+                                    "dx": dx_val,
+                                    "dy": dy_val,
+                                    "x": int(x_val),
+                                    "y": int(y_val)
                                 }
                             })
                         except Exception:
