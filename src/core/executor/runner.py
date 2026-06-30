@@ -132,6 +132,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 needs_recovery = False
                 crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
                 
+                focus_x = None
+                focus_y = None
+                
                 try:
                     from PIL import Image
                     from core.recorder.screen_capturer import take_screenshot
@@ -141,7 +144,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
                     current_img_pil, _ = take_screenshot()
 
-                    # 全画面の差分比較（誤作動の原因）は撤廃し、UI部品(Crop)が存在する場合のみ存在検証を行う
+                    # 全画面の差分比較（誤作動の原因）を完全に撤廃し、UI部品(Crop)が存在する場合のみ存在検証を行う
                     if crop_image_path.exists():
                         current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
                         template_cv = cv2.imread(str(crop_image_path), cv2.IMREAD_COLOR)
@@ -157,16 +160,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 match_center_x = max_loc[0] + template_cv.shape[1] // 2
                                 match_center_y = max_loc[1] + template_cv.shape[0] // 2
                                 
-                                expected_x = args.get("x", 0)
-                                expected_y = args.get("y", 0)
-                                
-                                # 記録座標が存在しないコマンド(winキーなど)の場合は距離比較をスキップ
-                                if expected_x != 0 or expected_y != 0:
+                                # 記録座標が存在するコマンド(click, move等)の場合はズレを比較
+                                if "x" in args and "y" in args:
+                                    expected_x = args["x"]
+                                    expected_y = args["y"]
                                     dist = ((match_center_x - expected_x)**2 + (match_center_y - expected_y)**2)**0.5
                                     
                                     if dist > 20:
                                         logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
                                         needs_recovery = True
+                                else:
+                                    # type_text等の場合はマッチした座標をフォーカス用として保持
+                                    focus_x = match_center_x
+                                    focus_y = match_center_y
                         else:
                             needs_recovery = True
 
@@ -178,25 +184,39 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         
                         if recovery_result.get("success"):
                             new_coords = recovery_result.get("new_coordinates")
-                            if new_coords and method in ["click", "move"]:
-                                args["x"] = new_coords["x"]
-                                args["y"] = new_coords["y"]
-                                logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
-                                macro_needs_save = True
+                            if new_coords:
+                                if "x" in args and "y" in args:
+                                    args["x"] = new_coords["x"]
+                                    args["y"] = new_coords["y"]
+                                    logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
+                                    macro_needs_save = True
+                                else:
+                                    # type_text等で座標を持たない場合、修復した座標にフォーカスを当てる
+                                    focus_x = new_coords["x"]
+                                    focus_y = new_coords["y"]
+                                    logger.info(f"[{workflow_id}] Healer found focus target for text input at ({focus_x}, {focus_y}).")
                         else:
-                            logger.error(f"[{workflow_id}] Healer failed to recover. Aborting execution to prevent mis-clicks.")
+                            logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'. Aborting execution.")
                             if status_callback:
                                 status_callback("実行中...", False)
-                            raise RuntimeError("自己修復に失敗したため、安全のためにマクロの実行を停止しました。")
+                            raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
                         
                         if status_callback:
                             status_callback("実行中...", False)
+                            
+                    # --- type_text / press_key の場合、入力前に見つかった入力欄をクリックしてフォーカスを当てる ---
+                    if method in ["type_text", "press_key"] and focus_x is not None and focus_y is not None:
+                        logger.info(f"[{workflow_id}] Clicking at ({focus_x}, {focus_y}) to set focus before typing.")
+                        mouse.position = (focus_x, focus_y)
+                        time.sleep(0.05)
+                        mouse.click(Button.left, 1)
+                        time.sleep(0.1)
                             
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Error during image validation/recovery: {e}")
                     if status_callback:
                         status_callback("実行中...", False)
-                    if "安全のため" in str(e):
+                    if "安全停止" in str(e):
                         raise e
             # =======================================
             
