@@ -248,21 +248,16 @@ _native_scroll_hook_active = False
 # ホバー検知（軌跡判定）用
 _mouse_path: list[tuple[float, float, float]] = []
 
-# ショートカットの停止フラグ（ポーリング用）
-_shortcut_stop_requested = False
+_shortcut_stop_callback = None
+
+def set_shortcut_stop_callback(callback):
+    global _shortcut_stop_callback
+    _shortcut_stop_callback = callback
 
 
 # =========================
 # 基本関数
 # =========================
-
-def check_shortcut_stop_request() -> bool:
-    """UIスレッドからのポーリング用関数。停止要求があればTrueを返し、フラグをリセットする。"""
-    global _shortcut_stop_requested
-    if _shortcut_stop_requested:
-        _shortcut_stop_requested = False
-        return True
-    return False
 
 def now_datetime() -> datetime:
     return datetime.now().astimezone()
@@ -745,7 +740,7 @@ def stop_mouse_event_worker():
 
 def on_move(x, y):
     global _mouse_path
-    if not _is_recording:
+    if not _is_recording or _is_stopping:
         return
     
     current_time = time.time()
@@ -792,7 +787,7 @@ def on_move(x, y):
 
 def on_click(x, y, button, pressed):
     cancel_hover()
-    if not _is_recording:
+    if not _is_recording or _is_stopping:
         return
     
     _mouse_event_queue.put({
@@ -1067,7 +1062,7 @@ def record_scroll_event(
     dx: float,
     dy: float
 ):
-    if not _is_recording:
+    if not _is_recording or _is_stopping:
         return
 
     event_no = next_event_no()
@@ -1092,7 +1087,7 @@ def record_scroll_event(
 
 def on_scroll(x, y, dx, dy):
     cancel_hover()
-    if _native_scroll_hook_active:
+    if _native_scroll_hook_active or _is_stopping:
         return
 
     try:
@@ -1113,7 +1108,7 @@ def on_scroll(x, y, dx, dy):
 # =========================
 
 def native_scroll_hook_callback(n_code, w_param, l_param):
-    if n_code >= 0 and _is_recording:
+    if n_code >= 0 and _is_recording and not _is_stopping:
         if w_param in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
             try:
                 cancel_hover()
@@ -1261,9 +1256,11 @@ def stop_native_scroll_hook():
 
 def on_press(key):
     global _logged_combo_keys
+    global _is_stopping
+
     cancel_hover()
 
-    if not _is_recording:
+    if not _is_recording or _is_stopping:
         return
 
     key_text = key_to_string(key)
@@ -1276,13 +1273,17 @@ def on_press(key):
             )
 
         if has_ctrl:
-            global _is_stopping
             if not _is_stopping:
                 _is_stopping = True
-                global _shortcut_stop_requested
-                _shortcut_stop_requested = True
                 print("Ctrl + \\ が押されたため記録を停止します (UIへ通知)")
-            return False  # フックリスナーを即座に破棄して多重処理を防ぐ
+                if _shortcut_stop_callback:
+                    _shortcut_stop_callback()
+                else:
+                    # UIなしの単体実行時用フォールバック
+                    threading.Thread(target=stop_recording, daemon=True).start()
+            # ここで絶対に False を返してはいけません！返すとスレッドが即座に自爆します。
+            # 単純に return で抜け、停止処理はUI側からの正規ルート(stop_recording)に任せます。
+            return
 
     try:
         with _pressed_keys_lock:
@@ -1436,7 +1437,6 @@ def start_recording():
     global _pending_click_event
     global _pending_click_timer
     global _latest_mouse_down_event
-    global _shortcut_stop_requested
 
     if _is_recording:
         print("すでに記録中です")
@@ -1458,7 +1458,6 @@ def start_recording():
         _latest_mouse_down_event = None
 
         _is_stopping = False
-        _shortcut_stop_requested = False
         _is_click_processing = False
 
         process_monitor.start_process_monitors()
@@ -1490,7 +1489,6 @@ def start_recording():
     except Exception:
         _is_recording = False
         _is_stopping = False
-        _shortcut_stop_requested = False
 
         stop_native_scroll_hook()
         stop_mouse_event_worker()
