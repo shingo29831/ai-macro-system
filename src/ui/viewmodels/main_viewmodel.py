@@ -6,7 +6,7 @@ import json
 import shutil
 import threading
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, Qt, QMetaObject
 from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
@@ -21,12 +21,23 @@ class MainViewModel(QObject):
     execution_finished = Signal()
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
+    recording_stopped_by_shortcut = Signal()
 
     def __init__(self):
         super().__init__()
         self._selected_macro: str | None = None
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
+        
+        os_hook.set_shortcut_stop_callback(self._on_shortcut_stop)
+
+    def _on_shortcut_stop(self):
+        # pynputのバックグラウンドスレッドから呼ばれるため、Qtのイベントループ（UIスレッド）へ安全に処理を委譲する
+        QMetaObject.invokeMethod(self, "_emit_recording_stopped_by_shortcut", Qt.QueuedConnection)
+
+    @Slot()
+    def _emit_recording_stopped_by_shortcut(self):
+        self.recording_stopped_by_shortcut.emit()
 
     def load_macros(self):
         try:

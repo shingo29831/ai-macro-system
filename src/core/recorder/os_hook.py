@@ -1274,7 +1274,7 @@ def on_press(key):
                 _shortcut_stop_callback()
             else:
                 stop_recording()
-            return False
+            return
 
     try:
         with _pressed_keys_lock:
