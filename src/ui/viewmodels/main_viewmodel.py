@@ -6,7 +6,7 @@ import json
 import shutil
 import threading
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot, Qt
+from PySide6.QtCore import QObject, Signal, Slot, Qt, QMetaObject
 from models.data_types import MacroSummary, AppConfig
 from core.recorder import os_hook
 from core.generator import log_integrator
@@ -22,9 +22,6 @@ class MainViewModel(QObject):
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
     recording_stopped_by_shortcut = Signal()
-    
-    # バックグラウンドスレッドからのコールバックをQtのイベントループに乗せるための内部シグナル
-    _internal_shortcut_signal = Signal()
 
     def __init__(self):
         super().__init__()
@@ -32,13 +29,12 @@ class MainViewModel(QObject):
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
         
-        # pynputのバックグラウンドスレッドで発行されるシグナルを、UIスレッドのイベントキューへ安全に繋ぐ
-        self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
+        # os_hook からのコールバックを受け取り、Qtのディスパッチ機能でUIスレッドへ流す
         os_hook.set_shortcut_stop_callback(self._trigger_shortcut_signal)
 
     def _trigger_shortcut_signal(self):
         # pynputのバックグラウンドスレッドで実行され、UIスレッドへディスパッチされる
-        self._internal_shortcut_signal.emit()
+        QMetaObject.invokeMethod(self, "_on_internal_shortcut", Qt.QueuedConnection)
 
     @Slot()
     def _on_internal_shortcut(self):
@@ -117,11 +113,10 @@ class MainViewModel(QObject):
             logger.info("Stopping macro recording...")
             os_hook.stop_recording()
             
-            workflow_id = None
+            # 分割・リファクタリングによりカプセル化された関数を利用
+            workflow_id = os_hook.get_current_workflow_id()
             
-            if hasattr(os_hook, "_recording_dirs") and isinstance(os_hook._recording_dirs, dict) and "macro_name" in os_hook._recording_dirs:
-                workflow_id = os_hook._recording_dirs["macro_name"]
-            else:
+            if not workflow_id:
                 try:
                     from core.recorder.screen_capturer import get_macros_root
                     macros_root = get_macros_root()
