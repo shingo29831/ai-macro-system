@@ -360,11 +360,12 @@ def track_text_field_by_scoring(
     w = r - l
     h = b - t
     
-    # 背景: 左・上・下はタイトに絞りノイズを防ぎつつ、確定後の長文(タブ補完等)の見切れを防ぐため右側のみ特大拡張する
-    pad_left = max(5, int(w * 0.05))
-    pad_right = max(300, int(w * 2.5))
-    pad_top = max(5, int(h * 0.1))
-    pad_bottom = max(5, int(h * 0.1))
+    # 背景: 左側には虫眼鏡などの検索アイコンが固定で存在するため、左マージンを完全に排除（0px）し、
+    # アイコンが「O」等の記号として誤認識されるのを物理的に防ぐ。
+    pad_left = 0
+    pad_right = max(10, int(w * 0.1))
+    pad_top = max(5, int(h * 0.05))
+    pad_bottom = max(5, int(h * 0.05))
     
     l_crop = max(0, l - pad_left)
     t_crop = max(0, t - pad_top)
@@ -685,9 +686,8 @@ def generate_macro_workflow(
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    # 背景: 入力中の差分領域から作成される探索枠(search_areas)において、
-                                    # 最終確定フェーズで文字が右に大きく伸びる事を見越し、あらかじめ右側に+400pxの大マージンを確保しておく。
-                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
+                                    # 背景: 左側にアイコンが含まれるのを防ぐため、探索エリアの左マージンを0pxに設定
+                                    raw_search_areas.append((max(0, dl), max(0, dt - 20), min(max_w, dr + 30), min(max_h, db + 20)))
                                 
                                 merged_areas = []
                                 for rect in raw_search_areas:
