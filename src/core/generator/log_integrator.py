@@ -349,8 +349,6 @@ def track_text_field_by_scoring(
     final_ime_state = any(e.get("ime_active", False) for e in group_events)
 
     for cand_img_path in candidate_img_paths_rel:
-        # 背景: 半角入力時は、最終的なペナルティ免除フラグ(is_final_candidate)を無効化する。
-        # 半角のEnter等は確定ではなく画面遷移のため、急激な文字変化を許容する必要がない。
         _evaluate_frame(cand_img_path, current_buffer, final_ime_state, is_final_candidate=final_ime_state)
 
     if not field_candidates:
@@ -359,18 +357,77 @@ def track_text_field_by_scoring(
     best_candidate = max(field_candidates, key=lambda x: x["score"])
     l, t, r, b = best_candidate["bbox"]
     
-    w = r - l
-    h = b - t
+    # 背景: 追跡完了後、最終確定画像からUIの輪郭を抽出し、「アイコン」と「入力文字列」を分離・精製する。
+    # これにより「◆◆なごや」が分割され、真のテキスト領域だけが抽出される。
+    final_img_path_rel = candidate_img_paths_rel[-1]
+    final_img_path = macros_root / final_img_path_rel
+    base_img_path_rel = group_events[0].get("pre_img_path") if group_events else candidate_img_paths_rel[0]
+    base_img_path = macros_root / base_img_path_rel
+
+    if final_img_path.exists() and base_img_path.exists():
+        try:
+            img_base = cv2.imread(str(base_img_path), cv2.IMREAD_GRAYSCALE)
+            img_final = cv2.imread(str(final_img_path), cv2.IMREAD_GRAYSCALE)
+            
+            diff = cv2.absdiff(img_base, img_final)
+            _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+            
+            # 文字同士は横に繋ぐが、アイコンとは切り離す程度のカーネル
+            kernel = np.ones((5, 10), np.uint8)
+            dilated = cv2.dilate(thresh, kernel, iterations=1)
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            candidate_contours = []
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                # best_candidate と重なる輪郭を候補とする
+                if max(l, x) < min(r, x + w) and max(t, y) < min(b, y + h):
+                    candidate_contours.append((x, y, w, h))
+            
+            if candidate_contours:
+                target_text_hira = to_hiragana(current_buffer) if final_ime_state else current_buffer
+                target_lower = target_text_hira.lower()
+                
+                best_sub_bbox = None
+                best_sub_score = -float('inf')
+                
+                with Image.open(final_img_path) as img_pil:
+                    for s_bbox in candidate_contours:
+                        sx, sy, sw, sh = s_bbox
+                        pad = 2
+                        c_img = img_pil.crop((max(0, sx-pad), max(0, sy-pad), min(img_pil.width, sx+sw+pad), min(img_pil.height, sy+sh+pad)))
+                        tmp_path = temp_dir / f"temp_sub_bbox_eval_{target_event_id}_{sx}_{sy}.png"
+                        c_img.save(tmp_path)
+                        
+                        s_ocr_res = read_text_from_image(str(tmp_path))
+                        score = 0.0
+                        if s_ocr_res:
+                            text_content = "".join([res_item.content for res_item in s_ocr_res if res_item.content]).lower()
+                            sim = Levenshtein.ratio(target_lower, text_content)
+                            is_sub = target_lower in text_content
+                            score = sim + (0.5 if is_sub else 0)
+                        
+                        if score > best_sub_score:
+                            best_sub_score = score
+                            best_sub_bbox = s_bbox
+                
+                if best_sub_bbox and best_sub_score > 0.0:
+                    bx, by, bw, bh = best_sub_bbox
+                    # 背景: 輪郭ベースで長さを特定できたため、長文用に確保していた右側への特大無条件マージン（+300px）を廃止。
+                    # タブ補完でどんなに長くなっても、輪郭の幅(bw)がそのまま完全なテキスト幅として利用される。
+                    l, t, r, b = bx, by, bx + bw, by + bh
+                    logger.info(f"[{target_event_id}] Logically expanded and refined BBox to fit final text: {(l, t, r, b)}")
+                    
+        except Exception as e:
+            logger.warning(f"[{target_event_id}] Failed to refine and expand final BBox: {e}")
+
+    pad_x = 5
+    pad_y = 5
     
-    pad_left = 0
-    pad_right = max(10, int(w * 0.1))
-    pad_top = max(5, int(h * 0.05))
-    pad_bottom = max(5, int(h * 0.05))
-    
-    l_crop = max(0, l - pad_left)
-    t_crop = max(0, t - pad_top)
-    r_crop = r + pad_right
-    b_crop = b + pad_bottom
+    l_crop = max(0, l - pad_x)
+    t_crop = max(0, t - pad_y)
+    r_crop = r + pad_x
+    b_crop = b + pad_y
     
     return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
 
@@ -650,11 +707,15 @@ def generate_macro_workflow(
                 if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
                     candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
                     
-                # 背景: 半角入力（IMEオフ）の場合はエンターで文字が確定するわけではなく、
-                # 検索や改行などの別アクションが実行されるため、未来のフレーム（エンター時の画像等）を
-                # 最終確定(final)画像の候補に含めないようにし、別画面がOCRされるのを防ぐ。
+                # 背景: 半角入力（IMEオフ）時のエンター等の画面遷移直前の画像（最後の1文字が入力された瞬間）を確実に捉えるため、
+                # グループ直後のアクションのpre_img_pathを常にOCR候補に含める。
+                if current_index < len(temp_workflow_info):
+                    next_evt_img = temp_workflow_info[current_index].get("pre_img_path")
+                    if next_evt_img and next_evt_img not in candidate_img_paths_rel:
+                        candidate_img_paths_rel.append(next_evt_img)
+
                 if any_ime_active:
-                    for idx in range(current_index, min(current_index + 3, len(temp_workflow_info))):
+                    for idx in range(current_index + 1, min(current_index + 3, len(temp_workflow_info))):
                         evt = temp_workflow_info[idx]
                         p = evt.get("pre_img_path")
                         if p and p not in candidate_img_paths_rel:
