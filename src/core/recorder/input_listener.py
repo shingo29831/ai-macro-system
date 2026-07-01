@@ -74,27 +74,33 @@ def on_scroll(x, y, dx, dy):
     except Exception: 
         logger.exception("スクロールイベントの記録に失敗しました")
 
+# AI Role: Handle keyboard shortcuts safely and terminate pynput threads cleanly without causing deadlocks.
+
 def on_press(key):
     state.cancel_hover()
-    if not state.is_recording or state.is_stopping: return
+    if not state.is_recording or state.is_stopping: 
+        return False # すでに停止中なら確実にリスナーを止める
 
     key_text = key_to_string(key)
     
+    # 記録停止ショートカット (Ctrl + \)
     if key_text in ("\\", "\x1c"):
         with state.pressed_keys_lock:
             has_ctrl = any(pk in ["ctrl", "ctrl_l", "ctrl_r"] for pk in state.pressed_keys)
         if has_ctrl:
             if not state.is_stopping:
                 state.is_stopping = True
-                logger.info("input_listener: Ctrl + \\ が押されたため記録を停止します")
+                logger.info("input_listener: Ctrl + \\ detected. Triggering safe stop.")
+                
+                # スレッドブロックを避けるため、コールバックは完全に分離したスレッドで実行する
                 if state.shortcut_stop_callback:
-                    logger.info("input_listener: ViewModelのコールバックを呼び出します")
-                    state.shortcut_stop_callback()
+                    threading.Thread(target=state.shortcut_stop_callback, daemon=True).start()
                 else:
-                    logger.info("input_listener: UIコールバックが未登録のため単体停止を実行します")
                     import core.recorder.os_hook as hook
                     threading.Thread(target=hook.stop_recording, daemon=True).start()
-            return  # Falseは絶対に返さない(スレッド自爆防止)
+                    
+            # 非常に重要: pynputのフックスレッドを安全に終了させるため False を返す
+            return False
 
     # --- タイピングバッファの管理 ---
     current_buffer = getattr(state, "typing_buffer", "")
