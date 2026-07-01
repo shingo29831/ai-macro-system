@@ -16,21 +16,15 @@ MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
 
 def _flush_typing_buffer(trigger_reason: str):
-    """
-    バッファリングされた入力文字列を確定し、OCR特定用のイベントを発火する。
-    """
+    # 背景: バッファリングされた文字列を確定し、OCR特定イベントを発火する
     buffer = getattr(state, "typing_buffer", "")
     if not buffer:
         return
 
     ime_on = is_ime_active()
-    # 全角モード時はローマ字バッファをひらがなに変換して画面上のターゲット文字列とする
     target_text = to_hiragana(buffer) if ime_on else buffer
     
-    # 画面のスクリーンショットを伴うテキスト候補イベントとして記録
     enqueue_key_event("text_candidate", target_text, capture_now=True)
-    
-    # バッファをクリア
     state.typing_buffer = ""
     logger.debug("タイピングバッファをフラッシュしました [%s]: %s (IME: %s)", trigger_reason, target_text, ime_on)
 
@@ -60,30 +54,25 @@ def on_click(x, y, button, pressed):
     if not state.is_recording or state.is_stopping: return
     
     if pressed:
-        # クリックによりフォーカスが外れる直前にバッファを確定
         _flush_typing_buffer(trigger_reason="mouse_click")
         
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
 def on_scroll(x, y, dx, dy):
     state.cancel_hover()
-    # ネイティブフック動作中であっても、タッチパッドの互換イベントを拾うために排他処理を解除
     if state.is_stopping: return
     try: 
         record_scroll_event(int(x), int(y), float(dx), float(dy), source="pynput")
     except Exception: 
         logger.exception("スクロールイベントの記録に失敗しました")
 
-# AI Role: Handle keyboard shortcuts safely and terminate pynput threads cleanly without causing deadlocks.
-
 def on_press(key):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: 
-        return False # すでに停止中なら確実にリスナーを止める
+        return False
 
     key_text = key_to_string(key)
     
-    # 記録停止ショートカット (Ctrl + \)
     if key_text in ("\\", "\x1c"):
         with state.pressed_keys_lock:
             has_ctrl = any(pk in ["ctrl", "ctrl_l", "ctrl_r"] for pk in state.pressed_keys)
@@ -92,28 +81,32 @@ def on_press(key):
                 state.is_stopping = True
                 logger.info("input_listener: Ctrl + \\ detected. Triggering safe stop.")
                 
-                # スレッドブロックを避けるため、コールバックは完全に分離したスレッドで実行する
                 if state.shortcut_stop_callback:
                     threading.Thread(target=state.shortcut_stop_callback, daemon=True).start()
                 else:
                     import core.recorder.os_hook as hook
                     threading.Thread(target=hook.stop_recording, daemon=True).start()
-                    
-            # 非常に重要: pynputのフックスレッドを安全に終了させるため False を返す
-            return False
+            return False 
 
-    # --- タイピングバッファの管理 ---
+    ime_on = is_ime_active()
     current_buffer = getattr(state, "typing_buffer", "")
-    if len(key_text) == 1 and key_text.isprintable():
+
+    # 背景: 半角入力時のスペースは変換トリガーではなく文字として扱い、エンターで確定させる
+    if key_text == "space" and not ime_on:
+        state.typing_buffer = current_buffer + " "
+    elif len(key_text) == 1 and key_text.isprintable():
         state.typing_buffer = current_buffer + key_text.lower()
     elif key_text == "backspace" and current_buffer:
         state.typing_buffer = current_buffer[:-1]
 
-    # 変換・確定トリガーの検知
-    if key_text in ("space", "tab", "enter"):
+    # 背景: IMEの状態によってバッファの確定トリガーを動的に切り替える
+    flush_triggers = ["enter", "tab"]
+    if ime_on:
+        flush_triggers.append("space")
+
+    if key_text in flush_triggers:
         _flush_typing_buffer(trigger_reason=key_text)
 
-    # --- 既存のキー記録処理 ---
     try:
         with state.pressed_keys_lock:
             state.pressed_keys.add(key_text)
