@@ -244,6 +244,15 @@ def track_text_field_by_scoring(
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
+                # 背景: 【文字数差ペナルティ】を強化。
+                # 入力中のバッファ文字数とOCR文字数に差があるほど厳しく減点する。
+                # 例: `fir` (3) に対し `Firefox` (7) だとペナルティがかかりスコアが落ちる。
+                target_len = len(target_lower) if is_ime else len(buffer_lower)
+                ocr_len = len(c_lower)
+                len_diff = abs(target_len - ocr_len)
+                len_penalty = (len_diff / max(1, target_len)) * 0.3
+                len_penalty = min(0.8, len_penalty) # 最大0.8まで減点
+
                 matched_cand = None
                 for cand in field_candidates:
                     cl, ct, cr, cb = cand["bbox"]
@@ -251,27 +260,25 @@ def track_text_field_by_scoring(
                         matched_cand = cand
                         break
 
-                # 背景: ユーザー提案の「前回評価時の文字との変化率」を計算し、
-                # サジェスト等によって文字が大量に増えたり別物に変わったりした場合にペナルティを与える
+                # 背景: 【変化率ペナルティ】。同じ座標で前回と比べて文字が一気に増減した場合にペナルティ。
                 change_penalty = 0.0
                 if matched_cand:
                     prev_text = matched_cand["last_text"].lower()
-                    dist = Levenshtein.distance(prev_text, c_lower)
+                    dist_change = Levenshtein.distance(prev_text, c_lower)
                     max_len = max(len(prev_text), len(c_lower), 1)
-                    change_ratio = dist / max_len
+                    change_ratio = dist_change / max_len
                     
                     if change_ratio > 0.5:
                         change_penalty = 0.5
                     elif change_ratio > 0.2:
                         change_penalty = change_ratio * 0.5
                 else:
-                    target_len = len(target_lower) if is_ime else len(buffer_lower)
                     if len(c_lower) > max(3, target_len * 2):
                         change_penalty = 0.3
 
-                frame_score = similarity - dist_penalty - change_penalty
+                frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, ChgPen: {change_penalty:.2f}), Target: '{target_lower}'")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -724,7 +731,6 @@ def generate_macro_workflow(
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
-                                    # 背景: 不要な記号を削除するクリーニングフィルター(clean_ocr_text)を撤去し、記号をそのまま維持する
                                     valid_results = [res for res in ocr_results if res.content]
                                         
                                     if valid_results:
