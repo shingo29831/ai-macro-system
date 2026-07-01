@@ -57,7 +57,8 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         kernel = np.ones((5, 15), np.uint8)
         dilated = cv2.dilate(accum_mask, kernel, iterations=2)
         
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 背景: RETR_EXTERNALからRETR_LISTに変更し、内部のロゴ要素等も個別に取得する
+        contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
         valid_bboxes = []
         for cnt in contours:
@@ -65,8 +66,22 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
             if w > 5 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
+        # 背景: 包含している側のUI(親となる外枠)を切り捨てる
+        filtered_bboxes = []
+        for i, (x1, y1, x2, y2) in enumerate(valid_bboxes):
+            is_enclosing = False
+            for j, (nx1, ny1, nx2, ny2) in enumerate(valid_bboxes):
+                if i == j: continue
+                # 完全に内包しているか判定
+                if x1 <= nx1 and y1 <= ny1 and x2 >= nx2 and y2 >= ny2:
+                    if (x2 - x1) > (nx2 - nx1) or (y2 - y1) > (ny2 - ny1):
+                        is_enclosing = True
+                        break
+            if not is_enclosing:
+                filtered_bboxes.append((x1, y1, x2, y2))
+                
         merged_bboxes = []
-        for bbox in valid_bboxes:
+        for bbox in filtered_bboxes:
             x1, y1, x2, y2 = bbox
             has_merged = True
             while has_merged:
@@ -357,8 +372,6 @@ def track_text_field_by_scoring(
     best_candidate = max(field_candidates, key=lambda x: x["score"])
     l, t, r, b = best_candidate["bbox"]
     
-    # 背景: 追跡完了後、最終確定画像からUIの輪郭を抽出し、「アイコン」と「入力文字列」を分離・精製する。
-    # これにより「◆◆なごや」が分割され、真のテキスト領域だけが抽出される。
     final_img_path_rel = candidate_img_paths_rel[-1]
     final_img_path = macros_root / final_img_path_rel
     base_img_path_rel = group_events[0].get("pre_img_path") if group_events else candidate_img_paths_rel[0]
@@ -372,15 +385,35 @@ def track_text_field_by_scoring(
             diff = cv2.absdiff(img_base, img_final)
             _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
             
-            # 文字同士は横に繋ぐが、アイコンとは切り離す程度のカーネル
-            kernel = np.ones((5, 10), np.uint8)
+            # カーネルをタイトにし、ロゴと文字を結合させない
+            kernel = np.ones((3, 10), np.uint8)
             dilated = cv2.dilate(thresh, kernel, iterations=1)
-            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            candidate_contours = []
+            # 背景: RETR_LISTを用いてすべての輪郭を抽出し、包含親UI（外枠）を切り捨てる
+            contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            
+            raw_bboxes = []
             for cnt in contours:
                 x, y, w, h = cv2.boundingRect(cnt)
-                # best_candidate と重なる輪郭を候補とする
+                raw_bboxes.append((x, y, w, h))
+                
+            filtered_bboxes = []
+            for i, bbox1 in enumerate(raw_bboxes):
+                x1, y1, w1, h1 = bbox1
+                is_enclosing = False
+                for j, bbox2 in enumerate(raw_bboxes):
+                    if i == j: continue
+                    x2, y2, w2, h2 = bbox2
+                    if x1 <= x2 and y1 <= y2 and x1 + w1 >= x2 + w2 and y1 + h1 >= y2 + h2:
+                        if w1 > w2 or h1 > h2:
+                            is_enclosing = True
+                            break
+                if not is_enclosing:
+                    filtered_bboxes.append(bbox1)
+            
+            candidate_contours = []
+            for bbox in filtered_bboxes:
+                x, y, w, h = bbox
                 if max(l, x) < min(r, x + w) and max(t, y) < min(b, y + h):
                     candidate_contours.append((x, y, w, h))
             
@@ -413,10 +446,8 @@ def track_text_field_by_scoring(
                 
                 if best_sub_bbox and best_sub_score > 0.0:
                     bx, by, bw, bh = best_sub_bbox
-                    # 背景: 輪郭ベースで長さを特定できたため、長文用に確保していた右側への特大無条件マージン（+300px）を廃止。
-                    # タブ補完でどんなに長くなっても、輪郭の幅(bw)がそのまま完全なテキスト幅として利用される。
                     l, t, r, b = bx, by, bx + bw, by + bh
-                    logger.info(f"[{target_event_id}] Logically expanded and refined BBox to fit final text: {(l, t, r, b)}")
+                    logger.info(f"[{target_event_id}] Logically expanded and refined BBox to fit final text (excluding encompassing UIs): {(l, t, r, b)}")
                     
         except Exception as e:
             logger.warning(f"[{target_event_id}] Failed to refine and expand final BBox: {e}")
@@ -707,8 +738,6 @@ def generate_macro_workflow(
                 if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
                     candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
                     
-                # 背景: 半角入力（IMEオフ）時のエンター等の画面遷移直前の画像（最後の1文字が入力された瞬間）を確実に捉えるため、
-                # グループ直後のアクションのpre_img_pathを常にOCR候補に含める。
                 if current_index < len(temp_workflow_info):
                     next_evt_img = temp_workflow_info[current_index].get("pre_img_path")
                     if next_evt_img and next_evt_img not in candidate_img_paths_rel:
@@ -842,12 +871,29 @@ def generate_macro_workflow(
                                     valid_results = [res for res in ocr_results if res.content]
                                         
                                     if valid_results:
-                                        valid_results.sort(key=lambda r: r.boundingBox.x)
+                                        # 背景: OCR結果に対しても包含チェックを行い、全体を囲む誤認識の巨大枠(包含親UI)を切り捨てる
+                                        filtered_ocr_results = []
+                                        for i, res1 in enumerate(valid_results):
+                                            bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
+                                            br1, bb1 = bx1 + res1.boundingBox.width, by1 + res1.boundingBox.height
+                                            is_enclosing = False
+                                            for j, res2 in enumerate(valid_results):
+                                                if i == j: continue
+                                                bx2, by2 = res2.boundingBox.x, res2.boundingBox.y
+                                                br2, bb2 = bx2 + res2.boundingBox.width, by2 + res2.boundingBox.height
+                                                if bx1 <= bx2 and by1 <= by2 and br1 >= br2 and bb1 >= bb2:
+                                                    if (br1 - bx1) > (br2 - bx2) or (bb1 - by1) > (bb2 - by2):
+                                                        is_enclosing = True
+                                                        break
+                                            if not is_enclosing:
+                                                filtered_ocr_results.append(res1)
+                                        
+                                        filtered_ocr_results.sort(key=lambda r: r.boundingBox.x)
                                         
                                         combined_text = ""
                                         prev_right = -1
                                         
-                                        for res in valid_results:
+                                        for res in filtered_ocr_results:
                                             text_part = res.content.strip()
                                             bx = res.boundingBox.x
                                             bw = res.boundingBox.width
