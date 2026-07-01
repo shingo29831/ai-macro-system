@@ -87,6 +87,9 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         return []
 
 def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, int]) -> Tuple[Tuple[int, int, int, int], str]:
+    """
+    OpenCVを用いてUIの枠線を抽出し、文字領域を包含する最小の枠線にスナップさせる。
+    """
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -284,7 +287,7 @@ def track_text_field_by_scoring(
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -307,7 +310,6 @@ def track_text_field_by_scoring(
                             "last_text": res.content
                         })
 
-            # 背景: ユーザー要望の実装。スコアが低い候補(BBox)をリストから除外(プルーニング)し、無駄な追跡画像生成と計算を削減する
             if field_candidates:
                 max_score = max(cand["score"] for cand in field_candidates)
                 surviving_candidates = []
@@ -354,7 +356,6 @@ def track_text_field_by_scoring(
         is_ime = event.get("ime_active", False)
         
         if img_path_rel:
-            # 背景: 評価(スコアリング)はタイピング中のフレームに対してのみ行う。
             _evaluate_frame(img_path_rel, current_buffer, is_ime)
             
         role = str(event.get("semantic_role", "")).lower()
@@ -364,9 +365,6 @@ def track_text_field_by_scoring(
             current_buffer += " "
         elif len(role) == 1:
             current_buffer += role
-
-    # 背景: ユーザー要望の実装。確定フェーズ(candidate_img_paths_rel)では _evaluate_frame を呼ばない。
-    # タイピング中のフレームで最もスコアが高かった候補(BBox)を勝者としてロックし、サジェストの逆転を物理的に防ぐ。
 
     if not field_candidates:
         return None, ""
@@ -389,7 +387,7 @@ def track_text_field_by_scoring(
             diff = cv2.absdiff(img_base, img_final)
             _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
             
-            kernel = np.ones((3, 10), np.uint8)
+            kernel = np.ones((5, 15), np.uint8)
             dilated = cv2.dilate(thresh, kernel, iterations=1)
             
             contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -397,7 +395,8 @@ def track_text_field_by_scoring(
             raw_bboxes = []
             for cnt in contours:
                 x, y, w, h = cv2.boundingRect(cnt)
-                raw_bboxes.append((x, y, w, h))
+                if w > 5 and h > 5:
+                    raw_bboxes.append((x, y, w, h))
                 
             filtered_bboxes = []
             for i, bbox1 in enumerate(raw_bboxes):
@@ -416,9 +415,7 @@ def track_text_field_by_scoring(
             target_contours = []
             for bbox in filtered_bboxes:
                 x, y, w, h = bbox
-                # Y座標(上下)がタイピング枠とほぼ一致するものだけを探す(下部のサジェストを排除)
                 if abs(y - t) < 15 and abs((y+h) - b) < 15:
-                    # X座標はタイピング枠の左端(l)に近いか、右側に存在すること
                     if x + w > l - 15: 
                         target_contours.append(bbox)
             
@@ -428,14 +425,12 @@ def track_text_field_by_scoring(
                 max_r = max(bx + bw for bx, by, bw, bh in target_contours)
                 max_b = max(by + bh for bx, by, bw, bh in target_contours)
                 
-                # 背景: ユーザー要望の実装。左側のアイコン等を物理的に切り落とすため、
-                # 最終的なBBoxの左端は「追跡時の左端(l)」に固定し、右端のみを輪郭に合わせて拡張する。
-                final_l = max(l - 5, min_x) 
+                final_l = max(0, min(l, min_x)) 
                 
                 final_crop_box = (final_l, min_y, max_r, max_b)
-                logger.info(f"[{target_event_id}] Logically expanded BBox to fit final text (excluding left-side icons): {final_crop_box}")
+                logger.info(f"[{target_event_id}] Logically expanded BBox by combining text contours (excluding left icons): {final_crop_box}")
             else:
-                final_crop_box = (l, t, r + 100, b)
+                final_crop_box = (l, t, r + 200, b)
                 
         except Exception as e:
             logger.warning(f"[{target_event_id}] Failed to refine and expand final BBox: {e}")
@@ -444,12 +439,12 @@ def track_text_field_by_scoring(
     pad_x = 5
     pad_y = 5
     
-    l_crop = max(0, fl)
+    l_crop = max(0, fl - pad_x)
     t_crop = max(0, ft - pad_y)
     r_crop = fr + pad_x
     b_crop = fb + pad_y
     
-    return (l_crop, t_crop, r_crop, b_crop), ""
+    return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -843,7 +838,6 @@ def generate_macro_workflow(
 
                 best_overall_text = ""
                 
-                # 背景: ユーザー要望の実装。最終テキストを読み取るための画像を明確なファイル名で1枚だけ保存する。
                 if candidate_img_paths_rel and crop_box:
                     cand_path_rel = candidate_img_paths_rel[-1]
                     cand_full = macros_root / cand_path_rel
