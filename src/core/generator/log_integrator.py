@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
+from PIL import Image, ImageChops
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowStep, WorkflowCommandAction, 
@@ -256,7 +256,6 @@ def generate_macro_workflow(
             if not current_group:
                 return
             
-            # 特殊キーではない1文字だけの場合は変数化しない（従来通り）
             if len(current_group) == 1 and str(current_group[0]["semantic_role"]).lower() not in ["space", "tab", "backspace", "delete"]:
                 processed_info.append(current_group[0])
                 current_group.clear()
@@ -278,44 +277,88 @@ def generate_macro_workflow(
                 
                 text = base_text
                 
-                # 文字入力の終了（エンターや次のクリックなど）をトリガーしたイベントを探す
-                # 確定操作が行われる「直前」の画面状態こそが、変換やTab補完が反映された最終状態となる
-                # ただし、確定後の画面遷移を踏まないように、current_index以前の最新の画像を使う
+                # --- 入力前後の画像差分から入力領域を特定するロジック ---
+                
+                # 1. 入力開始前の画像 (Start Image) を探す
+                start_img_path_rel = current_group[0].get("pre_img_path")
+                if not start_img_path_rel:
+                    first_evt_idx = temp_workflow_info.index(current_group[0])
+                    for idx in range(first_evt_idx - 1, -1, -1):
+                        if temp_workflow_info[idx].get("pre_img_path"):
+                            start_img_path_rel = temp_workflow_info[idx]["pre_img_path"]
+                            break
+
+                # 2. 確定直後(画面遷移/次のアクションの直前)の画像 (Target Image) を探す
                 target_img_path_rel = None
                 for idx in range(min(current_index, len(temp_workflow_info) - 1), -1, -1):
                     evt = temp_workflow_info[idx]
                     if evt.get("pre_img_path"):
                         target_img_path_rel = evt["pre_img_path"]
                         break
-                        
-                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
+
+                crop_box = None
                 
-                if last_click and target_img_path_rel:
+                # 3. 差分(ImageChops)を計算して最小バウンディングボックスを抽出
+                if start_img_path_rel and target_img_path_rel:
+                    start_img_full = macros_root / start_img_path_rel
+                    target_img_full = macros_root / target_img_path_rel
+                    
+                    if start_img_full.exists() and target_img_full.exists():
+                        try:
+                            with Image.open(start_img_full) as img1, Image.open(target_img_full) as img2:
+                                if img1.size == img2.size:
+                                    diff = ImageChops.difference(img1.convert("RGB"), img2.convert("RGB"))
+                                    diff_gray = diff.convert("L")
+                                    # ピクセルの変化(ノイズ)をフィルタリング (閾値30)
+                                    diff_bw = diff_gray.point(lambda p: 255 if p > 30 else 0)
+                                    bbox = diff_bw.getbbox() # (left, top, right, bottom)
+                                    
+                                    if bbox:
+                                        # 差分領域（テキスト入力箇所・IMEサジェスト等）にマージンを付与
+                                        margin = 15
+                                        left = max(0, bbox[0] - margin)
+                                        top = max(0, bbox[1] - margin)
+                                        right = min(img2.width, bbox[2] + margin)
+                                        bottom = min(img2.height, bbox[3] + margin)
+                                        
+                                        # 極端に広すぎる差分（画面全体が変わってしまった等）は除外
+                                        if (right - left) < img2.width * 0.8 and (bottom - top) < img2.height * 0.5:
+                                            crop_box = (left, top, right, bottom)
+                                            logger.info(f"[{workflow_id}] Diff bounding box found: {crop_box}")
+                        except Exception as e:
+                            logger.warning(f"[{workflow_id}] Failed to calculate diff bounding box: {e}")
+
+                # 4. 差分からBBoxが取得できなかった場合のフォールバック(最後のクリック位置)
+                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
+
+                if target_img_path_rel:
                     target_img_full_path = macros_root / target_img_path_rel
                     if target_img_full_path.exists():
                         try:
                             with Image.open(target_img_full_path) as img:
-                                cx, cy = last_click["cursor_x"], last_click["cursor_y"]
-                                # 補完等で文字が長くなること、中央や右寄りをクリックしたケースを考慮し左右に広くクロップ
-                                left = max(0, cx - 400)
-                                top = max(0, cy - 30)
-                                right = min(img.width, cx + 400)
-                                bottom = min(img.height, cy + 30)
+                                if not crop_box and last_click:
+                                    cx, cy = last_click["cursor_x"], last_click["cursor_y"]
+                                    left = max(0, cx - 400)
+                                    top = max(0, cy - 30)
+                                    right = min(img.width, cx + 400)
+                                    bottom = min(img.height, cy + 30)
+                                    crop_box = (left, top, right, bottom)
                                 
-                                crop_img = img.crop((left, top, right, bottom))
-                                temp_crop_path = temp_dir / f"temp_ocr_{current_group[-1]['event_id']}.png"
-                                crop_img.save(temp_crop_path)
-                                
-                                ocr_results = read_text_from_image(str(temp_crop_path))
-                                if ocr_results:
-                                    valid_texts = [res.content for res in ocr_results if res.content]
-                                    if valid_texts:
-                                        # 抽出された中で最も長い文字列を採用（入力されたテキスト文字列である可能性が最も高いため）
-                                        best_text = max(valid_texts, key=len)
-                                        # 明らかに無関係な1文字のゴミでなければ採用する
-                                        if len(best_text) >= 2 or len(base_text) <= 2:
-                                            text = best_text
-                                            logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
+                                if crop_box:
+                                    crop_img = img.crop(crop_box)
+                                    temp_crop_path = temp_dir / f"temp_ocr_{current_group[-1]['event_id']}.png"
+                                    crop_img.save(temp_crop_path)
+                                    
+                                    ocr_results = read_text_from_image(str(temp_crop_path))
+                                    if ocr_results:
+                                        valid_texts = [res.content for res in ocr_results if res.content]
+                                        if valid_texts:
+                                            # 抽出された中で最も長い文字列を採用（変換候補や確定文字列である可能性が高いため）
+                                            best_text = max(valid_texts, key=len)
+                                            # 無関係な1文字のゴミでなければ採用する
+                                            if len(best_text) >= 2 or len(base_text) <= 2:
+                                                text = best_text
+                                                logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
                         except Exception as e:
                             logger.error(f"[{workflow_id}] Failed to extract text via OCR: {e}")
 
