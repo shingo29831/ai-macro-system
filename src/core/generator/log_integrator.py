@@ -149,7 +149,7 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
         logger.warning(f"Failed to refine bbox with CV: {e}")
         return diff_bbox, "unknown"
 
-def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_img_paths_rel: List[str], macros_root: Path) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
+def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_img_paths_rel: List[str], macros_root: Path, temp_dir: Path, target_event_id: str) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
     """
     一連のタイピング中の複数フレームを分析し、入力バッファと文字列が継続的に一致する
     座標(BoundingBox)を追跡・スコアリングして、最も確からしいテキストフィールドを特定する。
@@ -161,8 +161,10 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
         
     field_candidates = []
     current_buffer = ""
+    ocr_call_count = 0
     
     def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
+        nonlocal ocr_call_count
         if not buffer_to_check.strip():
             return
         img_path = macros_root / img_path_rel
@@ -189,11 +191,25 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
                 
                 is_substring = (buffer_to_check.lower() in c_lower) or (target_lower in c_lower)
                 
+                # 背景: 可視化用のログ出力。OCRで何を見つけて、どうスコアリングしたかを出力する
+                l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
+                r, b = l + w, t + h
+                
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', BBox: (x:{l}, y:{t}, w:{w}, h:{h}), Score: {similarity:.2f}, Buffer: '{buffer_to_check}'")
+                
                 if similarity > 0.3 or is_substring:
-                    matched_cand = None
-                    l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
-                    r, b = l + w, t + h
+                    ocr_call_count += 1
                     
+                    # 背景: スコアリングで対象となった枠を画像として保存 (temp_ocr_crop_tracking_...)
+                    try:
+                        with Image.open(img_path) as tracking_img:
+                            t_crop = tracking_img.crop((l, t, r, b))
+                            t_crop_path = temp_dir / f"temp_ocr_crop_tracking_{target_event_id}_{img_path.stem}_{ocr_call_count}.png"
+                            t_crop.save(t_crop_path)
+                    except Exception:
+                        pass
+
+                    matched_cand = None
                     for cand in field_candidates:
                         cl, ct, cr, cb = cand["bbox"]
                         if abs(l - cl) < 50 and abs(t - ct) < 40: 
@@ -240,17 +256,16 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
     best_candidate = max(field_candidates, key=lambda x: x["score"])
     l, t, r, b = best_candidate["bbox"]
     
-    # 背景: ユーザー要望により、追跡したバウンディングボックスを 1.数倍 に拡張してタイトに切り抜く
+    # 背景: トラッキングしたBBoxを 1.1倍（上下左右に5%ずつのマージン）に拡張する
     w = r - l
     h = b - t
     
-    # 幅1.2倍(+0.1ずつ)、高さ1.5倍(+0.25ずつ)の余白を持たせる
-    pad_w = int(w * 0.1)
-    pad_h = int(h * 0.25)
+    pad_w = int(w * 0.05)
+    pad_h = int(h * 0.05)
     
-    # 最低限のマージン(10px)を保証し、文字の端切れを防ぐ
-    pad_w = max(10, pad_w)
-    pad_h = max(10, pad_h)
+    # 最低限のマージン(5px)を保証
+    pad_w = max(5, pad_w)
+    pad_h = max(5, pad_h)
     
     l_crop = max(0, l - pad_w)
     t_crop = max(0, t - pad_h)
@@ -544,10 +559,12 @@ def generate_macro_workflow(
                 crop_box = None
                 tracked_text = ""
                 base_target_full = macros_root / candidate_img_paths_rel[0] if candidate_img_paths_rel else None
+                
+                target_event_id = current_group[-1]['event_id']
 
                 if base_target_full and base_target_full.exists():
                     try:
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root)
+                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id)
                     except Exception as e:
                         logger.error(f"[{workflow_id}] Tracking error: {e}")
                     
@@ -593,7 +610,6 @@ def generate_macro_workflow(
                             logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
 
                 best_overall_text = ""
-                highest_overall_sim = 0.0
                 
                 for cand_path_rel in candidate_img_paths_rel:
                     cand_full = macros_root / cand_path_rel
@@ -606,40 +622,27 @@ def generate_macro_workflow(
                                 current_crop_box = (left, top, right, bottom)
                                 
                                 crop_img = img.crop(current_crop_box)
-                                temp_crop_path = temp_dir / f"temp_ocr_crop_{current_group[-1]['event_id']}_{Path(cand_path_rel).stem}.png"
+                                # 背景: トラッキング画像と区別するため、名前を "temp_ocr_crop_final_" に変更して保存する
+                                temp_crop_path = temp_dir / f"temp_ocr_crop_final_{target_event_id}_{Path(cand_path_rel).stem}.png"
                                 crop_img.save(temp_crop_path)
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
-                                    # 背景: 「一番長い文字」ではなく「入力したキーに最も近い文字」をスコアリングして選出する。
-                                    # これにより、巨大なフォールバック枠内で検索履歴のような長文を誤って拾うのを防ぐ。
-                                    for res in ocr_results:
-                                        if not res.content: continue
-                                        extracted_text = res.content
-                                        e_lower = extracted_text.lower()
+                                    valid_texts = [res.content for res in ocr_results if res.content]
+                                    if valid_texts:
+                                        # 背景: タイトに切り抜かれている前提のため、類似度等でノイズを弾く処理は廃止し、
+                                        # 変換後(タブ補完後)の文字をそのまま確実に取得する。
+                                        extracted_text = max(valid_texts, key=len)
                                         
-                                        sim1 = Levenshtein.ratio(target_lower, e_lower)
-                                        sim2 = Levenshtein.ratio(hiragana_target, e_lower)
-                                        sim = max(sim1, sim2)
-                                        
-                                        # 長文ノイズを排除しつつ、完全な部分一致にはボーナスを与える
-                                        if target_lower in e_lower or hiragana_target in e_lower:
-                                            len_ratio = len(target_lower) / max(1, len(extracted_text))
-                                            sim = max(sim, 0.5 + 0.5 * len_ratio)
-                                            
-                                        if sim > highest_overall_sim:
-                                            highest_overall_sim = sim
+                                        if len(extracted_text) > len(best_overall_text):
                                             best_overall_text = extracted_text
                                             
                         except Exception as e:
                             logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for candidate: {e}")
 
-                if best_overall_text and highest_overall_sim >= 0.4:
+                if best_overall_text:
                     text = best_overall_text
-                    logger.info(f"[{workflow_id}] Final OCR extracted text from BBox (Similarity: {highest_overall_sim:.2f}): {text}")
-                elif tracked_text and len(tracked_text) >= 2:
-                    text = tracked_text
-                    logger.info(f"[{workflow_id}] Final OCR extracted text from tracking candidate: {text}")
+                    logger.info(f"[{workflow_id}] Final OCR extracted text from BBox: {text}")
                 else:
                     logger.info(f"[{workflow_id}] Falling back to raw typed text: {base_text}")
 
