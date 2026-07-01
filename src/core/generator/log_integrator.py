@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 def get_text_field_bbox_pil(images_paths: List[Path], max_w: int, max_h: int) -> Optional[Tuple[int, int, int, int]]:
     """
     複数枚のキー入力フレーム間のピクセル差分を計算し、文字入力領域を特定する。
-    入力された文字の高さ（文字サイズ）を計算し、下部へのサジェストを排除する。
     """
     if len(images_paths) < 2:
         return None
@@ -60,18 +59,15 @@ def get_text_field_bbox_pil(images_paths: List[Path], max_w: int, max_h: int) ->
         if not valid_bboxes:
             return None
 
-        # 差分（＝入力された文字）の高さを収集し、文字サイズ（char_h）の中央値を算出
         heights = [b[3] - b[1] for b in valid_bboxes]
         char_h = statistics.median(heights) if heights else 20
-        if char_h > 100: char_h = 30 # 誤検知対策
+        if char_h > 100: char_h = 30
             
         min_x = min(b[0] for b in valid_bboxes)
         max_x = max(b[2] for b in valid_bboxes)
         min_y = min(b[1] for b in valid_bboxes)
         raw_max_y = max(b[3] for b in valid_bboxes)
         
-        # サジェストやブラウザショートカットが差分に含まれてしまった場合を切り落とすため、
-        # PILで検出する「文字入力領域」は文字サイズの最大4倍までに制限。
         max_y = min(raw_max_y, min_y + int(char_h * 4.0))
         
         if (max_x - min_x) > max_w * 0.8:
@@ -117,25 +113,19 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
         min_margin_area = float('inf')
         
         img_h, img_w = img.shape[:2]
-        # ウィンドウの枠など、画面の90%以上を占める意味のない巨大枠は除外
         max_allowed_area = img_w * img_h * 0.9
         
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             
-            # 文字より小さい枠は除外
             if h < min_field_h:
                 continue
             
-            # 【包含判定】入力文字領域(diff_bbox)を内包しているか
-            # 枠線ギリギリに文字がある場合を考慮し、マージンを持たせる
             margin = 20
             if x <= dl + margin and y <= dt + margin and (x+w) >= dr - margin and (y+h) >= db - margin:
                 area = w * h
                 
-                # ウィンドウ全体のような巨大すぎる枠は除外
                 if area < max_allowed_area:
-                    # 【最小包含枠の探索】文字領域を囲む枠の中で、最も面積が小さい(最も内側の)枠を採用
                     if area < min_margin_area:
                         min_margin_area = area
                         best_bbox = (x, y, x+w, y+h)
@@ -418,7 +408,6 @@ def generate_macro_workflow(
                     if item.get("pre_img_path"):
                         group_img_paths_rel.append(item["pre_img_path"])
 
-                # 確定後画像の取得 (Enterキーなどの後続イベント画像も候補とする)
                 candidate_img_paths_rel = []
                 if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
                     candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
@@ -445,9 +434,23 @@ def generate_macro_workflow(
                                 refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), bbox)
                                 logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
                                 
+                                # --- 【新規追加】縦幅のキャッピング処理 ---
+                                # 巨大な枠線（メモアプリやサジェスト結合枠）であっても、OCRクロップは入力行の周辺に強制制限する
                                 l, t, r, b = refined_bbox
+                                dl, dt, dr, db = bbox # 実際に文字が入力された領域 (PILによる差分)
+                                char_h = db - dt if (db - dt) > 0 else 20
+                                
                                 margin_x, margin_y = 5, 5
-                                crop_box = (max(0, l - margin_x), max(0, t - margin_y), min(max_w, r + margin_x), min(max_h, b + margin_y))
+                                # OCR用に許容する最大縦マージン (文字サイズの1.5倍、または30px)
+                                max_v_margin = max(30, int(char_h * 1.5))
+                                
+                                # 枠線が上下に大きすぎる場合は、入力文字周辺でカットする
+                                t_crop = max(t, dt - max_v_margin)
+                                b_crop = min(b, db + max_v_margin)
+                                
+                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
+                                logger.info(f"[{workflow_id}] Capped OCR Crop Box to avoid giant boundaries: {crop_box}")
+
                     except Exception as e:
                         logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
 
@@ -462,7 +465,6 @@ def generate_macro_workflow(
 
                 best_overall_text = ""
                 
-                # 候補となる確定前・確定後画像をすべてスキャンし、最も精度が高い文字列を拾う
                 for cand_path_rel in candidate_img_paths_rel:
                     cand_full = macros_root / cand_path_rel
                     if cand_full.exists() and crop_box:
@@ -516,11 +518,9 @@ def generate_macro_workflow(
                 if role_lower.startswith("key."):
                     is_special = True
                 elif role_lower in ["space", "tab", "backspace", "delete"]:
-                    # 入力文字を変化・増減させるキーは文字入力の一環とみなす
                     is_special = True
                     is_text_modifier = True
                 elif role_lower in ["enter", "esc", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
-                    # 確定や移動を行うキー
                     is_special = True
                 
                 if not is_special:
@@ -840,7 +840,6 @@ def generate_macro_workflow(
                             }
                         })
 
-            # --- 最適化: 連続するスクロール操作および短い待機を結合する ---
             commands_data = []
             for cmd in raw_commands_data:
                 if not commands_data:
@@ -859,7 +858,6 @@ def generate_macro_workflow(
                     elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
                         prev_cmd = commands_data[-2]
                         if prev_cmd["method"] == "scroll":
-                            # 1秒未満の待機であれば一連のスクロール操作とみなして結合
                             if last_cmd["args"]["duration"] < 1.0 and prev_cmd["args"]["x"] == cmd["args"]["x"] and prev_cmd["args"]["y"] == cmd["args"]["y"]:
                                 prev_cmd["args"]["dx"] = round(prev_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
                                 prev_cmd["args"]["dy"] = round(prev_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
