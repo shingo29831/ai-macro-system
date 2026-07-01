@@ -87,9 +87,6 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         return []
 
 def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, int]) -> Tuple[Tuple[int, int, int, int], str]:
-    """
-    OpenCVを用いてUIの枠線を抽出し、文字領域を包含する最小の枠線にスナップさせる。
-    """
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -287,7 +284,7 @@ def track_text_field_by_scoring(
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -351,6 +348,7 @@ def track_text_field_by_scoring(
         except Exception as e:
             logger.warning(f"Error during OCR tracking evaluation: {e}")
 
+    # 背景: タイピング中のフレーム(group_events)だけでスコアリングを行い、1位の候補をロックする。
     for event in group_events:
         img_path_rel = event.get("pre_img_path")
         is_ime = event.get("ime_active", False)
@@ -365,6 +363,9 @@ def track_text_field_by_scoring(
             current_buffer += " "
         elif len(role) == 1:
             current_buffer += role
+
+    # 背景: ユーザー要望の実装。確定フェーズの画像群(candidate_img_paths_rel)では _evaluate_frame を絶対に呼ばない。
+    # タブ補完等で文字が急激に変化した際にペナルティを受け、検索候補などに1位が逆転されてしまうのを物理的に防ぐため。
 
     if not field_candidates:
         return None, ""
@@ -387,7 +388,7 @@ def track_text_field_by_scoring(
             diff = cv2.absdiff(img_base, img_final)
             _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
             
-            kernel = np.ones((5, 15), np.uint8)
+            kernel = np.ones((3, 10), np.uint8)
             dilated = cv2.dilate(thresh, kernel, iterations=1)
             
             contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -415,7 +416,10 @@ def track_text_field_by_scoring(
             target_contours = []
             for bbox in filtered_bboxes:
                 x, y, w, h = bbox
-                if abs(y - t) < 15 and abs((y+h) - b) < 15:
+                # 背景: 輪郭のY座標フィルタを「中心点(Center Y)」ベースに変更。
+                # タブ補完やサジェストで文字の高さや太さが変わり、上下の境界(t, b)がズレた場合でも確実に取りこぼさないようにする。
+                cy = y + h / 2
+                if (t - 20) <= cy <= (b + 20):
                     if x + w > l - 15: 
                         target_contours.append(bbox)
             
@@ -792,49 +796,6 @@ def generate_macro_workflow(
                         crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
                     except Exception as e:
                         logger.error(f"[{workflow_id}] Tracking error: {e}")
-                    
-                    if crop_box:
-                        logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
-                    else:
-                        logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
-                        try:
-                            if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
-                                best_fallback_bbox = diff_bboxes[0]
-                                if last_click_pos:
-                                    best_dist = float('inf')
-                                    for dbbox in diff_bboxes:
-                                        cx = (dbbox[0] + dbbox[2]) / 2
-                                        cy = (dbbox[1] + dbbox[3]) / 2
-                                        dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
-                                        if dist < best_dist:
-                                            best_dist = dist
-                                            best_fallback_bbox = dbbox
-
-                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
-                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                
-                                l, t, r, b = refined_bbox
-                                dl, dt, dr, db = best_fallback_bbox
-                                char_h = db - dt if (db - dt) > 0 else 20
-                                
-                                margin_x, margin_y = 5, 5
-                                max_v_margin = max(30, int(char_h * 1.5))
-                                
-                                t_crop = max(t, dt - max_v_margin)
-                                b_crop = min(b, db + max_v_margin)
-                                
-                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                        except Exception as e:
-                            logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
-
-                if not crop_box and base_target_full and base_target_full.exists():
-                    if last_click_pos:
-                        with Image.open(base_target_full) as img:
-                            cx, cy = last_click_pos
-                            left, top = max(0, cx - 300), max(0, cy - 100)
-                            right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
-                            crop_box = (left, top, right, bottom)
-                            logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
 
                 best_overall_text = ""
                 
