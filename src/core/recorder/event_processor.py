@@ -20,12 +20,6 @@ _last_scroll_time = 0.0
 _last_scroll_dx = 0.0
 _last_scroll_dy = 0.0
 
-# --- テキストフィールド探索・OCR用の状態保持 ---
-_pre_confirm_img = None
-_pre_confirm_monitor = None
-_pre_confirm_target_text = ""
-_last_text_field_rect = None
-
 def calculate_and_update_diff(current_img) -> str:
     with state.previous_screenshot_lock:
         if state.previous_screenshot_img is None:
@@ -42,7 +36,6 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     
     pre_img, pre_monitor = None, None
     if capture_now:
-        # 背景: エンターやタブ等の確定トリガーが押された「直前」の画面（ページ遷移前）を確実に取りこぼさないために同期取得する
         pre_img, pre_monitor = screen_capturer.take_screenshot()
     
     state.key_event_queue.put({
@@ -52,52 +45,14 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     })
 
 def process_key_event(event: dict):
-    global _pre_confirm_img, _pre_confirm_monitor, _pre_confirm_target_text, _last_text_field_rect
-    
-    event_no, dt, input_type = event["event_no"], event["datetime"], event["input_type"]
+    input_type = event["input_type"]
 
-    # --- OCRアーキテクチャ: ① 確定前の探索フェーズ ---
-    if input_type == "text_field_search":
-        # ページ遷移や補完が起こる前の画像を保持
-        _pre_confirm_img = event.get("pre_img")
-        _pre_confirm_monitor = event.get("pre_monitor")
-        _pre_confirm_target_text = event.get("key", "")
-        
-        try:
-            # 疑似コード: ここで確定前画像(_pre_confirm_img)に対してOCRとCV2を実行し、
-            # _pre_confirm_target_text が入力されている座標枠を特定して _last_text_field_rect に格納します。
-            pass 
-        except Exception as e:
-            print(f"テキストフィールド探索処理でエラー: {e}")
-            
-        # 背景: 変数化（タイピングのグループ化）を破壊しないため、内部イベントはログ出力せずに終了する
-        return 
+    # 背景: 変数化処理はすべて事後の log_integrator.py に一任するため、
+    # リアルタイムの探索・確定用内部イベントは処理をスキップしてログの純粋性を保つ
+    if input_type in ["text_field_search", "text_candidate_confirm"]:
+        return
 
-    # --- OCRアーキテクチャ: ② 確定後のOCRフェーズ ---
-    if input_type == "text_candidate_confirm":
-        if _pre_confirm_img is not None and _last_text_field_rect is not None:
-            # 背景: 非同期ワーカー内で実行されるため、UI側でページ遷移や補完が完了した「確定後」の最新画面を取得できる
-            post_img, post_monitor = screen_capturer.take_screenshot()
-            
-            try:
-                # 事前に特定しておいた座標を使って、確定後の画像を切り抜く
-                crop = screen_capturer.save_ui_crop_by_rect(event_no=event_no, rect=_last_text_field_rect, full_img=post_img, monitor=post_monitor)
-                print(f"確定後OCR用クロップ保存成功: {crop.get('ui_image_ref')}")
-                
-                # 疑似コード: ここで crop 画像に対してOCRエンジンを回し、最終的な確定文字を得る
-                pass
-            except Exception as e:
-                print(f"確定後テキストのOCR処理でエラー: {e}")
-                
-        # 状態リセット
-        _pre_confirm_img = None
-        _pre_confirm_target_text = ""
-        _last_text_field_rect = None
-        
-        # 背景: これもログ出力しない
-        return 
-
-    # --- 通常のキー入力処理 ---
+    event_no, dt = event["event_no"], event["datetime"]
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
 

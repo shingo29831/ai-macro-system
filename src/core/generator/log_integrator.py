@@ -509,6 +509,11 @@ def generate_macro_workflow(
             current_group.clear()
 
         for i, info in enumerate(temp_workflow_info):
+            # 背景: 未知のイベントやシステム系の記録ノイズが混入しても、
+            # タイピングのまとまり(current_group)を分断しないよう静かに無視する
+            if info["raw_action"] == "unknown" or "recording" in info["raw_type"].lower():
+                continue
+                
             if info["raw_action"] == "key_down":
                 role_lower = str(info["semantic_role"]).lower() if info["semantic_role"] else ""
                 
