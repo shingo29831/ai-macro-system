@@ -67,19 +67,22 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
             if w > 10 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
-        # 互いに重なり合うBBoxを統合する
+        # 背景: 重なり合うBBoxを再帰的に統合して1つにまとめる
         merged_bboxes = []
         for bbox in valid_bboxes:
             x1, y1, x2, y2 = bbox
-            merged = False
-            for i, (mx1, my1, mx2, my2) in enumerate(merged_bboxes):
-                # 交差判定
-                if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
-                    merged_bboxes[i] = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
-                    merged = True
-                    break
-            if not merged:
-                merged_bboxes.append(bbox)
+            has_merged = True
+            while has_merged:
+                has_merged = False
+                for i, (mx1, my1, mx2, my2) in enumerate(merged_bboxes):
+                    # 交差判定
+                    if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
+                        new_bbox = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
+                        merged_bboxes.pop(i)
+                        x1, y1, x2, y2 = new_bbox
+                        has_merged = True
+                        break
+            merged_bboxes.append((x1, y1, x2, y2))
                 
         return merged_bboxes
 
@@ -180,9 +183,6 @@ def track_text_field_by_scoring(
         try:
             ocr_results = []
             
-            # 背景: 変化があった複数の領域（search_areas）を全てクロップして並行してOCRにかける。
-            # Discordなどのノイズ領域と、本物の入力領域が両方評価土俵に上がるため、
-            # テキストの一致度による純粋なスコア勝負で本物が勝つようになる。
             if search_areas:
                 with Image.open(img_path) as img:
                     max_w, max_h = img.width, img.height
@@ -200,7 +200,6 @@ def track_text_field_by_scoring(
                             area_results = read_text_from_image(str(eval_img_path))
                             if area_results:
                                 for res in area_results:
-                                    # クロップ画像内での座標を、画面全体の絶対座標に補正
                                     res.boundingBox.x += l
                                     res.boundingBox.y += t
                                     ocr_results.append(res)
@@ -210,7 +209,6 @@ def track_text_field_by_scoring(
             if not ocr_results:
                 return
 
-            # 背景: 複数エリアの重なりによって同じ文字が重複して検出された場合、片方を排除する
             unique_results = []
             seen_centers = []
             for res in ocr_results:
@@ -247,14 +245,12 @@ def track_text_field_by_scoring(
                 l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
                 r, b = l + w, t + h
                 
-                # 距離ペナルティ: クリック位置から離れすぎているものは減点
                 dist_penalty = 0.0
                 if last_click_pos is not None:
                     cx, cy = l + w / 2, t + h / 2
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
-                # 文字数差ペナルティ
                 target_len = len(target_lower) if is_ime else len(buffer_lower)
                 ocr_len = len(c_lower)
                 len_diff = abs(target_len - ocr_len)
@@ -268,7 +264,6 @@ def track_text_field_by_scoring(
                         matched_cand = cand
                         break
 
-                # 変化率ペナルティ
                 change_penalty = 0.0
                 if matched_cand:
                     prev_text = matched_cand["last_text"].lower()
@@ -286,7 +281,7 @@ def track_text_field_by_scoring(
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -660,9 +655,28 @@ def generate_macro_workflow(
                         if len(full_img_paths) >= 2:
                             diff_bboxes = get_text_field_bboxes_cv(full_img_paths, max_w, max_h)
                             if diff_bboxes:
+                                raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    search_areas.append((max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350)))
+                                    # 個別の領域に大きくマージンを持たせる
+                                    raw_search_areas.append((max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350)))
+                                
+                                # 背景: 拡張によって重複した探索エリアを完全に結合（マージ）し、無駄なOCR呼び出しを削減する
+                                merged_areas = []
+                                for rect in raw_search_areas:
+                                    x1, y1, x2, y2 = rect
+                                    has_merged = True
+                                    while has_merged:
+                                        has_merged = False
+                                        for i, (mx1, my1, mx2, my2) in enumerate(merged_areas):
+                                            if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
+                                                new_rect = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
+                                                merged_areas.pop(i)
+                                                x1, y1, x2, y2 = new_rect
+                                                has_merged = True
+                                                break
+                                    merged_areas.append((x1, y1, x2, y2))
+                                search_areas = merged_areas
                                 
                     except Exception as e:
                         logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
