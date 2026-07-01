@@ -228,7 +228,6 @@ def track_text_field_by_scoring(
                     
                 c_lower = res.content.lower()
                 
-                # 背景: IMEオン時は確実に「ひらがな変換結果(なgなど)」とのみ照合させ、英語文字(nagi等)に引っ張られるのを防ぐ
                 if is_ime:
                     similarity = Levenshtein.ratio(target_lower, c_lower)
                     is_substring = target_lower in c_lower
@@ -239,12 +238,10 @@ def track_text_field_by_scoring(
                 l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
                 r, b = l + w, t + h
                 
-                # 背景: 直前のクリック位置から遠すぎる別モニターなどのノイズに対して距離ペナルティを与える
                 dist_penalty = 0.0
                 if last_click_pos is not None:
                     cx, cy = l + w / 2, t + h / 2
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
-                    # 1000px離れていたら最大0.5のペナルティを引く
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
                 frame_score = similarity - dist_penalty
@@ -309,15 +306,19 @@ def track_text_field_by_scoring(
     
     w = r - l
     h = b - t
-    pad_w = int(w * 0.05)
-    pad_h = int(h * 0.05)
-    pad_w = max(5, pad_w)
-    pad_h = max(5, pad_h)
     
-    l_crop = max(0, l - pad_w)
-    t_crop = max(0, t - pad_h)
-    r_crop = r + pad_w
-    b_crop = b + pad_h
+    # 背景: 日本語のタブ補完やIME確定による右方向への爆発的な文字数増加を確実に捉えるため、
+    # トラッキングしたBBoxの右側マージンを特大化(最低300px、または幅の2.5倍)する。
+    # 縦(上下)と左はノイズを拾わないようタイトに保つ。
+    pad_left = max(5, int(w * 0.05))
+    pad_right = max(300, int(w * 2.5))
+    pad_top = max(5, int(h * 0.1))
+    pad_bottom = max(5, int(h * 0.1))
+    
+    l_crop = max(0, l - pad_left)
+    t_crop = max(0, t - pad_top)
+    r_crop = r + pad_right
+    b_crop = b + pad_bottom
     
     return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
 
@@ -643,6 +644,13 @@ def generate_macro_workflow(
                             if diff_bbox:
                                 dl, dt, dr, db = diff_bbox
                                 search_area = (max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350))
+                            else:
+                                if window_rect:
+                                    search_area = window_rect
+                        else:
+                            if window_rect:
+                                search_area = window_rect
+                                
                     except Exception as e:
                         logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
 
@@ -702,9 +710,13 @@ def generate_macro_workflow(
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
-                                    valid_texts = [res.content for res in ocr_results if res.content]
-                                    if valid_texts:
-                                        extracted_text = max(valid_texts, key=len)
+                                    valid_results = [res for res in ocr_results if res.content]
+                                    if valid_results:
+                                        # 背景: 縦幅をタイトに切り抜いているため、この枠内の文字はすべて同一のテキストフィールドとみなせる。
+                                        # OCRエンジンによる長文の分断(例:「名古屋」と「工学院」)を防ぐため、X座標順にソートして全て結合する。
+                                        valid_results.sort(key=lambda r: r.boundingBox.x)
+                                        extracted_text = "".join([r.content.strip() for r in valid_results])
+                                        
                                         if len(extracted_text) > len(best_overall_text):
                                             best_overall_text = extracted_text
                                             
