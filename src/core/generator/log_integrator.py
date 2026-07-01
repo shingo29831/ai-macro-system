@@ -306,10 +306,6 @@ def track_text_field_by_scoring(
     
     w = r - l
     h = b - t
-    
-    # 背景: 日本語のタブ補完やIME確定による右方向への爆発的な文字数増加を確実に捉えるため、
-    # トラッキングしたBBoxの右側マージンを特大化(最低300px、または幅の2.5倍)する。
-    # 縦(上下)と左はノイズを拾わないようタイトに保つ。
     pad_left = max(5, int(w * 0.05))
     pad_right = max(300, int(w * 2.5))
     pad_top = max(5, int(h * 0.1))
@@ -712,13 +708,43 @@ def generate_macro_workflow(
                                 if ocr_results:
                                     valid_results = [res for res in ocr_results if res.content]
                                     if valid_results:
-                                        # 背景: 縦幅をタイトに切り抜いているため、この枠内の文字はすべて同一のテキストフィールドとみなせる。
-                                        # OCRエンジンによる長文の分断(例:「名古屋」と「工学院」)を防ぐため、X座標順にソートして全て結合する。
+                                        # 背景: X座標順にソートし、文字ブロック間の「空間的ギャップ」を評価するロジカルなアプローチを導入。
+                                        # 右側に余裕を持って切り抜いた画像内に「無関係な別のUIテキスト(クリアボタンや別要素)」が映り込んでも、
+                                        # 文字間隔が一定以上空いている場合は結合を打ち切ることで、純粋な入力文字列のみを正確に抽出する。
                                         valid_results.sort(key=lambda r: r.boundingBox.x)
-                                        extracted_text = "".join([r.content.strip() for r in valid_results])
                                         
-                                        if len(extracted_text) > len(best_overall_text):
-                                            best_overall_text = extracted_text
+                                        combined_text = ""
+                                        prev_right = -1
+                                        
+                                        for res in valid_results:
+                                            text_part = res.content.strip()
+                                            if not text_part:
+                                                continue
+                                                
+                                            bx = res.boundingBox.x
+                                            bw = res.boundingBox.width
+                                            bh = res.boundingBox.height
+                                            
+                                            if prev_right == -1:
+                                                # 先頭ブロック
+                                                combined_text += text_part
+                                                prev_right = bx + bw
+                                            else:
+                                                # 前のブロックの右端から、現在のブロックの左端までのギャップを計算
+                                                gap = bx - prev_right
+                                                
+                                                # テキストフィールド内の文字間隔の許容値（通常、フォントの高さの1.5倍程度までを連続とみなす）
+                                                max_gap = max(20, bh * 1.5)
+                                                
+                                                if gap <= max_gap:
+                                                    combined_text += text_part
+                                                    prev_right = max(prev_right, bx + bw)
+                                                else:
+                                                    logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
+                                                    break
+                                                    
+                                        if len(combined_text) > len(best_overall_text):
+                                            best_overall_text = combined_text
                                             
                         except Exception as e:
                             logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for candidate: {e}")
