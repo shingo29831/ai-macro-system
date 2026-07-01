@@ -3,13 +3,36 @@
 import time
 import math
 import threading
-import traceback
+import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
 from core.recorder.event_processor import enqueue_key_event, record_scroll_event
+from core.recorder.ime_detector import is_ime_active
+from core.recorder.romaji_converter import to_hiragana
+
+logger = logging.getLogger(__name__)
 
 MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
+
+def _flush_typing_buffer(trigger_reason: str):
+    """
+    バッファリングされた入力文字列を確定し、OCR特定用のイベントを発火する。
+    """
+    buffer = getattr(state, "typing_buffer", "")
+    if not buffer:
+        return
+
+    ime_on = is_ime_active()
+    # 全角モード時はローマ字バッファをひらがなに変換して画面上のターゲット文字列とする
+    target_text = to_hiragana(buffer) if ime_on else buffer
+    
+    # 画面のスクリーンショットを伴うテキスト候補イベントとして記録
+    enqueue_key_event("text_candidate", target_text, capture_now=True)
+    
+    # バッファをクリア
+    state.typing_buffer = ""
+    logger.debug("タイピングバッファをフラッシュしました [%s]: %s (IME: %s)", trigger_reason, target_text, ime_on)
 
 def on_move(x, y):
     if not state.is_recording or state.is_stopping: return
@@ -35,6 +58,11 @@ def on_move(x, y):
 def on_click(x, y, button, pressed):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
+    
+    if pressed:
+        # クリックによりフォーカスが外れる直前にバッファを確定
+        _flush_typing_buffer(trigger_reason="mouse_click")
+        
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
 def on_scroll(x, y, dx, dy):
@@ -44,29 +72,42 @@ def on_scroll(x, y, dx, dy):
     try: 
         record_scroll_event(int(x), int(y), float(dx), float(dy), source="pynput")
     except Exception: 
-        traceback.print_exc()
+        logger.exception("スクロールイベントの記録に失敗しました")
 
 def on_press(key):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
 
     key_text = key_to_string(key)
+    
     if key_text in ("\\", "\x1c"):
         with state.pressed_keys_lock:
             has_ctrl = any(pk in ["ctrl", "ctrl_l", "ctrl_r"] for pk in state.pressed_keys)
         if has_ctrl:
             if not state.is_stopping:
                 state.is_stopping = True
-                print("input_listener: Ctrl + \\ が押されたため記録を停止します")
+                logger.info("input_listener: Ctrl + \\ が押されたため記録を停止します")
                 if state.shortcut_stop_callback:
-                    print("input_listener: ViewModelのコールバックを呼び出します")
+                    logger.info("input_listener: ViewModelのコールバックを呼び出します")
                     state.shortcut_stop_callback()
                 else:
-                    print("input_listener: UIコールバックが未登録のため単体停止を実行します")
+                    logger.info("input_listener: UIコールバックが未登録のため単体停止を実行します")
                     import core.recorder.os_hook as hook
                     threading.Thread(target=hook.stop_recording, daemon=True).start()
             return  # Falseは絶対に返さない(スレッド自爆防止)
 
+    # --- タイピングバッファの管理 ---
+    current_buffer = getattr(state, "typing_buffer", "")
+    if len(key_text) == 1 and key_text.isprintable():
+        state.typing_buffer = current_buffer + key_text.lower()
+    elif key_text == "backspace" and current_buffer:
+        state.typing_buffer = current_buffer[:-1]
+
+    # 変換・確定トリガーの検知
+    if key_text in ("space", "tab", "enter"):
+        _flush_typing_buffer(trigger_reason=key_text)
+
+    # --- 既存のキー記録処理 ---
     try:
         with state.pressed_keys_lock:
             state.pressed_keys.add(key_text)
@@ -84,7 +125,7 @@ def on_press(key):
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"): return
         enqueue_key_event("key_press", key_text, capture_now=capture_now)
     except Exception:
-        traceback.print_exc()
+        logger.exception("キーフック処理中にエラーが発生しました")
 
 def on_release(key):
     key_text = key_to_string(key)
