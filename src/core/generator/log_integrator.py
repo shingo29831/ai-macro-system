@@ -244,9 +244,34 @@ def track_text_field_by_scoring(
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
-                frame_score = similarity - dist_penalty
+                matched_cand = None
+                for cand in field_candidates:
+                    cl, ct, cr, cb = cand["bbox"]
+                    if abs(l - cl) < 50 and abs(t - ct) < 40: 
+                        matched_cand = cand
+                        break
+
+                # 背景: ユーザー提案の「前回評価時の文字との変化率」を計算し、
+                # サジェスト等によって文字が大量に増えたり別物に変わったりした場合にペナルティを与える
+                change_penalty = 0.0
+                if matched_cand:
+                    prev_text = matched_cand["last_text"].lower()
+                    dist = Levenshtein.distance(prev_text, c_lower)
+                    max_len = max(len(prev_text), len(c_lower), 1)
+                    change_ratio = dist / max_len
+                    
+                    if change_ratio > 0.5:
+                        change_penalty = 0.5
+                    elif change_ratio > 0.2:
+                        change_penalty = change_ratio * 0.5
+                else:
+                    target_len = len(target_lower) if is_ime else len(buffer_lower)
+                    if len(c_lower) > max(3, target_len * 2):
+                        change_penalty = 0.3
+
+                frame_score = similarity - dist_penalty - change_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, ChgPen: {change_penalty:.2f}), Target: '{target_lower}'")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -258,13 +283,6 @@ def track_text_field_by_scoring(
                     except Exception:
                         pass
 
-                    matched_cand = None
-                    for cand in field_candidates:
-                        cl, ct, cr, cb = cand["bbox"]
-                        if abs(l - cl) < 50 and abs(t - ct) < 40: 
-                            matched_cand = cand
-                            break
-                            
                     if matched_cand:
                         matched_cand["score"] += frame_score * 2.0 
                         matched_cand["bbox"] = (min(l, cl), min(t, ct), max(r, cr), max(b, cb))
@@ -706,11 +724,10 @@ def generate_macro_workflow(
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
+                                    # 背景: 不要な記号を削除するクリーニングフィルター(clean_ocr_text)を撤去し、記号をそのまま維持する
                                     valid_results = [res for res in ocr_results if res.content]
+                                        
                                     if valid_results:
-                                        # 背景: X座標順にソートし、文字ブロック間の「空間的ギャップ」を評価するロジカルなアプローチを導入。
-                                        # 右側に余裕を持って切り抜いた画像内に「無関係な別のUIテキスト(クリアボタンや別要素)」が映り込んでも、
-                                        # 文字間隔が一定以上空いている場合は結合を打ち切ることで、純粋な入力文字列のみを正確に抽出する。
                                         valid_results.sort(key=lambda r: r.boundingBox.x)
                                         
                                         combined_text = ""
@@ -718,22 +735,15 @@ def generate_macro_workflow(
                                         
                                         for res in valid_results:
                                             text_part = res.content.strip()
-                                            if not text_part:
-                                                continue
-                                                
                                             bx = res.boundingBox.x
                                             bw = res.boundingBox.width
                                             bh = res.boundingBox.height
                                             
                                             if prev_right == -1:
-                                                # 先頭ブロック
                                                 combined_text += text_part
                                                 prev_right = bx + bw
                                             else:
-                                                # 前のブロックの右端から、現在のブロックの左端までのギャップを計算
                                                 gap = bx - prev_right
-                                                
-                                                # テキストフィールド内の文字間隔の許容値（通常、フォントの高さの1.5倍程度までを連続とみなす）
                                                 max_gap = max(20, bh * 1.5)
                                                 
                                                 if gap <= max_gap:
