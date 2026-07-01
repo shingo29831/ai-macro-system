@@ -41,22 +41,23 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         return []
         
     try:
-        img_prev = cv2.imread(str(images_paths[0]), cv2.IMREAD_GRAYSCALE)
-        if img_prev is None: return []
+        # 背景: ユーザー提案の採用。1フレーム前との差分ではなく「入力開始前のベース画像」との差分を取る。
+        # これにより、アニメーション等のノイズが相殺され、純粋に文字が入力された領域だけが抽出される。
+        img_base = cv2.imread(str(images_paths[0]), cv2.IMREAD_GRAYSCALE)
+        if img_base is None: return []
         
-        accum_mask = np.zeros_like(img_prev)
+        accum_mask = np.zeros_like(img_base)
         
         for i in range(1, len(images_paths)):
             img_curr = cv2.imread(str(images_paths[i]), cv2.IMREAD_GRAYSCALE)
-            if img_curr is None or img_curr.shape != img_prev.shape:
+            if img_curr is None or img_curr.shape != img_base.shape:
                 continue
                 
-            diff = cv2.absdiff(img_prev, img_curr)
+            diff = cv2.absdiff(img_base, img_curr)
             _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
             accum_mask = cv2.bitwise_or(accum_mask, thresh)
-            img_prev = img_curr
             
-        kernel = np.ones((5, 20), np.uint8)
+        kernel = np.ones((5, 15), np.uint8)
         dilated = cv2.dilate(accum_mask, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -64,7 +65,7 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         valid_bboxes = []
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            if w > 10 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
+            if w > 5 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
         merged_bboxes = []
@@ -169,7 +170,6 @@ def track_text_field_by_scoring(
     current_buffer = ""
     ocr_call_count = 0
     
-    # 背景: 各エリアをIDで追跡できるようにする
     active_search_areas = [(i, sa) for i, sa in enumerate(search_areas)] if search_areas else []
     
     def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
@@ -203,7 +203,6 @@ def track_text_field_by_scoring(
                                 for res in area_results:
                                     res.boundingBox.x += l
                                     res.boundingBox.y += t
-                                    # エリアのインデックスを保持
                                     ocr_results.append((res, idx))
             else:
                 raw_res = read_text_from_image(str(img_path))
@@ -264,7 +263,9 @@ def track_text_field_by_scoring(
                 matched_cand = None
                 for cand in field_candidates:
                     cl, ct, cr, cb = cand["bbox"]
-                    if abs(l - cl) < 50 and abs(t - ct) < 40: 
+                    # 背景: 変換候補欄(サジェスト)の分離。Y座標(上下)の許容誤差を極限(15px)まで厳しくし、
+                    # 入力中のテキストフィールドのすぐ下に現れたサジェストを「別の候補」として確実に分離する。
+                    if abs(l - cl) < 30 and abs(t - ct) < 15: 
                         matched_cand = cand
                         break
 
@@ -274,7 +275,6 @@ def track_text_field_by_scoring(
                     dist_change = Levenshtein.distance(prev_text, c_lower)
                     max_len = max(len(prev_text), len(c_lower), 1)
                     
-                    # 背景: ユーザー指摘の修正。1文字の変化(例: f -> fi)は自然な入力とみなしペナルティを免除する
                     if dist_change > 1:
                         change_ratio = dist_change / max_len
                         if change_ratio > 0.5:
@@ -287,7 +287,7 @@ def track_text_field_by_scoring(
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -310,7 +310,6 @@ def track_text_field_by_scoring(
                             "last_text": res.content
                         })
 
-            # 背景: 各フレームの評価終了後、スコアが著しく低い(負けている)エリアを探索対象から除外し、処理を最適化する。
             if active_search_areas and field_candidates:
                 global_max_score = max(cand["score"] for cand in field_candidates)
                 
@@ -321,11 +320,9 @@ def track_text_field_by_scoring(
                     for cand in field_candidates:
                         cl, ct, cr, cb = cand["bbox"]
                         cx, cy = (cl + cr) / 2, (ct + cb) / 2
-                        # 候補の中心座標がこのエリア内に収まっているか判定
                         if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
                             area_max = max(area_max, cand["score"])
                     
-                    # トップの候補から 3.0 ポイント以上離されたエリアはノイズとみなして切り捨てる
                     if global_max_score - area_max <= 3.0:
                         surviving_areas.append((idx, s_area))
                     else:
@@ -345,6 +342,7 @@ def track_text_field_by_scoring(
             
         role = str(event.get("semantic_role", "")).lower()
         if role == "backspace":
+            # 背景: バックスペース処理は以前から実装済みで、current_bufferを1文字削るためlen_penalty等は正常に追従します
             current_buffer = current_buffer[:-1]
         elif role == "space":
             current_buffer += " "
@@ -364,10 +362,12 @@ def track_text_field_by_scoring(
     
     w = r - l
     h = b - t
+    # 背景: ベース画像との差分を利用したことで、抽出エリアにすでに入力文字列全体が包含されるようになった。
+    # したがって、右側に無条件で特大マージン(+300px)を取る危険な処理を廃止し、タイトな余白に留める。
     pad_left = max(5, int(w * 0.05))
-    pad_right = max(300, int(w * 2.5))
-    pad_top = max(5, int(h * 0.1))
-    pad_bottom = max(5, int(h * 0.1))
+    pad_right = max(10, int(w * 0.1))
+    pad_top = max(5, int(h * 0.05))
+    pad_bottom = max(5, int(h * 0.05))
     
     l_crop = max(0, l - pad_left)
     t_crop = max(0, t - pad_top)
@@ -688,7 +688,8 @@ def generate_macro_workflow(
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    raw_search_areas.append((max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350)))
+                                    # 背景: ベース画像の差分を使用し、巨大なマージン(-400等)を撤廃。入力領域だけをタイトに切り抜く。
+                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 30), min(max_h, db + 20)))
                                 
                                 merged_areas = []
                                 for rect in raw_search_areas:
