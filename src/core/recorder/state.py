@@ -55,6 +55,10 @@ class RecorderState:
             return f"{self.event_index:03d}"
 
     def append_log(self, log: dict):
+        # 背景: 変数化処理(log_integrator)を阻害しないため、OCR用の内部イベントは実ログには残さない
+        if log.get("Type") in ("text_field_search", "text_candidate_confirm"):
+            return
+            
         with self.input_logs_lock:
             self.input_logs.append(log)
 
