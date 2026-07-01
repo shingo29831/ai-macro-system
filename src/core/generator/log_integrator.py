@@ -57,8 +57,7 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
         kernel = np.ones((5, 15), np.uint8)
         dilated = cv2.dilate(accum_mask, kernel, iterations=2)
         
-        # 背景: RETR_EXTERNALからRETR_LISTに変更し、内部のロゴ要素等も個別に取得する
-        contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         valid_bboxes = []
         for cnt in contours:
@@ -66,22 +65,8 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
             if w > 5 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
-        # 背景: 包含している側のUI(親となる外枠)を切り捨てる
-        filtered_bboxes = []
-        for i, (x1, y1, x2, y2) in enumerate(valid_bboxes):
-            is_enclosing = False
-            for j, (nx1, ny1, nx2, ny2) in enumerate(valid_bboxes):
-                if i == j: continue
-                # 完全に内包しているか判定
-                if x1 <= nx1 and y1 <= ny1 and x2 >= nx2 and y2 >= ny2:
-                    if (x2 - x1) > (nx2 - nx1) or (y2 - y1) > (ny2 - ny1):
-                        is_enclosing = True
-                        break
-            if not is_enclosing:
-                filtered_bboxes.append((x1, y1, x2, y2))
-                
         merged_bboxes = []
-        for bbox in filtered_bboxes:
+        for bbox in valid_bboxes:
             x1, y1, x2, y2 = bbox
             has_merged = True
             while has_merged:
@@ -181,14 +166,16 @@ def track_text_field_by_scoring(
     field_candidates = []
     current_buffer = ""
     ocr_call_count = 0
+    frame_count = 0
     
     active_search_areas = [(i, sa) for i, sa in enumerate(search_areas)] if search_areas else []
     
     def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool, is_final_candidate: bool = False):
-        nonlocal ocr_call_count, active_search_areas
+        nonlocal ocr_call_count, active_search_areas, frame_count
         if not buffer_to_check.strip():
             return
             
+        frame_count += 1
         img_path = macros_root / img_path_rel
         if not img_path.exists():
             return
@@ -323,25 +310,37 @@ def track_text_field_by_scoring(
                             "last_text": res.content
                         })
 
-            if active_search_areas and field_candidates and not is_final_candidate:
-                global_max_score = max(cand["score"] for cand in field_candidates)
-                
-                surviving_areas = []
-                for idx, s_area in active_search_areas:
-                    sl, st, sr, sb = s_area
-                    area_max = -float('inf')
-                    for cand in field_candidates:
-                        cl, ct, cr, cb = cand["bbox"]
-                        cx, cy = (cl + cr) / 2, (ct + cb) / 2
-                        if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
-                            area_max = max(area_max, cand["score"])
+            if active_search_areas and not is_final_candidate:
+                if field_candidates:
+                    global_max_score = max(cand["score"] for cand in field_candidates)
                     
-                    if global_max_score - area_max <= 3.0:
+                    surviving_areas = []
+                    for idx, s_area in active_search_areas:
+                        sl, st, sr, sb = s_area
+                        area_has_candidate = False
+                        area_max = -float('inf')
+                        for cand in field_candidates:
+                            cl, ct, cr, cb = cand["bbox"]
+                            cx, cy = (cl + cr) / 2, (ct + cb) / 2
+                            if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
+                                area_has_candidate = True
+                                area_max = max(area_max, cand["score"])
+                        
+                        # 背景: ユーザー提案の実装。「最初の方から候補になかった座標の解析はやめる」
+                        # 最初の3フレームを検証しても1度も候補(文字)が見つからなかったエリアは即時除外する
+                        if frame_count >= 3 and not area_has_candidate:
+                            logger.info(f"[{target_event_id}] Pruning search area {idx} (No valid candidates found in early frames)")
+                            continue
+                            
+                        if area_has_candidate and (global_max_score - area_max > 3.0):
+                            logger.info(f"[{target_event_id}] Pruning search area {idx} (Area Max: {area_max:.2f}, Global Max: {global_max_score:.2f})")
+                            continue
+                            
                         surviving_areas.append((idx, s_area))
-                    else:
-                        logger.info(f"[{target_event_id}] Pruning search area {idx} (Area Max: {area_max:.2f}, Global Max: {global_max_score:.2f})")
-                
-                active_search_areas = surviving_areas
+                    
+                    # 安全装置: 全てのエリアが消えて全画面OCR化するのを防ぐ
+                    if surviving_areas:
+                        active_search_areas = surviving_areas
 
         except Exception as e:
             logger.warning(f"Error during OCR tracking evaluation: {e}")
@@ -385,11 +384,9 @@ def track_text_field_by_scoring(
             diff = cv2.absdiff(img_base, img_final)
             _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
             
-            # カーネルをタイトにし、ロゴと文字を結合させない
             kernel = np.ones((3, 10), np.uint8)
             dilated = cv2.dilate(thresh, kernel, iterations=1)
             
-            # 背景: RETR_LISTを用いてすべての輪郭を抽出し、包含親UI（外枠）を切り捨てる
             contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
             raw_bboxes = []
@@ -455,7 +452,8 @@ def track_text_field_by_scoring(
     pad_x = 5
     pad_y = 5
     
-    l_crop = max(0, l - pad_x)
+    # 背景: 左側にアイコンを含まないよう、0マージンを維持
+    l_crop = max(0, l)
     t_crop = max(0, t - pad_y)
     r_crop = r + pad_x
     b_crop = b + pad_y
@@ -775,7 +773,11 @@ def generate_macro_workflow(
                         full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
                         
                         if len(full_img_paths) >= 2:
-                            diff_bboxes = get_text_field_bboxes_cv(full_img_paths, max_w, max_h)
+                            # 背景: ユーザー提案の実装。「最初の方から候補になかった座標の解析はやめる」
+                            # これにより、打鍵後半で出現するサジェスト等のノイズ領域がそもそも抽出されなくなる。
+                            eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
+                            diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
+                            
                             if diff_bboxes:
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
@@ -871,7 +873,6 @@ def generate_macro_workflow(
                                     valid_results = [res for res in ocr_results if res.content]
                                         
                                     if valid_results:
-                                        # 背景: OCR結果に対しても包含チェックを行い、全体を囲む誤認識の巨大枠(包含親UI)を切り捨てる
                                         filtered_ocr_results = []
                                         for i, res1 in enumerate(valid_results):
                                             bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
