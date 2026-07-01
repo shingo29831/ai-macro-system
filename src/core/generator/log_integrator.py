@@ -32,19 +32,17 @@ from engines.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
-def get_text_field_bbox_cv(images_paths: List[Path], max_w: int, max_h: int, 
-                           win_rect: Optional[Tuple[int, int, int, int]] = None,
-                           last_click_pos: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int, int, int]]:
+def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -> List[Tuple[int, int, int, int]]:
     """
-    複数画像のピクセル差分から、操作中と思われる変化領域（テキストフィールド等）のBBoxを抽出する。
-    セカンドモニター等のノイズを排除するため、直前のクリック位置やウィンドウ中心に近い領域を優先する。
+    複数画像のピクセル差分から、操作中と思われる変化領域（テキストフィールド等）のBBoxを複数抽出する。
+    1つの候補に絞るとDiscordなどのノイズに負けるため、一定の大きさを持つ変化領域を全て返す。
     """
     if len(images_paths) < 2:
-        return None
+        return []
         
     try:
         img_prev = cv2.imread(str(images_paths[0]), cv2.IMREAD_GRAYSCALE)
-        if img_prev is None: return None
+        if img_prev is None: return []
         
         accum_mask = np.zeros_like(img_prev)
         
@@ -69,39 +67,25 @@ def get_text_field_bbox_cv(images_paths: List[Path], max_w: int, max_h: int,
             if w > 10 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
-        if not valid_bboxes:
-            return None
-            
-        best_bbox = None
-        best_score = float('inf')
-        
-        target_x, target_y = None, None
-        if last_click_pos:
-            target_x, target_y = last_click_pos
-        elif win_rect:
-            target_x = (win_rect[0] + win_rect[2]) // 2
-            target_y = (win_rect[1] + win_rect[3]) // 2
-            
+        # 互いに重なり合うBBoxを統合する
+        merged_bboxes = []
         for bbox in valid_bboxes:
             x1, y1, x2, y2 = bbox
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            
-            score = 0
-            if target_x is not None and target_y is not None:
-                dist_sq = (cx - target_x)**2 + (cy - target_y)**2
-                score += dist_sq
-            else:
-                score -= (x2 - x1) * (y2 - y1) 
+            merged = False
+            for i, (mx1, my1, mx2, my2) in enumerate(merged_bboxes):
+                # 交差判定
+                if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
+                    merged_bboxes[i] = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
+                    merged = True
+                    break
+            if not merged:
+                merged_bboxes.append(bbox)
                 
-            if score < best_score:
-                best_score = score
-                best_bbox = bbox
-                
-        return best_bbox
+        return merged_bboxes
 
     except Exception as e:
         logger.warning(f"CV cumulative diff failed: {e}")
-        return None
+        return []
 
 def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, int]) -> Tuple[Tuple[int, int, int, int], str]:
     try:
@@ -168,7 +152,7 @@ def track_text_field_by_scoring(
     macros_root: Path, 
     temp_dir: Path, 
     target_event_id: str, 
-    search_area: Optional[Tuple[int, int, int, int]] = None,
+    search_areas: Optional[List[Tuple[int, int, int, int]]] = None,
     last_click_pos: Optional[Tuple[int, int]] = None
 ) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
     """
@@ -193,39 +177,64 @@ def track_text_field_by_scoring(
         if not img_path.exists():
             return
             
-        eval_img_path = img_path
-        offset_x, offset_y = 0, 0
-        
         try:
-            if search_area:
+            ocr_results = []
+            
+            # 背景: 変化があった複数の領域（search_areas）を全てクロップして並行してOCRにかける。
+            # Discordなどのノイズ領域と、本物の入力領域が両方評価土俵に上がるため、
+            # テキストの一致度による純粋なスコア勝負で本物が勝つようになる。
+            if search_areas:
                 with Image.open(img_path) as img:
                     max_w, max_h = img.width, img.height
-                    l = max(0, search_area[0])
-                    t = max(0, search_area[1])
-                    r = min(max_w, search_area[2])
-                    b = min(max_h, search_area[3])
-                    
-                    if r > l and b > t:
-                        crop_img = img.crop((l, t, r, b))
-                        eval_img_path = temp_dir / f"temp_eval_tracking_{img_path.stem}.png"
-                        crop_img.save(eval_img_path)
-                        offset_x, offset_y = l, t
+                    for idx, s_area in enumerate(search_areas):
+                        l = max(0, s_area[0])
+                        t = max(0, s_area[1])
+                        r = min(max_w, s_area[2])
+                        b = min(max_h, s_area[3])
+                        
+                        if r > l and b > t:
+                            crop_img = img.crop((l, t, r, b))
+                            eval_img_path = temp_dir / f"temp_eval_tracking_{img_path.stem}_area{idx}.png"
+                            crop_img.save(eval_img_path)
+                            
+                            area_results = read_text_from_image(str(eval_img_path))
+                            if area_results:
+                                for res in area_results:
+                                    # クロップ画像内での座標を、画面全体の絶対座標に補正
+                                    res.boundingBox.x += l
+                                    res.boundingBox.y += t
+                                    ocr_results.append(res)
+            else:
+                ocr_results = read_text_from_image(str(img_path))
 
-            ocr_results = read_text_from_image(str(eval_img_path))
             if not ocr_results:
                 return
+
+            # 背景: 複数エリアの重なりによって同じ文字が重複して検出された場合、片方を排除する
+            unique_results = []
+            seen_centers = []
+            for res in ocr_results:
+                if not res.content: continue
+                cx = res.boundingBox.x + res.boundingBox.width // 2
+                cy = res.boundingBox.y + res.boundingBox.height // 2
                 
+                is_duplicate = False
+                for sx, sy in seen_centers:
+                    if abs(cx - sx) < 20 and abs(cy - sy) < 20:
+                        is_duplicate = True
+                        break
+                
+                if not is_duplicate:
+                    seen_centers.append((cx, cy))
+                    unique_results.append(res)
+                    
+            ocr_results = unique_results
+
             target_text = to_hiragana(buffer_to_check) if is_ime else buffer_to_check
             target_lower = target_text.lower()
             buffer_lower = buffer_to_check.lower()
             
             for res in ocr_results:
-                if not res.content:
-                    continue
-                
-                res.boundingBox.x += offset_x
-                res.boundingBox.y += offset_y
-                    
                 c_lower = res.content.lower()
                 
                 if is_ime:
@@ -238,20 +247,19 @@ def track_text_field_by_scoring(
                 l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
                 r, b = l + w, t + h
                 
+                # 距離ペナルティ: クリック位置から離れすぎているものは減点
                 dist_penalty = 0.0
                 if last_click_pos is not None:
                     cx, cy = l + w / 2, t + h / 2
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
-                # 背景: 【文字数差ペナルティ】を強化。
-                # 入力中のバッファ文字数とOCR文字数に差があるほど厳しく減点する。
-                # 例: `fir` (3) に対し `Firefox` (7) だとペナルティがかかりスコアが落ちる。
+                # 文字数差ペナルティ
                 target_len = len(target_lower) if is_ime else len(buffer_lower)
                 ocr_len = len(c_lower)
                 len_diff = abs(target_len - ocr_len)
                 len_penalty = (len_diff / max(1, target_len)) * 0.3
-                len_penalty = min(0.8, len_penalty) # 最大0.8まで減点
+                len_penalty = min(0.8, len_penalty)
 
                 matched_cand = None
                 for cand in field_candidates:
@@ -260,7 +268,7 @@ def track_text_field_by_scoring(
                         matched_cand = cand
                         break
 
-                # 背景: 【変化率ペナルティ】。同じ座標で前回と比べて文字が一気に増減した場合にペナルティ。
+                # 変化率ペナルティ
                 change_penalty = 0.0
                 if matched_cand:
                     prev_text = matched_cand["last_text"].lower()
@@ -278,7 +286,7 @@ def track_text_field_by_scoring(
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -635,8 +643,7 @@ def generate_macro_workflow(
                     prog_val = 75 + int((current_index / max(1, len(temp_workflow_info))) * 4)
                     progress_callback(prog_val, f"テキストフィールド追跡中... ({current_index}/{len(temp_workflow_info)})")
 
-                search_area = None
-                window_rect = None
+                search_areas = []
                 last_click_pos = None
                 
                 last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
@@ -650,34 +657,19 @@ def generate_macro_workflow(
                             
                         full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
                         
-                        win_x = current_group[-1].get("win_x", 0)
-                        win_y = current_group[-1].get("win_y", 0)
-                        win_w = current_group[-1].get("win_w", 0)
-                        win_h = current_group[-1].get("win_h", 0)
-                        
-                        if win_w > 0 and win_h > 0:
-                            wx = max(0, win_x)
-                            wy = max(0, win_y)
-                            window_rect = (wx, wy, min(max_w, win_x + win_w), min(max_h, win_y + win_h))
-                        
                         if len(full_img_paths) >= 2:
-                            diff_bbox = get_text_field_bbox_cv(full_img_paths, max_w, max_h, window_rect, last_click_pos)
-                            if diff_bbox:
-                                dl, dt, dr, db = diff_bbox
-                                search_area = (max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350))
-                            else:
-                                if window_rect:
-                                    search_area = window_rect
-                        else:
-                            if window_rect:
-                                search_area = window_rect
+                            diff_bboxes = get_text_field_bboxes_cv(full_img_paths, max_w, max_h)
+                            if diff_bboxes:
+                                for dbbox in diff_bboxes:
+                                    dl, dt, dr, db = dbbox
+                                    search_areas.append((max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350)))
                                 
                     except Exception as e:
                         logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
 
                 if base_target_full and base_target_full.exists():
                     try:
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_area, last_click_pos)
+                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
                     except Exception as e:
                         logger.error(f"[{workflow_id}] Tracking error: {e}")
                     
@@ -686,12 +678,23 @@ def generate_macro_workflow(
                     else:
                         logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
                         try:
-                            if search_area and 'diff_bbox' in locals() and diff_bbox:
-                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), diff_bbox)
+                            if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
+                                best_fallback_bbox = diff_bboxes[0]
+                                if last_click_pos:
+                                    best_dist = float('inf')
+                                    for dbbox in diff_bboxes:
+                                        cx = (dbbox[0] + dbbox[2]) / 2
+                                        cy = (dbbox[1] + dbbox[3]) / 2
+                                        dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
+                                        if dist < best_dist:
+                                            best_dist = dist
+                                            best_fallback_bbox = dbbox
+
+                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
                                 logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
                                 
                                 l, t, r, b = refined_bbox
-                                dl, dt, dr, db = diff_bbox
+                                dl, dt, dr, db = best_fallback_bbox
                                 char_h = db - dt if (db - dt) > 0 else 20
                                 
                                 margin_x, margin_y = 5, 5
