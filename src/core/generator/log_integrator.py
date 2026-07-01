@@ -67,7 +67,6 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
             if w > 10 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
                 valid_bboxes.append((x, y, x+w, y+h))
                 
-        # 背景: 重なり合うBBoxを再帰的に統合して1つにまとめる
         merged_bboxes = []
         for bbox in valid_bboxes:
             x1, y1, x2, y2 = bbox
@@ -75,7 +74,6 @@ def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -
             while has_merged:
                 has_merged = False
                 for i, (mx1, my1, mx2, my2) in enumerate(merged_bboxes):
-                    # 交差判定
                     if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
                         new_bbox = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
                         merged_bboxes.pop(i)
@@ -171,8 +169,11 @@ def track_text_field_by_scoring(
     current_buffer = ""
     ocr_call_count = 0
     
+    # 背景: 各エリアをIDで追跡できるようにする
+    active_search_areas = [(i, sa) for i, sa in enumerate(search_areas)] if search_areas else []
+    
     def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
-        nonlocal ocr_call_count
+        nonlocal ocr_call_count, active_search_areas
         if not buffer_to_check.strip():
             return
             
@@ -183,10 +184,10 @@ def track_text_field_by_scoring(
         try:
             ocr_results = []
             
-            if search_areas:
+            if active_search_areas:
                 with Image.open(img_path) as img:
                     max_w, max_h = img.width, img.height
-                    for idx, s_area in enumerate(search_areas):
+                    for idx, s_area in active_search_areas:
                         l = max(0, s_area[0])
                         t = max(0, s_area[1])
                         r = min(max_w, s_area[2])
@@ -202,16 +203,19 @@ def track_text_field_by_scoring(
                                 for res in area_results:
                                     res.boundingBox.x += l
                                     res.boundingBox.y += t
-                                    ocr_results.append(res)
+                                    # エリアのインデックスを保持
+                                    ocr_results.append((res, idx))
             else:
-                ocr_results = read_text_from_image(str(img_path))
+                raw_res = read_text_from_image(str(img_path))
+                if raw_res:
+                    ocr_results = [(res, None) for res in raw_res]
 
             if not ocr_results:
                 return
 
             unique_results = []
             seen_centers = []
-            for res in ocr_results:
+            for res, idx in ocr_results:
                 if not res.content: continue
                 cx = res.boundingBox.x + res.boundingBox.width // 2
                 cy = res.boundingBox.y + res.boundingBox.height // 2
@@ -224,7 +228,7 @@ def track_text_field_by_scoring(
                 
                 if not is_duplicate:
                     seen_centers.append((cx, cy))
-                    unique_results.append(res)
+                    unique_results.append((res, idx))
                     
             ocr_results = unique_results
 
@@ -232,7 +236,7 @@ def track_text_field_by_scoring(
             target_lower = target_text.lower()
             buffer_lower = buffer_to_check.lower()
             
-            for res in ocr_results:
+            for res, area_idx in ocr_results:
                 c_lower = res.content.lower()
                 
                 if is_ime:
@@ -269,19 +273,21 @@ def track_text_field_by_scoring(
                     prev_text = matched_cand["last_text"].lower()
                     dist_change = Levenshtein.distance(prev_text, c_lower)
                     max_len = max(len(prev_text), len(c_lower), 1)
-                    change_ratio = dist_change / max_len
                     
-                    if change_ratio > 0.5:
-                        change_penalty = 0.5
-                    elif change_ratio > 0.2:
-                        change_penalty = change_ratio * 0.5
+                    # 背景: ユーザー指摘の修正。1文字の変化(例: f -> fi)は自然な入力とみなしペナルティを免除する
+                    if dist_change > 1:
+                        change_ratio = dist_change / max_len
+                        if change_ratio > 0.5:
+                            change_penalty = 0.5
+                        elif change_ratio > 0.2:
+                            change_penalty = change_ratio * 0.5
                 else:
                     if len(c_lower) > max(3, target_len * 2):
                         change_penalty = 0.3
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
@@ -303,6 +309,30 @@ def track_text_field_by_scoring(
                             "score": frame_score,
                             "last_text": res.content
                         })
+
+            # 背景: 各フレームの評価終了後、スコアが著しく低い(負けている)エリアを探索対象から除外し、処理を最適化する。
+            if active_search_areas and field_candidates:
+                global_max_score = max(cand["score"] for cand in field_candidates)
+                
+                surviving_areas = []
+                for idx, s_area in active_search_areas:
+                    sl, st, sr, sb = s_area
+                    area_max = -float('inf')
+                    for cand in field_candidates:
+                        cl, ct, cr, cb = cand["bbox"]
+                        cx, cy = (cl + cr) / 2, (ct + cb) / 2
+                        # 候補の中心座標がこのエリア内に収まっているか判定
+                        if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
+                            area_max = max(area_max, cand["score"])
+                    
+                    # トップの候補から 3.0 ポイント以上離されたエリアはノイズとみなして切り捨てる
+                    if global_max_score - area_max <= 3.0:
+                        surviving_areas.append((idx, s_area))
+                    else:
+                        logger.info(f"[{target_event_id}] Pruning search area {idx} (Area Max: {area_max:.2f}, Global Max: {global_max_score:.2f})")
+                
+                active_search_areas = surviving_areas
+
         except Exception as e:
             logger.warning(f"Error during OCR tracking evaluation: {e}")
 
@@ -658,10 +688,8 @@ def generate_macro_workflow(
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    # 個別の領域に大きくマージンを持たせる
                                     raw_search_areas.append((max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350)))
                                 
-                                # 背景: 拡張によって重複した探索エリアを完全に結合（マージ）し、無駄なOCR呼び出しを削減する
                                 merged_areas = []
                                 for rect in raw_search_areas:
                                     x1, y1, x2, y2 = rect
