@@ -34,15 +34,12 @@ logger = logging.getLogger(__name__)
 
 def get_text_field_bboxes_cv(images_paths: List[Path], max_w: int, max_h: int) -> List[Tuple[int, int, int, int]]:
     """
-    複数画像のピクセル差分から、操作中と思われる変化領域（テキストフィールド等）のBBoxを複数抽出する。
-    1つの候補に絞るとDiscordなどのノイズに負けるため、一定の大きさを持つ変化領域を全て返す。
+    ベース画像(入力前)と現在の画像のピクセル差分から、純粋な入力領域のBBoxを抽出する。
     """
     if len(images_paths) < 2:
         return []
         
     try:
-        # 背景: ユーザー提案の採用。1フレーム前との差分ではなく「入力開始前のベース画像」との差分を取る。
-        # これにより、アニメーション等のノイズが相殺され、純粋に文字が入力された領域だけが抽出される。
         img_base = cv2.imread(str(images_paths[0]), cv2.IMREAD_GRAYSCALE)
         if img_base is None: return []
         
@@ -172,7 +169,7 @@ def track_text_field_by_scoring(
     
     active_search_areas = [(i, sa) for i, sa in enumerate(search_areas)] if search_areas else []
     
-    def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
+    def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool, is_final_candidate: bool = False):
         nonlocal ocr_call_count, active_search_areas
         if not buffer_to_check.strip():
             return
@@ -254,42 +251,43 @@ def track_text_field_by_scoring(
                     dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
                     dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
 
-                target_len = len(target_lower) if is_ime else len(buffer_lower)
-                ocr_len = len(c_lower)
-                len_diff = abs(target_len - ocr_len)
-                len_penalty = (len_diff / max(1, target_len)) * 0.3
-                len_penalty = min(0.8, len_penalty)
-
                 matched_cand = None
                 for cand in field_candidates:
                     cl, ct, cr, cb = cand["bbox"]
-                    # 背景: 変換候補欄(サジェスト)の分離。Y座標(上下)の許容誤差を極限(15px)まで厳しくし、
-                    # 入力中のテキストフィールドのすぐ下に現れたサジェストを「別の候補」として確実に分離する。
                     if abs(l - cl) < 30 and abs(t - ct) < 15: 
                         matched_cand = cand
                         break
 
+                len_penalty = 0.0
                 change_penalty = 0.0
-                if matched_cand:
-                    prev_text = matched_cand["last_text"].lower()
-                    dist_change = Levenshtein.distance(prev_text, c_lower)
-                    max_len = max(len(prev_text), len(c_lower), 1)
-                    
-                    if dist_change > 1:
-                        change_ratio = dist_change / max_len
-                        if change_ratio > 0.5:
-                            change_penalty = 0.5
-                        elif change_ratio > 0.2:
-                            change_penalty = change_ratio * 0.5
-                else:
-                    if len(c_lower) > max(3, target_len * 2):
-                        change_penalty = 0.3
+                
+                if not is_final_candidate:
+                    target_len = len(target_lower) if is_ime else len(buffer_lower)
+                    ocr_len = len(c_lower)
+                    len_diff = abs(target_len - ocr_len)
+                    len_penalty = (len_diff / max(1, target_len)) * 0.3
+                    len_penalty = min(0.8, len_penalty)
+
+                    if matched_cand:
+                        prev_text = matched_cand["last_text"].lower()
+                        dist_change = Levenshtein.distance(prev_text, c_lower)
+                        max_len = max(len(prev_text), len(c_lower), 1)
+                        
+                        if dist_change > 1:
+                            change_ratio = dist_change / max_len
+                            if change_ratio > 0.5:
+                                change_penalty = 0.5
+                            elif change_ratio > 0.2:
+                                change_penalty = change_ratio * 0.5
+                    else:
+                        if len(c_lower) > max(3, target_len * 2):
+                            change_penalty = 0.3
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (Final: {is_final_candidate})")
                 
-                if similarity > 0.3 or is_substring:
+                if similarity > 0.3 or is_substring or is_final_candidate:
                     ocr_call_count += 1
                     try:
                         with Image.open(img_path) as tracking_img:
@@ -310,7 +308,7 @@ def track_text_field_by_scoring(
                             "last_text": res.content
                         })
 
-            if active_search_areas and field_candidates:
+            if active_search_areas and field_candidates and not is_final_candidate:
                 global_max_score = max(cand["score"] for cand in field_candidates)
                 
                 surviving_areas = []
@@ -338,11 +336,10 @@ def track_text_field_by_scoring(
         is_ime = event.get("ime_active", False)
         
         if img_path_rel:
-            _evaluate_frame(img_path_rel, current_buffer, is_ime)
+            _evaluate_frame(img_path_rel, current_buffer, is_ime, is_final_candidate=False)
             
         role = str(event.get("semantic_role", "")).lower()
         if role == "backspace":
-            # 背景: バックスペース処理は以前から実装済みで、current_bufferを1文字削るためlen_penalty等は正常に追従します
             current_buffer = current_buffer[:-1]
         elif role == "space":
             current_buffer += " "
@@ -352,7 +349,7 @@ def track_text_field_by_scoring(
     final_ime_state = any(e.get("ime_active", False) for e in group_events)
 
     for cand_img_path in candidate_img_paths_rel:
-        _evaluate_frame(cand_img_path, current_buffer, final_ime_state)
+        _evaluate_frame(cand_img_path, current_buffer, final_ime_state, is_final_candidate=True)
 
     if not field_candidates:
         return None, ""
@@ -362,12 +359,12 @@ def track_text_field_by_scoring(
     
     w = r - l
     h = b - t
-    # 背景: ベース画像との差分を利用したことで、抽出エリアにすでに入力文字列全体が包含されるようになった。
-    # したがって、右側に無条件で特大マージン(+300px)を取る危険な処理を廃止し、タイトな余白に留める。
+    
+    # 背景: 左・上・下はタイトに絞りノイズを防ぎつつ、確定後の長文(タブ補完等)の見切れを防ぐため右側のみ特大拡張する
     pad_left = max(5, int(w * 0.05))
-    pad_right = max(10, int(w * 0.1))
-    pad_top = max(5, int(h * 0.05))
-    pad_bottom = max(5, int(h * 0.05))
+    pad_right = max(300, int(w * 2.5))
+    pad_top = max(5, int(h * 0.1))
+    pad_bottom = max(5, int(h * 0.1))
     
     l_crop = max(0, l - pad_left)
     t_crop = max(0, t - pad_top)
@@ -688,8 +685,9 @@ def generate_macro_workflow(
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    # 背景: ベース画像の差分を使用し、巨大なマージン(-400等)を撤廃。入力領域だけをタイトに切り抜く。
-                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 30), min(max_h, db + 20)))
+                                    # 背景: 入力中の差分領域から作成される探索枠(search_areas)において、
+                                    # 最終確定フェーズで文字が右に大きく伸びる事を見越し、あらかじめ右側に+400pxの大マージンを確保しておく。
+                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
                                 
                                 merged_areas = []
                                 for rect in raw_search_areas:
