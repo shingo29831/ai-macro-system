@@ -1,15 +1,19 @@
-# src/core/generator/log_integrator.py
+# shingo29831/ai-macro-system/ai-macro-system-Umeda/src/core/generator/log_integrator.py
 # @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
 
 import json
 import logging
 import shutil
 import os
+import statistics
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageChops
+
+import cv2
+import numpy as np
 
 from models.data_types import (
     AppConfig, Workflow, WorkflowStep, WorkflowCommandAction, 
@@ -25,6 +29,134 @@ from engines.ocr.reader import read_text_from_image
 from engines.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+def get_text_field_bbox_pil(images_paths: List[Path], max_w: int, max_h: int) -> Optional[Tuple[int, int, int, int]]:
+    """
+    複数枚のキー入力フレーム間のピクセル差分を計算し、文字入力領域を特定する。
+    入力された文字の高さ（文字サイズ）を計算し、下部へのサジェストを排除する。
+    """
+    if len(images_paths) < 2:
+        return None
+        
+    try:
+        valid_bboxes = []
+        for i in range(1, len(images_paths)):
+            try:
+                img1 = Image.open(images_paths[i-1]).convert("RGB")
+                img2 = Image.open(images_paths[i]).convert("RGB")
+                if img1.size != img2.size:
+                    continue
+                diff = ImageChops.difference(img1, img2)
+                diff_bw = diff.convert("L").point(lambda p: 255 if p > 30 else 0)
+                bbox = diff_bw.getbbox()
+                if bbox:
+                    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                    # 極端に巨大な画面変化（パネル出現など）は最初から無視
+                    if w < max_w * 0.7 and h < max_h * 0.25:
+                        valid_bboxes.append(bbox)
+            except Exception:
+                continue
+                
+        if not valid_bboxes:
+            return None
+
+        # 差分（＝入力された文字）の高さを収集し、文字サイズ（char_h）の中央値を算出
+        heights = [b[3] - b[1] for b in valid_bboxes]
+        char_h = statistics.median(heights) if heights else 20
+        if char_h > 100: char_h = 30 # 誤検知対策
+            
+        min_x = min(b[0] for b in valid_bboxes)
+        max_x = max(b[2] for b in valid_bboxes)
+        min_y = min(b[1] for b in valid_bboxes)
+        raw_max_y = max(b[3] for b in valid_bboxes)
+        
+        # サジェストやブラウザショートカットが差分に含まれてしまった場合を切り落とすため、
+        # PILで検出する「文字入力領域」は文字サイズの最大4倍までに制限。
+        max_y = min(raw_max_y, min_y + int(char_h * 4.0))
+        
+        if (max_x - min_x) > max_w * 0.8:
+            last_b = valid_bboxes[-1]
+            min_x = max(0, last_b[0] - 250)
+            max_x = min(max_w, last_b[2] + 250)
+            min_y = last_b[1]
+            max_y = min(last_b[3], min_y + int(char_h * 4.0))
+            
+        return (min_x, min_y, max_x, max_y)
+        
+    except Exception as e:
+        logger.warning(f"PIL cumulative diff failed: {e}")
+        return None
+
+def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, int]) -> Tuple[Tuple[int, int, int, int], str]:
+    """
+    OpenCVを用いてUIの枠線を抽出し、文字領域を包含する【最小の枠線】にスナップさせる。
+    メモアプリなどの巨大な枠にも対応可能。
+    """
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return diff_bbox, "unknown"
+            
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.bilateralFilter(gray, 9, 75, 75)
+        edges = cv2.Canny(blurred, 15, 50)
+        kernel = np.ones((3, 3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        
+        dl, dt, dr, db = diff_bbox
+        char_h = db - dt
+        if char_h <= 0: char_h = 20
+        
+        # 枠線は少なくとも入力された文字を包含できる高さが必要
+        min_field_h = max(15, int(char_h * 1.0))
+        
+        best_bbox = diff_bbox
+        best_shape = "text_area (no specific boundary found)"
+        min_margin_area = float('inf')
+        
+        img_h, img_w = img.shape[:2]
+        # ウィンドウの枠など、画面の90%以上を占める意味のない巨大枠は除外
+        max_allowed_area = img_w * img_h * 0.9
+        
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            
+            # 文字より小さい枠は除外
+            if h < min_field_h:
+                continue
+            
+            # 【包含判定】入力文字領域(diff_bbox)を内包しているか
+            # 枠線ギリギリに文字がある場合を考慮し、マージンを持たせる
+            margin = 20
+            if x <= dl + margin and y <= dt + margin and (x+w) >= dr - margin and (y+h) >= db - margin:
+                area = w * h
+                
+                # ウィンドウ全体のような巨大すぎる枠は除外
+                if area < max_allowed_area:
+                    # 【最小包含枠の探索】文字領域を囲む枠の中で、最も面積が小さい(最も内側の)枠を採用
+                    if area < min_margin_area:
+                        min_margin_area = area
+                        best_bbox = (x, y, x+w, y+h)
+                        
+                        peri = cv2.arcLength(cnt, True)
+                        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+                        contour_area = cv2.contourArea(cnt)
+                        extent = contour_area / float(area) if area > 0 else 0
+                        
+                        if len(approx) >= 4 and 0.85 < extent < 0.98:
+                            best_shape = "rounded_rectangle"
+                        elif len(approx) == 4 and extent >= 0.98:
+                            best_shape = "rectangle"
+                        else:
+                            best_shape = "complex_shape"
+                            
+        return best_bbox, best_shape
+        
+    except Exception as e:
+        logger.warning(f"Failed to refine bbox with CV: {e}")
+        return diff_bbox, "unknown"
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -242,7 +374,11 @@ def generate_macro_workflow(
                     "dy": dy,
                     "cursor_x": cursor_x,
                     "cursor_y": cursor_y,
-                    "pre_img_path": pre_img_path_str
+                    "pre_img_path": pre_img_path_str,
+                    "win_x": win_x,
+                    "win_y": win_y,
+                    "win_w": win_size_data.get("width", 0),
+                    "win_h": win_size_data.get("height", 0)
                 })
 
         if progress_callback:
@@ -277,90 +413,85 @@ def generate_macro_workflow(
                 
                 text = base_text
                 
-                # --- 入力前後の画像差分から入力領域を特定するロジック ---
-                
-                # 1. 入力開始前の画像 (Start Image) を探す
-                start_img_path_rel = current_group[0].get("pre_img_path")
-                if not start_img_path_rel:
-                    first_evt_idx = temp_workflow_info.index(current_group[0])
-                    for idx in range(first_evt_idx - 1, -1, -1):
-                        if temp_workflow_info[idx].get("pre_img_path"):
-                            start_img_path_rel = temp_workflow_info[idx]["pre_img_path"]
-                            break
+                group_img_paths_rel = []
+                for item in current_group:
+                    if item.get("pre_img_path"):
+                        group_img_paths_rel.append(item["pre_img_path"])
 
-                # 2. 確定直後(画面遷移/次のアクションの直前)の画像 (Target Image) を探す
-                target_img_path_rel = None
-                for idx in range(min(current_index, len(temp_workflow_info) - 1), -1, -1):
+                # 確定後画像の取得 (Enterキーなどの後続イベント画像も候補とする)
+                candidate_img_paths_rel = []
+                if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
+                    candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
+                    
+                for idx in range(current_index, min(current_index + 3, len(temp_workflow_info))):
                     evt = temp_workflow_info[idx]
-                    if evt.get("pre_img_path"):
-                        target_img_path_rel = evt["pre_img_path"]
-                        break
+                    p = evt.get("pre_img_path")
+                    if p and p not in candidate_img_paths_rel:
+                        candidate_img_paths_rel.append(p)
 
                 crop_box = None
-                
-                # 3. 差分(ImageChops)を計算して最小バウンディングボックスを抽出
-                if start_img_path_rel and target_img_path_rel:
-                    start_img_full = macros_root / start_img_path_rel
-                    target_img_full = macros_root / target_img_path_rel
-                    
-                    if start_img_full.exists() and target_img_full.exists():
-                        try:
-                            with Image.open(start_img_full) as img1, Image.open(target_img_full) as img2:
-                                if img1.size == img2.size:
-                                    diff = ImageChops.difference(img1.convert("RGB"), img2.convert("RGB"))
-                                    diff_gray = diff.convert("L")
-                                    # ピクセルの変化(ノイズ)をフィルタリング (閾値30)
-                                    diff_bw = diff_gray.point(lambda p: 255 if p > 30 else 0)
-                                    bbox = diff_bw.getbbox() # (left, top, right, bottom)
-                                    
-                                    if bbox:
-                                        # 差分領域（テキスト入力箇所・IMEサジェスト等）にマージンを付与
-                                        margin = 15
-                                        left = max(0, bbox[0] - margin)
-                                        top = max(0, bbox[1] - margin)
-                                        right = min(img2.width, bbox[2] + margin)
-                                        bottom = min(img2.height, bbox[3] + margin)
-                                        
-                                        # 極端に広すぎる差分（画面全体が変わってしまった等）は除外
-                                        if (right - left) < img2.width * 0.8 and (bottom - top) < img2.height * 0.5:
-                                            crop_box = (left, top, right, bottom)
-                                            logger.info(f"[{workflow_id}] Diff bounding box found: {crop_box}")
-                        except Exception as e:
-                            logger.warning(f"[{workflow_id}] Failed to calculate diff bounding box: {e}")
+                base_target_full = macros_root / candidate_img_paths_rel[0] if candidate_img_paths_rel else None
 
-                # 4. 差分からBBoxが取得できなかった場合のフォールバック(最後のクリック位置)
-                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
-
-                if target_img_path_rel:
-                    target_img_full_path = macros_root / target_img_path_rel
-                    if target_img_full_path.exists():
-                        try:
-                            with Image.open(target_img_full_path) as img:
-                                if not crop_box and last_click:
-                                    cx, cy = last_click["cursor_x"], last_click["cursor_y"]
-                                    left = max(0, cx - 400)
-                                    top = max(0, cy - 30)
-                                    right = min(img.width, cx + 400)
-                                    bottom = min(img.height, cy + 30)
-                                    crop_box = (left, top, right, bottom)
+                if base_target_full and base_target_full.exists():
+                    try:
+                        with Image.open(base_target_full) as img_temp:
+                            max_w, max_h = img_temp.width, img_temp.height
+                            
+                        full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
+                        
+                        if len(full_img_paths) >= 2:
+                            bbox = get_text_field_bbox_pil(full_img_paths, max_w, max_h)
+                            if bbox:
+                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), bbox)
+                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
                                 
-                                if crop_box:
-                                    crop_img = img.crop(crop_box)
-                                    temp_crop_path = temp_dir / f"temp_ocr_{current_group[-1]['event_id']}.png"
-                                    crop_img.save(temp_crop_path)
-                                    
-                                    ocr_results = read_text_from_image(str(temp_crop_path))
-                                    if ocr_results:
-                                        valid_texts = [res.content for res in ocr_results if res.content]
-                                        if valid_texts:
-                                            # 抽出された中で最も長い文字列を採用（変換候補や確定文字列である可能性が高いため）
-                                            best_text = max(valid_texts, key=len)
-                                            # 無関係な1文字のゴミでなければ採用する
-                                            if len(best_text) >= 2 or len(base_text) <= 2:
-                                                text = best_text
-                                                logger.info(f"[{workflow_id}] OCR extracted text replaced keystrokes: {text}")
+                                l, t, r, b = refined_bbox
+                                margin_x, margin_y = 5, 5
+                                crop_box = (max(0, l - margin_x), max(0, t - margin_y), min(max_w, r + margin_x), min(max_h, b + margin_y))
+                    except Exception as e:
+                        logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
+
+                if not crop_box and base_target_full and base_target_full.exists():
+                    last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
+                    if last_click:
+                        with Image.open(base_target_full) as img:
+                            cx, cy = last_click["cursor_x"], last_click["cursor_y"]
+                            left, top = max(0, cx - 400), max(0, cy - 25)
+                            right, bottom = min(img.width, cx + 400), min(img.height, cy + 25)
+                            crop_box = (left, top, right, bottom)
+
+                best_overall_text = ""
+                
+                # 候補となる確定前・確定後画像をすべてスキャンし、最も精度が高い文字列を拾う
+                for cand_path_rel in candidate_img_paths_rel:
+                    cand_full = macros_root / cand_path_rel
+                    if cand_full.exists() and crop_box:
+                        try:
+                            with Image.open(cand_full) as img:
+                                left, top, right, bottom = crop_box
+                                left, top = max(0, left), max(0, top)
+                                right, bottom = min(img.width, right), min(img.height, bottom)
+                                current_crop_box = (left, top, right, bottom)
+                                
+                                crop_img = img.crop(current_crop_box)
+                                temp_crop_path = temp_dir / f"temp_ocr_crop_{current_group[-1]['event_id']}_{Path(cand_path_rel).stem}.png"
+                                crop_img.save(temp_crop_path)
+                                
+                                ocr_results = read_text_from_image(str(temp_crop_path))
+                                if ocr_results:
+                                    valid_texts = [res.content for res in ocr_results if res.content]
+                                    if valid_texts:
+                                        best_text_for_frame = max(valid_texts, key=len)
+                                        if len(best_text_for_frame) > len(best_overall_text):
+                                            best_overall_text = best_text_for_frame
                         except Exception as e:
-                            logger.error(f"[{workflow_id}] Failed to extract text via OCR: {e}")
+                            logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for candidate: {e}")
+
+                if best_overall_text and (len(best_overall_text) >= 2 or len(base_text) <= 2):
+                    text = best_overall_text
+                    logger.info(f"[{workflow_id}] Final OCR extracted text from best candidate BBox: {text}")
+                else:
+                    logger.info(f"[{workflow_id}] Falling back to raw typed text: {base_text}")
 
                 var_name = f"search_query_{len(variables) + 1}"
                 variables[var_name] = text
