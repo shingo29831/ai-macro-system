@@ -349,7 +349,9 @@ def track_text_field_by_scoring(
     final_ime_state = any(e.get("ime_active", False) for e in group_events)
 
     for cand_img_path in candidate_img_paths_rel:
-        _evaluate_frame(cand_img_path, current_buffer, final_ime_state, is_final_candidate=True)
+        # 背景: 半角入力時は、最終的なペナルティ免除フラグ(is_final_candidate)を無効化する。
+        # 半角のEnter等は確定ではなく画面遷移のため、急激な文字変化を許容する必要がない。
+        _evaluate_frame(cand_img_path, current_buffer, final_ime_state, is_final_candidate=final_ime_state)
 
     if not field_candidates:
         return None, ""
@@ -360,8 +362,6 @@ def track_text_field_by_scoring(
     w = r - l
     h = b - t
     
-    # 背景: 左側には虫眼鏡などの検索アイコンが固定で存在するため、左マージンを完全に排除（0px）し、
-    # アイコンが「O」等の記号として誤認識されるのを物理的に防ぐ。
     pad_left = 0
     pad_right = max(10, int(w * 0.1))
     pad_top = max(5, int(h * 0.05))
@@ -650,11 +650,15 @@ def generate_macro_workflow(
                 if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
                     candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
                     
-                for idx in range(current_index, min(current_index + 3, len(temp_workflow_info))):
-                    evt = temp_workflow_info[idx]
-                    p = evt.get("pre_img_path")
-                    if p and p not in candidate_img_paths_rel:
-                        candidate_img_paths_rel.append(p)
+                # 背景: 半角入力（IMEオフ）の場合はエンターで文字が確定するわけではなく、
+                # 検索や改行などの別アクションが実行されるため、未来のフレーム（エンター時の画像等）を
+                # 最終確定(final)画像の候補に含めないようにし、別画面がOCRされるのを防ぐ。
+                if any_ime_active:
+                    for idx in range(current_index, min(current_index + 3, len(temp_workflow_info))):
+                        evt = temp_workflow_info[idx]
+                        p = evt.get("pre_img_path")
+                        if p and p not in candidate_img_paths_rel:
+                            candidate_img_paths_rel.append(p)
 
                 crop_box = None
                 tracked_text = ""
@@ -686,8 +690,7 @@ def generate_macro_workflow(
                                 raw_search_areas = []
                                 for dbbox in diff_bboxes:
                                     dl, dt, dr, db = dbbox
-                                    # 背景: 左側にアイコンが含まれるのを防ぐため、探索エリアの左マージンを0pxに設定
-                                    raw_search_areas.append((max(0, dl), max(0, dt - 20), min(max_w, dr + 30), min(max_h, db + 20)))
+                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
                                 
                                 merged_areas = []
                                 for rect in raw_search_areas:
