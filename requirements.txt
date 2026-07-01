@@ -22,3 +22,5 @@ numpy
 
 # Text Processing
 Levenshtein
+
+pywintrace

@@ -38,7 +38,6 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     if capture_now:
         pre_img, pre_monitor = screen_capturer.take_screenshot()
     
-    # 背景: ime_active をキューに積む
     state.key_event_queue.put({
         "event_no": event_no, "datetime": dt, "input_type": input_type,
         "key": key_text, "keys": keys or [], "window_info": window_info,
@@ -54,15 +53,18 @@ def process_key_event(event: dict):
 
     event_no, dt = event["event_no"], event["datetime"]
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
-    
-    # 背景: キューから取り出した ime_active をログの Content に含める
     content["ime_active"] = event.get("ime_active", False)
     
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
 
     pre_img = event.get("pre_img")
     pre_ref = event.get("pre_ref")
-    if not pre_img:
+    
+    # 背景: リスナーから同期取得された画像オブジェクトが渡されている場合でも、ファイルとしてディスクに保存する
+    if pre_img is not None:
+        if not pre_ref:
+            pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+    else:
         pre_img, _ = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
         

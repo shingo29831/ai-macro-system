@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import os
+import math
 import statistics
 import Levenshtein
 from pathlib import Path
@@ -31,64 +32,78 @@ from engines.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
-def get_text_field_bbox_pil(images_paths: List[Path], max_w: int, max_h: int) -> Optional[Tuple[int, int, int, int]]:
+def get_text_field_bbox_cv(images_paths: List[Path], max_w: int, max_h: int, 
+                           win_rect: Optional[Tuple[int, int, int, int]] = None,
+                           last_click_pos: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int, int, int]]:
     """
-    複数枚のキー入力フレーム間のピクセル差分を計算し、文字入力領域を特定する。
+    複数画像のピクセル差分から、操作中と思われる変化領域（テキストフィールド等）のBBoxを抽出する。
+    セカンドモニター等のノイズを排除するため、直前のクリック位置やウィンドウ中心に近い領域を優先する。
     """
     if len(images_paths) < 2:
         return None
         
     try:
-        valid_bboxes = []
+        img_prev = cv2.imread(str(images_paths[0]), cv2.IMREAD_GRAYSCALE)
+        if img_prev is None: return None
+        
+        accum_mask = np.zeros_like(img_prev)
+        
         for i in range(1, len(images_paths)):
-            try:
-                img1 = Image.open(images_paths[i-1]).convert("RGB")
-                img2 = Image.open(images_paths[i]).convert("RGB")
-                if img1.size != img2.size:
-                    continue
-                diff = ImageChops.difference(img1, img2)
-                diff_bw = diff.convert("L").point(lambda p: 255 if p > 30 else 0)
-                bbox = diff_bw.getbbox()
-                if bbox:
-                    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    # 極端に巨大な画面変化（パネル出現など）は最初から無視
-                    if w < max_w * 0.7 and h < max_h * 0.25:
-                        valid_bboxes.append(bbox)
-            except Exception:
+            img_curr = cv2.imread(str(images_paths[i]), cv2.IMREAD_GRAYSCALE)
+            if img_curr is None or img_curr.shape != img_prev.shape:
                 continue
+                
+            diff = cv2.absdiff(img_prev, img_curr)
+            _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+            accum_mask = cv2.bitwise_or(accum_mask, thresh)
+            img_prev = img_curr
+            
+        kernel = np.ones((5, 20), np.uint8)
+        dilated = cv2.dilate(accum_mask, kernel, iterations=2)
+        
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        valid_bboxes = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if w > 10 and h > 5 and w < max_w * 0.8 and h < max_h * 0.5:
+                valid_bboxes.append((x, y, x+w, y+h))
                 
         if not valid_bboxes:
             return None
+            
+        best_bbox = None
+        best_score = float('inf')
+        
+        target_x, target_y = None, None
+        if last_click_pos:
+            target_x, target_y = last_click_pos
+        elif win_rect:
+            target_x = (win_rect[0] + win_rect[2]) // 2
+            target_y = (win_rect[1] + win_rect[3]) // 2
+            
+        for bbox in valid_bboxes:
+            x1, y1, x2, y2 = bbox
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            
+            score = 0
+            if target_x is not None and target_y is not None:
+                dist_sq = (cx - target_x)**2 + (cy - target_y)**2
+                score += dist_sq
+            else:
+                score -= (x2 - x1) * (y2 - y1) 
+                
+            if score < best_score:
+                best_score = score
+                best_bbox = bbox
+                
+        return best_bbox
 
-        heights = [b[3] - b[1] for b in valid_bboxes]
-        char_h = statistics.median(heights) if heights else 20
-        if char_h > 100: char_h = 30
-            
-        min_x = min(b[0] for b in valid_bboxes)
-        max_x = max(b[2] for b in valid_bboxes)
-        min_y = min(b[1] for b in valid_bboxes)
-        raw_max_y = max(b[3] for b in valid_bboxes)
-        
-        max_y = min(raw_max_y, min_y + int(char_h * 4.0))
-        
-        if (max_x - min_x) > max_w * 0.8:
-            last_b = valid_bboxes[-1]
-            min_x = max(0, last_b[0] - 250)
-            max_x = min(max_w, last_b[2] + 250)
-            min_y = last_b[1]
-            max_y = min(last_b[3], min_y + int(char_h * 4.0))
-            
-        return (min_x, min_y, max_x, max_y)
-        
     except Exception as e:
-        logger.warning(f"PIL cumulative diff failed: {e}")
+        logger.warning(f"CV cumulative diff failed: {e}")
         return None
 
 def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, int]) -> Tuple[Tuple[int, int, int, int], str]:
-    """
-    OpenCVを用いてUIの枠線を抽出し、文字領域を包含する【最小の枠線】にスナップさせる。
-    メモアプリなどの巨大な枠にも対応可能。
-    """
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -106,9 +121,7 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
         char_h = db - dt
         if char_h <= 0: char_h = 20
         
-        # 枠線は少なくとも入力された文字を包含できる高さが必要
         min_field_h = max(15, int(char_h * 1.0))
-        
         best_bbox = diff_bbox
         best_shape = "text_area (no specific boundary found)"
         min_margin_area = float('inf')
@@ -149,7 +162,15 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
         logger.warning(f"Failed to refine bbox with CV: {e}")
         return diff_bbox, "unknown"
 
-def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_img_paths_rel: List[str], macros_root: Path, temp_dir: Path, target_event_id: str) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
+def track_text_field_by_scoring(
+    group_events: List[Dict[str, Any]], 
+    candidate_img_paths_rel: List[str], 
+    macros_root: Path, 
+    temp_dir: Path, 
+    target_event_id: str, 
+    search_area: Optional[Tuple[int, int, int, int]] = None,
+    last_click_pos: Optional[Tuple[int, int]] = None
+) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
     """
     一連のタイピング中の複数フレームを分析し、入力バッファと文字列が継続的に一致する
     座標(BoundingBox)を追跡・スコアリングして、最も確からしいテキストフィールドを特定する。
@@ -167,40 +188,71 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
         nonlocal ocr_call_count
         if not buffer_to_check.strip():
             return
+            
         img_path = macros_root / img_path_rel
         if not img_path.exists():
             return
             
+        eval_img_path = img_path
+        offset_x, offset_y = 0, 0
+        
         try:
-            ocr_results = read_text_from_image(str(img_path))
+            if search_area:
+                with Image.open(img_path) as img:
+                    max_w, max_h = img.width, img.height
+                    l = max(0, search_area[0])
+                    t = max(0, search_area[1])
+                    r = min(max_w, search_area[2])
+                    b = min(max_h, search_area[3])
+                    
+                    if r > l and b > t:
+                        crop_img = img.crop((l, t, r, b))
+                        eval_img_path = temp_dir / f"temp_eval_tracking_{img_path.stem}.png"
+                        crop_img.save(eval_img_path)
+                        offset_x, offset_y = l, t
+
+            ocr_results = read_text_from_image(str(eval_img_path))
             if not ocr_results:
                 return
                 
             target_text = to_hiragana(buffer_to_check) if is_ime else buffer_to_check
             target_lower = target_text.lower()
+            buffer_lower = buffer_to_check.lower()
             
             for res in ocr_results:
                 if not res.content:
                     continue
+                
+                res.boundingBox.x += offset_x
+                res.boundingBox.y += offset_y
                     
                 c_lower = res.content.lower()
                 
-                sim_roman = Levenshtein.ratio(buffer_to_check.lower(), c_lower)
-                sim_hira = Levenshtein.ratio(target_lower, c_lower)
-                similarity = max(sim_roman, sim_hira)
+                # 背景: IMEオン時は確実に「ひらがな変換結果(なgなど)」とのみ照合させ、英語文字(nagi等)に引っ張られるのを防ぐ
+                if is_ime:
+                    similarity = Levenshtein.ratio(target_lower, c_lower)
+                    is_substring = target_lower in c_lower
+                else:
+                    similarity = Levenshtein.ratio(buffer_lower, c_lower)
+                    is_substring = buffer_lower in c_lower
                 
-                is_substring = (buffer_to_check.lower() in c_lower) or (target_lower in c_lower)
-                
-                # 背景: 可視化用のログ出力。OCRで何を見つけて、どうスコアリングしたかを出力する
                 l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
                 r, b = l + w, t + h
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', BBox: (x:{l}, y:{t}, w:{w}, h:{h}), Score: {similarity:.2f}, Buffer: '{buffer_to_check}'")
+                # 背景: 直前のクリック位置から遠すぎる別モニターなどのノイズに対して距離ペナルティを与える
+                dist_penalty = 0.0
+                if last_click_pos is not None:
+                    cx, cy = l + w / 2, t + h / 2
+                    dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
+                    # 1000px離れていたら最大0.5のペナルティを引く
+                    dist_penalty = min(0.5, (dist / 1000.0) * 0.5)
+
+                frame_score = similarity - dist_penalty
+                
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}), Target: '{target_lower}' (IME: {is_ime})")
                 
                 if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
-                    
-                    # 背景: スコアリングで対象となった枠を画像として保存 (temp_ocr_crop_tracking_...)
                     try:
                         with Image.open(img_path) as tracking_img:
                             t_crop = tracking_img.crop((l, t, r, b))
@@ -217,14 +269,13 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
                             break
                             
                     if matched_cand:
-                        matched_cand["score"] += similarity * 2.0 
-                        # 文字数の増減に合わせてBBoxを拡張して最新の状態を包含する
+                        matched_cand["score"] += frame_score * 2.0 
                         matched_cand["bbox"] = (min(l, cl), min(t, ct), max(r, cr), max(b, cb))
                         matched_cand["last_text"] = res.content
                     else:
                         field_candidates.append({
                             "bbox": (l, t, r, b),
-                            "score": similarity,
+                            "score": frame_score,
                             "last_text": res.content
                         })
         except Exception as e:
@@ -256,14 +307,10 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
     best_candidate = max(field_candidates, key=lambda x: x["score"])
     l, t, r, b = best_candidate["bbox"]
     
-    # 背景: トラッキングしたBBoxを 1.1倍（上下左右に5%ずつのマージン）に拡張する
     w = r - l
     h = b - t
-    
     pad_w = int(w * 0.05)
     pad_h = int(h * 0.05)
-    
-    # 最低限のマージン(5px)を保証
     pad_w = max(5, pad_w)
     pad_h = max(5, pad_h)
     
@@ -562,9 +609,46 @@ def generate_macro_workflow(
                 
                 target_event_id = current_group[-1]['event_id']
 
+                if progress_callback:
+                    prog_val = 75 + int((current_index / max(1, len(temp_workflow_info))) * 4)
+                    progress_callback(prog_val, f"テキストフィールド追跡中... ({current_index}/{len(temp_workflow_info)})")
+
+                search_area = None
+                window_rect = None
+                last_click_pos = None
+                
+                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
+                if last_click:
+                    last_click_pos = (last_click.get("cursor_x", 0), last_click.get("cursor_y", 0))
+
                 if base_target_full and base_target_full.exists():
                     try:
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id)
+                        with Image.open(base_target_full) as img_temp:
+                            max_w, max_h = img_temp.width, img_temp.height
+                            
+                        full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
+                        
+                        win_x = current_group[-1].get("win_x", 0)
+                        win_y = current_group[-1].get("win_y", 0)
+                        win_w = current_group[-1].get("win_w", 0)
+                        win_h = current_group[-1].get("win_h", 0)
+                        
+                        if win_w > 0 and win_h > 0:
+                            wx = max(0, win_x)
+                            wy = max(0, win_y)
+                            window_rect = (wx, wy, min(max_w, win_x + win_w), min(max_h, win_y + win_h))
+                        
+                        if len(full_img_paths) >= 2:
+                            diff_bbox = get_text_field_bbox_cv(full_img_paths, max_w, max_h, window_rect, last_click_pos)
+                            if diff_bbox:
+                                dl, dt, dr, db = diff_bbox
+                                search_area = (max(0, dl - 400), max(0, dt - 150), min(max_w, dr + 400), min(max_h, db + 350))
+                    except Exception as e:
+                        logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
+
+                if base_target_full and base_target_full.exists():
+                    try:
+                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_area, last_click_pos)
                     except Exception as e:
                         logger.error(f"[{workflow_id}] Tracking error: {e}")
                     
@@ -573,39 +657,30 @@ def generate_macro_workflow(
                     else:
                         logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
                         try:
-                            with Image.open(base_target_full) as img_temp:
-                                max_w, max_h = img_temp.width, img_temp.height
+                            if search_area and 'diff_bbox' in locals() and diff_bbox:
+                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), diff_bbox)
+                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
                                 
-                            full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
-                            
-                            if len(full_img_paths) >= 2:
-                                bbox = get_text_field_bbox_pil(full_img_paths, max_w, max_h)
-                                if bbox:
-                                    refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), bbox)
-                                    logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                    
-                                    l, t, r, b = refined_bbox
-                                    dl, dt, dr, db = bbox
-                                    char_h = db - dt if (db - dt) > 0 else 20
-                                    
-                                    margin_x, margin_y = 5, 5
-                                    max_v_margin = max(30, int(char_h * 1.5))
-                                    
-                                    t_crop = max(t, dt - max_v_margin)
-                                    b_crop = min(b, db + max_v_margin)
-                                    
-                                    crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                                    logger.info(f"[{workflow_id}] Capped OCR Crop Box to avoid giant boundaries: {crop_box}")
+                                l, t, r, b = refined_bbox
+                                dl, dt, dr, db = diff_bbox
+                                char_h = db - dt if (db - dt) > 0 else 20
+                                
+                                margin_x, margin_y = 5, 5
+                                max_v_margin = max(30, int(char_h * 1.5))
+                                
+                                t_crop = max(t, dt - max_v_margin)
+                                b_crop = min(b, db + max_v_margin)
+                                
+                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
 
                 if not crop_box and base_target_full and base_target_full.exists():
-                    last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
-                    if last_click:
+                    if last_click_pos:
                         with Image.open(base_target_full) as img:
-                            cx, cy = last_click["cursor_x"], last_click["cursor_y"]
-                            left, top = max(0, cx - 150), max(0, cy - 30)
-                            right, bottom = min(img.width, cx + 150), min(img.height, cy + 30)
+                            cx, cy = last_click_pos
+                            left, top = max(0, cx - 300), max(0, cy - 100)
+                            right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
                             crop_box = (left, top, right, bottom)
                             logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
 
@@ -622,7 +697,6 @@ def generate_macro_workflow(
                                 current_crop_box = (left, top, right, bottom)
                                 
                                 crop_img = img.crop(current_crop_box)
-                                # 背景: トラッキング画像と区別するため、名前を "temp_ocr_crop_final_" に変更して保存する
                                 temp_crop_path = temp_dir / f"temp_ocr_crop_final_{target_event_id}_{Path(cand_path_rel).stem}.png"
                                 crop_img.save(temp_crop_path)
                                 
@@ -630,10 +704,7 @@ def generate_macro_workflow(
                                 if ocr_results:
                                     valid_texts = [res.content for res in ocr_results if res.content]
                                     if valid_texts:
-                                        # 背景: タイトに切り抜かれている前提のため、類似度等でノイズを弾く処理は廃止し、
-                                        # 変換後(タブ補完後)の文字をそのまま確実に取得する。
                                         extracted_text = max(valid_texts, key=len)
-                                        
                                         if len(extracted_text) > len(best_overall_text):
                                             best_overall_text = extracted_text
                                             

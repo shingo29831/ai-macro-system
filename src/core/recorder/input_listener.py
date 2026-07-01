@@ -61,9 +61,6 @@ def on_move(x, y):
 def on_click(x, y, button, pressed):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
-    
-    if pressed:
-        _flush_typing_buffer(trigger_reason="mouse_click")
         
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
@@ -98,35 +95,16 @@ def on_press(key):
             return False 
 
     ime_on = is_ime_active()
-    current_buffer = getattr(state, "typing_buffer", "")
 
-    is_text_input = False
-    if key_text == "space" and not ime_on:
-        state.typing_buffer = current_buffer + " "
-        is_text_input = True
-    elif len(key_text) == 1 and key_text.isprintable():
-        state.typing_buffer = current_buffer + key_text.lower()
-        is_text_input = True
-    elif key_text == "backspace" and current_buffer:
-        state.typing_buffer = current_buffer[:-1]
-        is_text_input = True
-
-    if is_text_input:
-        _trigger_field_search(trigger_reason=f"typing_{key_text}")
-
-    flush_triggers = ["enter", "tab"]
-    if ime_on:
-        flush_triggers.append("space")
-
-    if key_text in flush_triggers:
-        _flush_typing_buffer(trigger_reason=key_text)
+    # 背景: 文字入力や確定操作の場合は、非同期による画面変化の取りこぼしを防ぐため、即座に同期で画面をキャプチャする
+    is_text_input = (len(key_text) == 1 and key_text.isprintable()) or key_text in ("backspace", "enter", "tab", "space")
+    capture_now = is_text_input
 
     try:
         with state.pressed_keys_lock:
             state.pressed_keys.add(key_text)
             current_keys = set(state.pressed_keys)
 
-        capture_now = (key_text == "enter")
         if should_record_key_combo(current_keys, key_text):
             combo_keys = sorted_combo_keys(current_keys)
             combo_text = make_combo_text(combo_keys)
@@ -137,7 +115,6 @@ def on_press(key):
             return
 
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"): return
-        # 背景: IME状態をイベントプロセッサに伝達する
         enqueue_key_event("key_press", key_text, capture_now=capture_now, ime_active=ime_on)
     except Exception:
         logger.exception("キーフック処理中にエラーが発生しました")
