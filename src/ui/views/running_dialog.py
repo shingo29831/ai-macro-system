@@ -60,9 +60,22 @@ class RunningDialog:
                     widget.setText(new_text)
 
     def _on_stop_clicked(self):
+        # 背景: 一度押されたらボタンを消し、「停止中です。」のラベルを表示してUIレベルでの連打を物理的に防ぐ
+        if self.btn_stop:
+            self.btn_stop.hide()
+            
+            if not hasattr(self, 'stopping_label'):
+                self.stopping_label = QLabel("停止中です...", self.dialog)
+                self.stopping_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background-color: #ef4444; border-radius: 4px;")
+                self.stopping_label.setAlignment(Qt.AlignCenter)
+                self.stopping_label.setGeometry(self.btn_stop.geometry())
+                self.stopping_label.show()
+
         if self.on_stop_callback:
             self.on_stop_callback()
-        self.close_dialog()
+            
+        # 背景: 非同期で停止処理を行うため、即座には閉じず「停止中です」の表示を残す。
+        # (処理が完全に完了した際にメインウィンドウ側から閉じられる想定です)
 
     def show(self):
         self.dialog.show()

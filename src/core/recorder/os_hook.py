@@ -1,22 +1,14 @@
-# @role: Provides a facade interface for starting and stopping macro recording, invoked from external modules such as the UI.
+# @role: モジュール外部（UI等）から呼び出される記録開始・停止のインターフェースを提供するファサード。
 
-import logging
-import threading
 from pynput import keyboard, mouse
+import threading
+import traceback
 from core.recorder.state import state
 from core.recorder import process_monitor, screen_capturer
-from core.recorder.event_processor import (
-    start_key_event_worker, 
-    start_mouse_event_worker, 
-    stop_key_event_worker, 
-    stop_mouse_event_worker, 
-    run_click_process_thread
-)
+from core.recorder.event_processor import start_key_event_worker, start_mouse_event_worker, stop_key_event_worker, stop_mouse_event_worker, run_click_process_thread
 from core.recorder.win_scroll import start_native_scroll_hook, stop_native_scroll_hook
 from core.recorder.input_listener import on_move, on_click, on_scroll, on_press, on_release
 from core.recorder.log_builder import create_end_log, save_input_logs
-
-logger = logging.getLogger(__name__)
 
 _mouse_listener = None
 _keyboard_listener = None
@@ -33,7 +25,7 @@ def start_recording():
     global _mouse_listener, _keyboard_listener
 
     if state.is_recording:
-        logger.warning("Already recording.")
+        print("すでに記録中です")
         return
 
     try:
@@ -58,20 +50,22 @@ def start_recording():
 
         _mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll)
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        
         _mouse_listener.start()
         _keyboard_listener.start()
 
-        logger.info("Recording started successfully. Macro: %s", state.recording_dirs['macro_name'])
+        print("記録を開始しました")
+        print(f"macro: {state.recording_dirs['macro_name']}")
+        print(f"native_scroll_hook: {state.native_scroll_hook_active}")
 
-    except Exception as e:
+    except Exception:
         state.is_recording = False
         state.is_stopping = False
         stop_native_scroll_hook()
         stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
-        logger.error("Failed to start recording: %s", e, exc_info=True)
+        print("記録開始に失敗しました")
+        traceback.print_exc()
         raise
 
 def stop_recording():
@@ -94,35 +88,30 @@ def stop_recording():
         if pending_event is not None:
             run_click_process_thread(pending_event, input_type="mouse_click", click_count=1)
 
-        # 1. リスナーの停止を非同期かつ安全に行い、デッドロックを防止する
-        def safe_stop_listeners(m_list, k_list):
-            try:
-                if m_list and m_list.running:
-                    m_list.stop()
-                if k_list and k_list.running:
-                    k_list.stop()
-            except Exception as le:
-                logger.error("Error occurred while stopping pynput listeners: %s", le)
-
-        stop_thread = threading.Thread(target=safe_stop_listeners, args=(_mouse_listener, _keyboard_listener), daemon=True)
-        stop_thread.start()
-        
-        _mouse_listener = None
-        _keyboard_listener = None
+        # 背景: pynputの停止時にエラーが発生しても処理が止まらないようにtry-exceptで保護
+        try:
+            if _mouse_listener:
+                _mouse_listener.stop()
+                _mouse_listener = None
+            if _keyboard_listener:
+                _keyboard_listener.stop()
+                _keyboard_listener = None
+        except Exception as e:
+            print(f"リスナー停止中にエラー（無視して続行します）: {e}")
 
         stop_native_scroll_hook()
         stop_key_event_worker()
         stop_mouse_event_worker()
 
-        # 2. 最大5秒のタイムアウトを設け、非同期クリック処理が異常終了した場合の無限ループ（アプリ完全停止）を防止
-        max_wait_cycles = 500  # 0.01s * 500 = 5.0s
-        wait_cycle = 0
-        while state.is_click_processing and wait_cycle < max_wait_cycles:
+        # 背景: クリック処理がスタックして無限ループ（完全フリーズ）になるのを防ぐため、最大5秒のタイムアウトを設ける
+        max_wait_cycles = 500
+        wait_cycles = 0
+        while state.is_click_processing and wait_cycles < max_wait_cycles:
             threading.Event().wait(0.01)
-            wait_cycle += 1
+            wait_cycles += 1
             
-        if wait_cycle >= max_wait_cycles:
-            logger.warning("Click processing wait timed out. Proceeding to finalize logs to prevent application freeze.")
+        if wait_cycles >= max_wait_cycles:
+            print("警告: クリック処理待ちがタイムアウトしました。強制的に停止プロセスを続行します。")
 
         # 最後にスクリーンショットを撮ってEndログを記録
         end_img, _ = screen_capturer.take_screenshot()
@@ -136,17 +125,18 @@ def stop_recording():
         process_monitor.stop_process_monitors()
         save_input_logs()
 
-        logger.info("Recording stopped successfully. End image saved as: %s", end_ref)
+        print("記録を停止しました")
+        print("recording_end: evt_End_pre.png")
 
-    except Exception as e:
-        logger.error("Error occurred while stopping the recording session: %s", e, exc_info=True)
+    except Exception:
+        print("記録停止中にエラーが発生しました")
+        traceback.print_exc()
         raise
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger.info("Starting recording. Press Ctrl + \\ to stop.")
+    print("記録を開始します")
+    print("終了するには Ctrl + \\ キーを押してください")
     start_recording()
-    
-    # メインスレッドの無限フリーズを避けるため、タイムアウト付きで待機する
     if _keyboard_listener:
+        # メインスレッドのブロック回避のためタイムアウト付きjoinを推奨
         _keyboard_listener.join(timeout=10.0)

@@ -32,6 +32,7 @@ class MainViewModel(QObject):
         self._selected_macro: str | None = None
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
+        self._is_stopping = False # 背景: 二重停止（連打）を防ぐためのフラグ
         
         self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
         self._internal_status_signal.connect(self._on_internal_status, Qt.QueuedConnection)
@@ -120,28 +121,36 @@ class MainViewModel(QObject):
 
     @Slot()
     def stop_recording(self):
+        # 背景: 連打された場合はブロックし、処理を重複させない
+        if getattr(self, '_is_stopping', False):
+            logger.warning("既に停止処理が進行中です。多重実行をブロックしました。")
+            return
+            
         try:
+            self._is_stopping = True
             self._cancel_requested = False
-            logger.info("Stopping macro recording...")
-            os_hook.stop_recording()
+            logger.info("Stopping macro recording (Running in background thread to prevent UI freeze)...")
             
-            workflow_id = os_hook.get_current_workflow_id()
-            
-            if not workflow_id:
+            # 背景: os_hookの停止処理は重いため、UIスレッドをブロックしないよう別スレッドに分離してクラッシュを防ぐ
+            def background_stop_task():
                 try:
-                    from core.recorder.screen_capturer import get_macros_root
-                    macros_root = get_macros_root()
-                    wf_dirs = sorted([d for d in macros_root.glob("wf_*") if d.is_dir()], key=lambda x: x.stat().st_mtime)
-                    if wf_dirs:
-                        workflow_id = wf_dirs[-1].name
-                except Exception as e:
-                    logger.error(f"Failed to fallback workflow_id: {e}")
+                    os_hook.stop_recording()
+                    
+                    workflow_id = os_hook.get_current_workflow_id()
+                    
+                    if not workflow_id:
+                        try:
+                            from core.recorder.screen_capturer import get_macros_root
+                            macros_root = get_macros_root()
+                            wf_dirs = sorted([d for d in macros_root.glob("wf_*") if d.is_dir()], key=lambda x: x.stat().st_mtime)
+                            if wf_dirs:
+                                workflow_id = wf_dirs[-1].name
+                        except Exception as e:
+                            logger.error(f"Failed to fallback workflow_id: {e}")
 
-            if workflow_id:
-                app_config = ConfigManager.load_config()
-                
-                def background_generation(cfg: AppConfig):
-                    try:
+                    if workflow_id:
+                        app_config = ConfigManager.load_config()
+                        
                         logger.info(f"Kicking background macro generation workflow for ID: {workflow_id}")
                         
                         def progress_cb(prog: int, msg: str):
@@ -152,7 +161,7 @@ class MainViewModel(QObject):
                         
                         log_integrator.generate_macro_workflow(
                             workflow_id, 
-                            cfg, 
+                            cfg=app_config, 
                             progress_callback=progress_cb, 
                             check_cancel_callback=check_cancel
                         )
@@ -160,25 +169,30 @@ class MainViewModel(QObject):
                         logger.info(f"Background macro generation successfully completed for ID: {workflow_id}")
                         self.load_macros()
                         self.generation_finished.emit(True, "")
+                            
+                    else:
+                        msg = "Recording stopped, but target workflow_id could not be resolved from os_hook."
+                        logger.warning(msg)
+                        self.load_macros()
+                        self.generation_finished.emit(False, msg)
                         
-                    except InterruptedError:
-                        logger.warning(f"Background macro generation cancelled for ID: {workflow_id}")
-                        self.generation_finished.emit(False, "キャンセルされました")
-                    except Exception as gen_err:
-                        err_msg = str(gen_err)
-                        logger.error(f"Unhandled exception during background macro generation for {workflow_id}: {err_msg}")
-                        self.generation_finished.emit(False, err_msg)
-                
-                gen_thread = threading.Thread(target=background_generation, args=(app_config,), daemon=True)
-                gen_thread.start()
-            else:
-                msg = "Recording stopped, but target workflow_id could not be resolved from os_hook."
-                logger.warning(msg)
-                self.load_macros()
-                self.generation_finished.emit(False, msg)
-                
+                except InterruptedError:
+                    logger.warning(f"Background macro generation cancelled.")
+                    self.generation_finished.emit(False, "キャンセルされました")
+                except Exception as gen_err:
+                    err_msg = str(gen_err)
+                    logger.error(f"Unhandled exception during background macro generation: {err_msg}")
+                    self.generation_finished.emit(False, err_msg)
+                finally:
+                    # 停止・生成処理がすべて終わったらフラグをリセットする
+                    self._is_stopping = False
+                    
+            # 停止タスクをデーモンスレッドで開始
+            threading.Thread(target=background_stop_task, daemon=True).start()
+            
         except Exception as e:
-            logger.error(f"Failed to stop recording cleanly: {e}")
+            self._is_stopping = False
+            logger.error(f"Failed to initiate stop recording task: {e}")
             raise
 
     @Slot()
