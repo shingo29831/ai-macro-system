@@ -32,7 +32,7 @@ class MainViewModel(QObject):
         self._selected_macro: str | None = None
         self._macro_id_map: dict[str, str] = {}
         self._cancel_requested = False
-        self._is_stopping = False # 背景: 二重停止（連打）を防ぐためのフラグ
+        self._is_stopping = False
         
         self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
         self._internal_status_signal.connect(self._on_internal_status, Qt.QueuedConnection)
@@ -47,7 +47,6 @@ class MainViewModel(QObject):
 
     @Slot(str, bool)
     def _on_internal_status(self, text: str, is_healing: bool):
-        # 完全に安全なUIスレッド上で、RunningDialogのUI要素を更新する
         try:
             from ui.views.running_dialog import RunningDialog
             RunningDialog.set_status(text, is_healing)
@@ -121,7 +120,6 @@ class MainViewModel(QObject):
 
     @Slot()
     def stop_recording(self):
-        # 背景: 連打された場合はブロックし、処理を重複させない
         if getattr(self, '_is_stopping', False):
             logger.warning("既に停止処理が進行中です。多重実行をブロックしました。")
             return
@@ -131,7 +129,6 @@ class MainViewModel(QObject):
             self._cancel_requested = False
             logger.info("Stopping macro recording (Running in background thread to prevent UI freeze)...")
             
-            # 背景: os_hookの停止処理は重いため、UIスレッドをブロックしないよう別スレッドに分離してクラッシュを防ぐ
             def background_stop_task():
                 try:
                     os_hook.stop_recording()
@@ -159,9 +156,10 @@ class MainViewModel(QObject):
                         def check_cancel() -> bool:
                             return self._cancel_requested
                         
+                        # 修正箇所: cfg=app_config というキーワード引数指定を削除し、位置引数に戻しました
                         log_integrator.generate_macro_workflow(
                             workflow_id, 
-                            cfg=app_config, 
+                            app_config, 
                             progress_callback=progress_cb, 
                             check_cancel_callback=check_cancel
                         )
@@ -184,10 +182,8 @@ class MainViewModel(QObject):
                     logger.error(f"Unhandled exception during background macro generation: {err_msg}")
                     self.generation_finished.emit(False, err_msg)
                 finally:
-                    # 停止・生成処理がすべて終わったらフラグをリセットする
                     self._is_stopping = False
                     
-            # 停止タスクをデーモンスレッドで開始
             threading.Thread(target=background_stop_task, daemon=True).start()
             
         except Exception as e:
