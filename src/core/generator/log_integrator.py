@@ -170,8 +170,8 @@ def track_text_field_by_scoring(
     
     active_search_areas = [(i, sa) for i, sa in enumerate(search_areas)] if search_areas else []
     
-    def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool, is_final_candidate: bool = False):
-        nonlocal ocr_call_count, active_search_areas, frame_count
+    def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
+        nonlocal ocr_call_count, active_search_areas, frame_count, field_candidates
         if not buffer_to_check.strip():
             return
             
@@ -260,36 +260,33 @@ def track_text_field_by_scoring(
                         matched_cand = cand
                         break
 
-                len_penalty = 0.0
-                change_penalty = 0.0
-                
-                if not is_final_candidate:
-                    target_len = len(target_lower) if is_ime else len(buffer_lower)
-                    ocr_len = len(c_lower)
-                    len_diff = abs(target_len - ocr_len)
-                    len_penalty = (len_diff / max(1, target_len)) * 0.3
-                    len_penalty = min(0.8, len_penalty)
+                target_len = len(target_lower) if is_ime else len(buffer_lower)
+                ocr_len = len(c_lower)
+                len_diff = abs(target_len - ocr_len)
+                len_penalty = (len_diff / max(1, target_len)) * 0.3
+                len_penalty = min(0.8, len_penalty)
 
-                    if matched_cand:
-                        prev_text = matched_cand["last_text"].lower()
-                        dist_change = Levenshtein.distance(prev_text, c_lower)
-                        max_len = max(len(prev_text), len(c_lower), 1)
-                        
-                        if dist_change > 1:
-                            change_ratio = dist_change / max_len
-                            if change_ratio > 0.5:
-                                change_penalty = 0.5
-                            elif change_ratio > 0.2:
-                                change_penalty = change_ratio * 0.5
-                    else:
-                        if len(c_lower) > max(3, target_len * 2):
-                            change_penalty = 0.3
+                change_penalty = 0.0
+                if matched_cand:
+                    prev_text = matched_cand["last_text"].lower()
+                    dist_change = Levenshtein.distance(prev_text, c_lower)
+                    max_len = max(len(prev_text), len(c_lower), 1)
+                    
+                    if dist_change > 1:
+                        change_ratio = dist_change / max_len
+                        if change_ratio > 0.5:
+                            change_penalty = 0.5
+                        elif change_ratio > 0.2:
+                            change_penalty = change_ratio * 0.5
+                else:
+                    if len(c_lower) > max(3, target_len * 2):
+                        change_penalty = 0.3
 
                 frame_score = similarity - dist_penalty - change_penalty - len_penalty
                 
-                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}' (Final: {is_final_candidate})")
+                logger.info(f"[{target_event_id}] Scoring OCR - Found: '{res.content}', Score: {frame_score:.2f} (Sim: {similarity:.2f}, Pen: {dist_penalty:.2f}, Chg: {change_penalty:.2f}, Len: {len_penalty:.2f}), Target: '{target_lower}'")
                 
-                if similarity > 0.3 or is_substring or is_final_candidate:
+                if similarity > 0.3 or is_substring:
                     ocr_call_count += 1
                     try:
                         with Image.open(img_path) as tracking_img:
@@ -310,37 +307,44 @@ def track_text_field_by_scoring(
                             "last_text": res.content
                         })
 
-            if active_search_areas and not is_final_candidate:
-                if field_candidates:
-                    global_max_score = max(cand["score"] for cand in field_candidates)
+            # 背景: ユーザー要望の実装。スコアが低い候補(BBox)をリストから除外(プルーニング)し、無駄な追跡画像生成と計算を削減する
+            if field_candidates:
+                max_score = max(cand["score"] for cand in field_candidates)
+                surviving_candidates = []
+                for cand in field_candidates:
+                    if max_score - cand["score"] <= 3.0:
+                        surviving_candidates.append(cand)
+                    else:
+                        logger.info(f"[{target_event_id}] Pruning poor candidate at {cand['bbox']} (Score: {cand['score']:.2f}, Max: {max_score:.2f})")
+                field_candidates = surviving_candidates
+
+            if active_search_areas and field_candidates:
+                global_max_score = max(cand["score"] for cand in field_candidates)
+                
+                surviving_areas = []
+                for idx, s_area in active_search_areas:
+                    sl, st, sr, sb = s_area
+                    area_has_candidate = False
+                    area_max = -float('inf')
+                    for cand in field_candidates:
+                        cl, ct, cr, cb = cand["bbox"]
+                        cx, cy = (cl + cr) / 2, (ct + cb) / 2
+                        if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
+                            area_has_candidate = True
+                            area_max = max(area_max, cand["score"])
                     
-                    surviving_areas = []
-                    for idx, s_area in active_search_areas:
-                        sl, st, sr, sb = s_area
-                        area_has_candidate = False
-                        area_max = -float('inf')
-                        for cand in field_candidates:
-                            cl, ct, cr, cb = cand["bbox"]
-                            cx, cy = (cl + cr) / 2, (ct + cb) / 2
-                            if sl - 50 <= cx <= sr + 50 and st - 50 <= cy <= sb + 50:
-                                area_has_candidate = True
-                                area_max = max(area_max, cand["score"])
+                    if frame_count >= 3 and not area_has_candidate:
+                        logger.info(f"[{target_event_id}] Pruning search area {idx} (No valid candidates found in early frames)")
+                        continue
                         
-                        # 背景: ユーザー提案の実装。「最初の方から候補になかった座標の解析はやめる」
-                        # 最初の3フレームを検証しても1度も候補(文字)が見つからなかったエリアは即時除外する
-                        if frame_count >= 3 and not area_has_candidate:
-                            logger.info(f"[{target_event_id}] Pruning search area {idx} (No valid candidates found in early frames)")
-                            continue
-                            
-                        if area_has_candidate and (global_max_score - area_max > 3.0):
-                            logger.info(f"[{target_event_id}] Pruning search area {idx} (Area Max: {area_max:.2f}, Global Max: {global_max_score:.2f})")
-                            continue
-                            
-                        surviving_areas.append((idx, s_area))
-                    
-                    # 安全装置: 全てのエリアが消えて全画面OCR化するのを防ぐ
-                    if surviving_areas:
-                        active_search_areas = surviving_areas
+                    if area_has_candidate and (global_max_score - area_max > 3.0):
+                        logger.info(f"[{target_event_id}] Pruning search area {idx} (Area Max: {area_max:.2f}, Global Max: {global_max_score:.2f})")
+                        continue
+                        
+                    surviving_areas.append((idx, s_area))
+                
+                if surviving_areas:
+                    active_search_areas = surviving_areas
 
         except Exception as e:
             logger.warning(f"Error during OCR tracking evaluation: {e}")
@@ -350,7 +354,8 @@ def track_text_field_by_scoring(
         is_ime = event.get("ime_active", False)
         
         if img_path_rel:
-            _evaluate_frame(img_path_rel, current_buffer, is_ime, is_final_candidate=False)
+            # 背景: 評価(スコアリング)はタイピング中のフレームに対してのみ行う。
+            _evaluate_frame(img_path_rel, current_buffer, is_ime)
             
         role = str(event.get("semantic_role", "")).lower()
         if role == "backspace":
@@ -360,10 +365,8 @@ def track_text_field_by_scoring(
         elif len(role) == 1:
             current_buffer += role
 
-    final_ime_state = any(e.get("ime_active", False) for e in group_events)
-
-    for cand_img_path in candidate_img_paths_rel:
-        _evaluate_frame(cand_img_path, current_buffer, final_ime_state, is_final_candidate=final_ime_state)
+    # 背景: ユーザー要望の実装。確定フェーズ(candidate_img_paths_rel)では _evaluate_frame を呼ばない。
+    # タイピング中のフレームで最もスコアが高かった候補(BBox)を勝者としてロックし、サジェストの逆転を物理的に防ぐ。
 
     if not field_candidates:
         return None, ""
@@ -375,6 +378,8 @@ def track_text_field_by_scoring(
     final_img_path = macros_root / final_img_path_rel
     base_img_path_rel = group_events[0].get("pre_img_path") if group_events else candidate_img_paths_rel[0]
     base_img_path = macros_root / base_img_path_rel
+
+    final_crop_box = (l, t, r, b)
 
     if final_img_path.exists() and base_img_path.exists():
         try:
@@ -408,57 +413,43 @@ def track_text_field_by_scoring(
                 if not is_enclosing:
                     filtered_bboxes.append(bbox1)
             
-            candidate_contours = []
+            target_contours = []
             for bbox in filtered_bboxes:
                 x, y, w, h = bbox
-                if max(l, x) < min(r, x + w) and max(t, y) < min(b, y + h):
-                    candidate_contours.append((x, y, w, h))
+                # Y座標(上下)がタイピング枠とほぼ一致するものだけを探す(下部のサジェストを排除)
+                if abs(y - t) < 15 and abs((y+h) - b) < 15:
+                    # X座標はタイピング枠の左端(l)に近いか、右側に存在すること
+                    if x + w > l - 15: 
+                        target_contours.append(bbox)
             
-            if candidate_contours:
-                target_text_hira = to_hiragana(current_buffer) if final_ime_state else current_buffer
-                target_lower = target_text_hira.lower()
+            if target_contours:
+                min_x = min(bx for bx, by, bw, bh in target_contours)
+                min_y = min(by for bx, by, bw, bh in target_contours)
+                max_r = max(bx + bw for bx, by, bw, bh in target_contours)
+                max_b = max(by + bh for bx, by, bw, bh in target_contours)
                 
-                best_sub_bbox = None
-                best_sub_score = -float('inf')
+                # 背景: ユーザー要望の実装。左側のアイコン等を物理的に切り落とすため、
+                # 最終的なBBoxの左端は「追跡時の左端(l)」に固定し、右端のみを輪郭に合わせて拡張する。
+                final_l = max(l - 5, min_x) 
                 
-                with Image.open(final_img_path) as img_pil:
-                    for s_bbox in candidate_contours:
-                        sx, sy, sw, sh = s_bbox
-                        pad = 2
-                        c_img = img_pil.crop((max(0, sx-pad), max(0, sy-pad), min(img_pil.width, sx+sw+pad), min(img_pil.height, sy+sh+pad)))
-                        tmp_path = temp_dir / f"temp_sub_bbox_eval_{target_event_id}_{sx}_{sy}.png"
-                        c_img.save(tmp_path)
-                        
-                        s_ocr_res = read_text_from_image(str(tmp_path))
-                        score = 0.0
-                        if s_ocr_res:
-                            text_content = "".join([res_item.content for res_item in s_ocr_res if res_item.content]).lower()
-                            sim = Levenshtein.ratio(target_lower, text_content)
-                            is_sub = target_lower in text_content
-                            score = sim + (0.5 if is_sub else 0)
-                        
-                        if score > best_sub_score:
-                            best_sub_score = score
-                            best_sub_bbox = s_bbox
+                final_crop_box = (final_l, min_y, max_r, max_b)
+                logger.info(f"[{target_event_id}] Logically expanded BBox to fit final text (excluding left-side icons): {final_crop_box}")
+            else:
+                final_crop_box = (l, t, r + 100, b)
                 
-                if best_sub_bbox and best_sub_score > 0.0:
-                    bx, by, bw, bh = best_sub_bbox
-                    l, t, r, b = bx, by, bx + bw, by + bh
-                    logger.info(f"[{target_event_id}] Logically expanded and refined BBox to fit final text (excluding encompassing UIs): {(l, t, r, b)}")
-                    
         except Exception as e:
             logger.warning(f"[{target_event_id}] Failed to refine and expand final BBox: {e}")
 
+    fl, ft, fr, fb = final_crop_box
     pad_x = 5
     pad_y = 5
     
-    # 背景: 左側にアイコンを含まないよう、0マージンを維持
-    l_crop = max(0, l)
-    t_crop = max(0, t - pad_y)
-    r_crop = r + pad_x
-    b_crop = b + pad_y
+    l_crop = max(0, fl)
+    t_crop = max(0, ft - pad_y)
+    r_crop = fr + pad_x
+    b_crop = fb + pad_y
     
-    return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
+    return (l_crop, t_crop, r_crop, b_crop), ""
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -773,8 +764,6 @@ def generate_macro_workflow(
                         full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
                         
                         if len(full_img_paths) >= 2:
-                            # 背景: ユーザー提案の実装。「最初の方から候補になかった座標の解析はやめる」
-                            # これにより、打鍵後半で出現するサジェスト等のノイズ領域がそもそも抽出されなくなる。
                             eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
                             diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
                             
@@ -854,9 +843,11 @@ def generate_macro_workflow(
 
                 best_overall_text = ""
                 
-                for cand_path_rel in candidate_img_paths_rel:
+                # 背景: ユーザー要望の実装。最終テキストを読み取るための画像を明確なファイル名で1枚だけ保存する。
+                if candidate_img_paths_rel and crop_box:
+                    cand_path_rel = candidate_img_paths_rel[-1]
                     cand_full = macros_root / cand_path_rel
-                    if cand_full.exists() and crop_box:
+                    if cand_full.exists():
                         try:
                             with Image.open(cand_full) as img:
                                 left, top, right, bottom = crop_box
@@ -865,7 +856,7 @@ def generate_macro_workflow(
                                 current_crop_box = (left, top, right, bottom)
                                 
                                 crop_img = img.crop(current_crop_box)
-                                temp_crop_path = temp_dir / f"temp_ocr_crop_final_{target_event_id}_{Path(cand_path_rel).stem}.png"
+                                temp_crop_path = temp_dir / f"temp_FINAL_TEXT_CROP_{target_event_id}.png"
                                 crop_img.save(temp_crop_path)
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
@@ -918,7 +909,7 @@ def generate_macro_workflow(
                                             best_overall_text = combined_text
                                             
                         except Exception as e:
-                            logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for candidate: {e}")
+                            logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for final candidate: {e}")
 
                 if best_overall_text:
                     text = best_overall_text
