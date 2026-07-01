@@ -16,8 +16,6 @@ MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
 
 def _trigger_field_search(trigger_reason: str):
-    # 背景: 入力中の文字（確定前）を使って、画面上のテキストフィールドを探索・座標記録するためのイベントを発火する。
-    # このイベントはスクリーンショットを撮り、UI抽出エンジンを走らせるが、OCRは行わない。
     buffer = getattr(state, "typing_buffer", "")
     if not buffer:
         return
@@ -25,16 +23,17 @@ def _trigger_field_search(trigger_reason: str):
     ime_on = is_ime_active()
     target_text = to_hiragana(buffer) if ime_on else buffer
     
-    enqueue_key_event("text_field_search", target_text, capture_now=True)
+    # 背景: IME状態をイベントプロセッサに伝達する
+    enqueue_key_event("text_field_search", target_text, capture_now=True, ime_active=ime_on)
     logger.debug("テキストフィールド探索イベントを発火しました [%s]: %s (IME: %s)", trigger_reason, target_text, ime_on)
 
 def _flush_typing_buffer(trigger_reason: str):
-    # 背景: タブ補完、スペース、エンターなどで文字が確定した直後の画像で、事前に特定した座標をもとにOCRを実行させる。
     if not getattr(state, "typing_buffer", ""):
         return
 
-    # OCR処理を行うための確定イベント。画面キャプチャを伴う。
-    enqueue_key_event("text_candidate_confirm", "", capture_now=True)
+    ime_on = is_ime_active()
+    # 背景: IME状態をイベントプロセッサに伝達する
+    enqueue_key_event("text_candidate_confirm", "", capture_now=True, ime_active=ime_on)
     state.typing_buffer = ""
     logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
 
@@ -64,7 +63,6 @@ def on_click(x, y, button, pressed):
     if not state.is_recording or state.is_stopping: return
     
     if pressed:
-        # フォーカスが外れる場合はバッファを破棄（または確定）する
         _flush_typing_buffer(trigger_reason="mouse_click")
         
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
@@ -102,7 +100,6 @@ def on_press(key):
     ime_on = is_ime_active()
     current_buffer = getattr(state, "typing_buffer", "")
 
-    # --- 状態管理: 探索フェーズと確定フェーズの分離 ---
     is_text_input = False
     if key_text == "space" and not ime_on:
         state.typing_buffer = current_buffer + " "
@@ -114,11 +111,9 @@ def on_press(key):
         state.typing_buffer = current_buffer[:-1]
         is_text_input = True
 
-    # 背景: 文字が入力・変更されるたびに、常に最新の「確定前」の文字でフィールドの探索を行う
     if is_text_input:
         _trigger_field_search(trigger_reason=f"typing_{key_text}")
 
-    # 背景: 確定トリガーが押されたら、直前に特定した座標を使ってOCRを行うためのイベントを発火
     flush_triggers = ["enter", "tab"]
     if ime_on:
         flush_triggers.append("space")
@@ -137,11 +132,13 @@ def on_press(key):
             combo_text = make_combo_text(combo_keys)
             if combo_text not in state.logged_combo_keys:
                 state.logged_combo_keys.add(combo_text)
-                enqueue_key_event("key_combo", key_text, combo_keys, capture_now)
+                # 背景: IME状態をイベントプロセッサに伝達する
+                enqueue_key_event("key_combo", key_text, combo_keys, capture_now, ime_active=ime_on)
             return
 
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"): return
-        enqueue_key_event("key_press", key_text, capture_now=capture_now)
+        # 背景: IME状態をイベントプロセッサに伝達する
+        enqueue_key_event("key_press", key_text, capture_now=capture_now, ime_active=ime_on)
     except Exception:
         logger.exception("キーフック処理中にエラーが発生しました")
 

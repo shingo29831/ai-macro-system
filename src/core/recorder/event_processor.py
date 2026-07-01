@@ -29,7 +29,7 @@ def calculate_and_update_diff(current_img) -> str:
         state.previous_screenshot_img = current_img.copy()
     return diff
 
-def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False):
+def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False, ime_active: bool = False):
     event_no = state.get_next_event_no()
     dt = now_datetime()
     window_info = process_monitor.get_foreground_window_info()
@@ -38,22 +38,26 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     if capture_now:
         pre_img, pre_monitor = screen_capturer.take_screenshot()
     
+    # 背景: ime_active をキューに積む
     state.key_event_queue.put({
         "event_no": event_no, "datetime": dt, "input_type": input_type,
         "key": key_text, "keys": keys or [], "window_info": window_info,
-        "pre_img": pre_img, "pre_ref": None, "pre_monitor": pre_monitor
+        "pre_img": pre_img, "pre_ref": None, "pre_monitor": pre_monitor,
+        "ime_active": ime_active
     })
 
 def process_key_event(event: dict):
     input_type = event["input_type"]
 
-    # 背景: 変数化処理はすべて事後の log_integrator.py に一任するため、
-    # リアルタイムの探索・確定用内部イベントは処理をスキップしてログの純粋性を保つ
     if input_type in ["text_field_search", "text_candidate_confirm"]:
         return
 
     event_no, dt = event["event_no"], event["datetime"]
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
+    
+    # 背景: キューから取り出した ime_active をログの Content に含める
+    content["ime_active"] = event.get("ime_active", False)
+    
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
 
     pre_img = event.get("pre_img")
@@ -66,7 +70,7 @@ def process_key_event(event: dict):
 
     log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff}
     state.append_log(log)
-    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}")
+    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}, ime={content['ime_active']}")
 
 def process_move_event(event: dict):
     # (既存のまま変更なし)

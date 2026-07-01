@@ -149,67 +149,61 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
         logger.warning(f"Failed to refine bbox with CV: {e}")
         return diff_bbox, "unknown"
 
-def track_text_field_by_scoring(group_events: List[Dict[str, Any]], macros_root: Path) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
+def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_img_paths_rel: List[str], macros_root: Path) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
     """
     一連のタイピング中の複数フレームを分析し、入力バッファと文字列が継続的に一致する
     座標(BoundingBox)を追跡・スコアリングして、最も確からしいテキストフィールドを特定する。
-    サジェストリストのノイズを排除するのに有効。
     """
-    field_candidates = [] # {"bbox": (l,t,r,b), "score": float, "last_text": str}
-    
+    try:
+        from core.recorder.romaji_converter import to_hiragana
+    except ImportError:
+        to_hiragana = lambda x: x
+        
+    field_candidates = []
     current_buffer = ""
-    for event in group_events:
-        role = str(event.get("semantic_role", "")).lower()
-        if role == "backspace":
-            current_buffer = current_buffer[:-1]
-        elif role == "space":
-            current_buffer += " "
-        elif len(role) == 1:
-            current_buffer += role
-            
-        if not current_buffer.strip():
-            continue
-            
-        img_path_rel = event.get("pre_img_path")
-        if not img_path_rel:
-            continue
-            
+    
+    # 背景: 各フレームごとのOCR評価処理を関数化してループ間で再利用する
+    def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
+        if not buffer_to_check.strip():
+            return
         img_path = macros_root / img_path_rel
         if not img_path.exists():
-            continue
+            return
             
         try:
-            # 各フレームでOCRを実行し、画面上の全テキスト領域を取得
             ocr_results = read_text_from_image(str(img_path))
             if not ocr_results:
-                continue
+                return
                 
+            target_text = to_hiragana(buffer_to_check) if is_ime else buffer_to_check
+            target_lower = target_text.lower()
+            
             for res in ocr_results:
                 if not res.content:
                     continue
                     
-                # 類似度(レーベンシュタイン比率)を計算。
-                # 入力中のバッファが画面上のテキストに部分一致するか等を評価
-                similarity = Levenshtein.ratio(current_buffer.lower(), res.content.lower())
+                c_lower = res.content.lower()
                 
-                # サジェスト候補などにも部分一致する可能性があるため、緩い閾値で候補に入れる
-                if similarity > 0.3 or current_buffer.lower() in res.content.lower():
-                    # 既存の候補(座標が近いもの)を探す
+                # 背景: ローマ字とひらがな両方のパターンで類似度を検証し、高い方を採用する
+                sim_roman = Levenshtein.ratio(buffer_to_check.lower(), c_lower)
+                sim_hira = Levenshtein.ratio(target_lower, c_lower)
+                similarity = max(sim_roman, sim_hira)
+                
+                is_substring = (buffer_to_check.lower() in c_lower) or (target_lower in c_lower)
+                
+                if similarity > 0.3 or is_substring:
                     matched_cand = None
                     l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
                     r, b = l + w, t + h
                     
                     for cand in field_candidates:
                         cl, ct, cr, cb = cand["bbox"]
-                        # 座標の中心距離やオーバーラップを計算して同一フィールドか判定
-                        if abs(l - cl) < 50 and abs(t - ct) < 30: 
+                        if abs(l - cl) < 50 and abs(t - ct) < 40: 
                             matched_cand = cand
                             break
                             
                     if matched_cand:
-                        # 継続して一致していればスコアを大きく加算(サジェストと差別化)
                         matched_cand["score"] += similarity * 2.0 
-                        # 座標を最新のものに更新(文字入力で枠が広がる場合を考慮)
                         matched_cand["bbox"] = (min(l, cl), min(t, ct), max(r, cr), max(b, cb))
                         matched_cand["last_text"] = res.content
                     else:
@@ -218,18 +212,36 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], macros_root:
                             "score": similarity,
                             "last_text": res.content
                         })
-                        
         except Exception as e:
-            logger.warning(f"Error during OCR tracking for event {event.get('event_id')}: {e}")
-            continue
+            logger.warning(f"Error during OCR tracking evaluation: {e}")
+
+    # 背景: タイピングイベントごとの評価。
+    # OCR対象画像(pre_img)は「キー入力直前」のため、追加前のcurrent_bufferと比較してタイムラグのズレを解消する。
+    for event in group_events:
+        img_path_rel = event.get("pre_img_path")
+        is_ime = event.get("ime_active", False)
+        
+        if img_path_rel:
+            _evaluate_frame(img_path_rel, current_buffer, is_ime)
+            
+        role = str(event.get("semantic_role", "")).lower()
+        if role == "backspace":
+            current_buffer = current_buffer[:-1]
+        elif role == "space":
+            current_buffer += " "
+        elif len(role) == 1:
+            current_buffer += role
+
+    # 背景: 確定トリガー直前の画像群（最新のcurrent_bufferが画面に反映済み）も評価対象に含める
+    final_ime_state = any(e.get("ime_active", False) for e in group_events)
+
+    for cand_img_path in candidate_img_paths_rel:
+        _evaluate_frame(cand_img_path, current_buffer, final_ime_state)
 
     if not field_candidates:
         return None, ""
         
-    # 最もスコアの高い(継続的に入力バッファと一致し続けた)候補を選択
     best_candidate = max(field_candidates, key=lambda x: x["score"])
-    
-    # マージンを持たせて返す
     l, t, r, b = best_candidate["bbox"]
     margin = 5
     return (max(0, l-margin), max(0, t-margin), r+margin, b+margin), best_candidate["last_text"]
@@ -322,10 +334,12 @@ def generate_macro_workflow(
                 
                 button_val = "left"
                 input_val = "unknown"
+                ime_active = False
                 
                 if isinstance(content_data, dict):
                     button_val = content_data.get("button", "left")
                     input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or f"{button_val}_click"
+                    ime_active = content_data.get("ime_active", False)
                 else:
                     input_val = str(content_data)
 
@@ -454,7 +468,8 @@ def generate_macro_workflow(
                     "win_x": win_x,
                     "win_y": win_y,
                     "win_w": win_size_data.get("width", 0),
-                    "win_h": win_size_data.get("height", 0)
+                    "win_h": win_size_data.get("height", 0),
+                    "ime_active": ime_active
                 })
 
         if progress_callback:
@@ -477,6 +492,7 @@ def generate_macro_workflow(
             
             if avg_diff < 0.3:
                 base_text = ""
+                any_ime_active = any(item.get("ime_active", False) for item in current_group)
                 for item in current_group:
                     role = str(item["semantic_role"])
                     r_lower = role.lower()
@@ -487,6 +503,14 @@ def generate_macro_workflow(
                     elif r_lower not in ["tab", "delete", "esc"]:
                         base_text += role
                 
+                try:
+                    from core.recorder.romaji_converter import to_hiragana
+                except ImportError:
+                    to_hiragana = lambda x: x
+                    
+                if any_ime_active:
+                    base_text = to_hiragana(base_text)
+                    
                 text = base_text
                 
                 group_img_paths_rel = []
@@ -510,8 +534,7 @@ def generate_macro_workflow(
 
                 if base_target_full and base_target_full.exists():
                     try:
-                        # 1. 新規ロジック: スコアリングによるトラッキング
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, macros_root)
+                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root)
                     except Exception as e:
                         logger.error(f"[{workflow_id}] Tracking error: {e}")
                     
@@ -519,7 +542,6 @@ def generate_macro_workflow(
                         logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
                     else:
                         logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
-                        # 2. 既存ロジック: PIL差分 + CV2枠線
                         try:
                             with Image.open(base_target_full) as img_temp:
                                 max_w, max_h = img_temp.width, img_temp.height
@@ -605,8 +627,6 @@ def generate_macro_workflow(
             current_group.clear()
 
         for i, info in enumerate(temp_workflow_info):
-            # 背景: 未知のイベントやシステム系の記録ノイズが混入しても、
-            # タイピングのまとまり(current_group)を分断しないよう静かに無視する
             if info["raw_action"] == "unknown" or "recording" in info["raw_type"].lower():
                 continue
                 
