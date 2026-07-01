@@ -162,7 +162,6 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
     field_candidates = []
     current_buffer = ""
     
-    # 背景: 各フレームごとのOCR評価処理を関数化してループ間で再利用する
     def _evaluate_frame(img_path_rel: str, buffer_to_check: str, is_ime: bool):
         if not buffer_to_check.strip():
             return
@@ -184,7 +183,6 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
                     
                 c_lower = res.content.lower()
                 
-                # 背景: ローマ字とひらがな両方のパターンで類似度を検証し、高い方を採用する
                 sim_roman = Levenshtein.ratio(buffer_to_check.lower(), c_lower)
                 sim_hira = Levenshtein.ratio(target_lower, c_lower)
                 similarity = max(sim_roman, sim_hira)
@@ -204,6 +202,7 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
                             
                     if matched_cand:
                         matched_cand["score"] += similarity * 2.0 
+                        # 文字数の増減に合わせてBBoxを拡張して最新の状態を包含する
                         matched_cand["bbox"] = (min(l, cl), min(t, ct), max(r, cr), max(b, cb))
                         matched_cand["last_text"] = res.content
                     else:
@@ -215,8 +214,6 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
         except Exception as e:
             logger.warning(f"Error during OCR tracking evaluation: {e}")
 
-    # 背景: タイピングイベントごとの評価。
-    # OCR対象画像(pre_img)は「キー入力直前」のため、追加前のcurrent_bufferと比較してタイムラグのズレを解消する。
     for event in group_events:
         img_path_rel = event.get("pre_img_path")
         is_ime = event.get("ime_active", False)
@@ -232,7 +229,6 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
         elif len(role) == 1:
             current_buffer += role
 
-    # 背景: 確定トリガー直前の画像群（最新のcurrent_bufferが画面に反映済み）も評価対象に含める
     final_ime_state = any(e.get("ime_active", False) for e in group_events)
 
     for cand_img_path in candidate_img_paths_rel:
@@ -243,8 +239,25 @@ def track_text_field_by_scoring(group_events: List[Dict[str, Any]], candidate_im
         
     best_candidate = max(field_candidates, key=lambda x: x["score"])
     l, t, r, b = best_candidate["bbox"]
-    margin = 5
-    return (max(0, l-margin), max(0, t-margin), r+margin, b+margin), best_candidate["last_text"]
+    
+    # 背景: ユーザー要望により、追跡したバウンディングボックスを 1.数倍 に拡張してタイトに切り抜く
+    w = r - l
+    h = b - t
+    
+    # 幅1.2倍(+0.1ずつ)、高さ1.5倍(+0.25ずつ)の余白を持たせる
+    pad_w = int(w * 0.1)
+    pad_h = int(h * 0.25)
+    
+    # 最低限のマージン(10px)を保証し、文字の端切れを防ぐ
+    pad_w = max(10, pad_w)
+    pad_h = max(10, pad_h)
+    
+    l_crop = max(0, l - pad_w)
+    t_crop = max(0, t - pad_h)
+    r_crop = r + pad_w
+    b_crop = b + pad_h
+    
+    return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -508,9 +521,9 @@ def generate_macro_workflow(
                 except ImportError:
                     to_hiragana = lambda x: x
                     
-                if any_ime_active:
-                    base_text = to_hiragana(base_text)
-                    
+                target_lower = base_text.lower()
+                hiragana_target = to_hiragana(target_lower) if any_ime_active else target_lower
+                
                 text = base_text
                 
                 group_img_paths_rel = []
@@ -574,11 +587,13 @@ def generate_macro_workflow(
                     if last_click:
                         with Image.open(base_target_full) as img:
                             cx, cy = last_click["cursor_x"], last_click["cursor_y"]
-                            left, top = max(0, cx - 400), max(0, cy - 25)
-                            right, bottom = min(img.width, cx + 400), min(img.height, cy + 25)
+                            left, top = max(0, cx - 150), max(0, cy - 30)
+                            right, bottom = min(img.width, cx + 150), min(img.height, cy + 30)
                             crop_box = (left, top, right, bottom)
+                            logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
 
                 best_overall_text = ""
+                highest_overall_sim = 0.0
                 
                 for cand_path_rel in candidate_img_paths_rel:
                     cand_full = macros_root / cand_path_rel
@@ -596,17 +611,32 @@ def generate_macro_workflow(
                                 
                                 ocr_results = read_text_from_image(str(temp_crop_path))
                                 if ocr_results:
-                                    valid_texts = [res.content for res in ocr_results if res.content]
-                                    if valid_texts:
-                                        best_text_for_frame = max(valid_texts, key=len)
-                                        if len(best_text_for_frame) > len(best_overall_text):
-                                            best_overall_text = best_text_for_frame
+                                    # 背景: 「一番長い文字」ではなく「入力したキーに最も近い文字」をスコアリングして選出する。
+                                    # これにより、巨大なフォールバック枠内で検索履歴のような長文を誤って拾うのを防ぐ。
+                                    for res in ocr_results:
+                                        if not res.content: continue
+                                        extracted_text = res.content
+                                        e_lower = extracted_text.lower()
+                                        
+                                        sim1 = Levenshtein.ratio(target_lower, e_lower)
+                                        sim2 = Levenshtein.ratio(hiragana_target, e_lower)
+                                        sim = max(sim1, sim2)
+                                        
+                                        # 長文ノイズを排除しつつ、完全な部分一致にはボーナスを与える
+                                        if target_lower in e_lower or hiragana_target in e_lower:
+                                            len_ratio = len(target_lower) / max(1, len(extracted_text))
+                                            sim = max(sim, 0.5 + 0.5 * len_ratio)
+                                            
+                                        if sim > highest_overall_sim:
+                                            highest_overall_sim = sim
+                                            best_overall_text = extracted_text
+                                            
                         except Exception as e:
                             logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for candidate: {e}")
 
-                if best_overall_text and (len(best_overall_text) >= 2 or len(base_text) <= 2):
+                if best_overall_text and highest_overall_sim >= 0.4:
                     text = best_overall_text
-                    logger.info(f"[{workflow_id}] Final OCR extracted text from best candidate BBox: {text}")
+                    logger.info(f"[{workflow_id}] Final OCR extracted text from BBox (Similarity: {highest_overall_sim:.2f}): {text}")
                 elif tracked_text and len(tracked_text) >= 2:
                     text = tracked_text
                     logger.info(f"[{workflow_id}] Final OCR extracted text from tracking candidate: {text}")
