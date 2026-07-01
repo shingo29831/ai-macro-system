@@ -1,4 +1,4 @@
-# shingo29831/ai-macro-system/ai-macro-system-Umeda/src/core/generator/log_integrator.py
+# src/core/generator/log_integrator.py
 # @role: temp/ に保存された一時生データ（入力ログ・画像）とローカルAI（YOLO/OCR/LLM）の解析結果を統合し、意味を理解した実行可能なワークフローを生成する。
 
 import json
@@ -6,6 +6,7 @@ import logging
 import shutil
 import os
 import statistics
+import Levenshtein
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List, Tuple
@@ -147,6 +148,91 @@ def refine_textfield_bbox_cv(image_path: str, diff_bbox: Tuple[int, int, int, in
     except Exception as e:
         logger.warning(f"Failed to refine bbox with CV: {e}")
         return diff_bbox, "unknown"
+
+def track_text_field_by_scoring(group_events: List[Dict[str, Any]], macros_root: Path) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
+    """
+    一連のタイピング中の複数フレームを分析し、入力バッファと文字列が継続的に一致する
+    座標(BoundingBox)を追跡・スコアリングして、最も確からしいテキストフィールドを特定する。
+    サジェストリストのノイズを排除するのに有効。
+    """
+    field_candidates = [] # {"bbox": (l,t,r,b), "score": float, "last_text": str}
+    
+    current_buffer = ""
+    for event in group_events:
+        role = str(event.get("semantic_role", "")).lower()
+        if role == "backspace":
+            current_buffer = current_buffer[:-1]
+        elif role == "space":
+            current_buffer += " "
+        elif len(role) == 1:
+            current_buffer += role
+            
+        if not current_buffer.strip():
+            continue
+            
+        img_path_rel = event.get("pre_img_path")
+        if not img_path_rel:
+            continue
+            
+        img_path = macros_root / img_path_rel
+        if not img_path.exists():
+            continue
+            
+        try:
+            # 各フレームでOCRを実行し、画面上の全テキスト領域を取得
+            ocr_results = read_text_from_image(str(img_path))
+            if not ocr_results:
+                continue
+                
+            for res in ocr_results:
+                if not res.content:
+                    continue
+                    
+                # 類似度(レーベンシュタイン比率)を計算。
+                # 入力中のバッファが画面上のテキストに部分一致するか等を評価
+                similarity = Levenshtein.ratio(current_buffer.lower(), res.content.lower())
+                
+                # サジェスト候補などにも部分一致する可能性があるため、緩い閾値で候補に入れる
+                if similarity > 0.3 or current_buffer.lower() in res.content.lower():
+                    # 既存の候補(座標が近いもの)を探す
+                    matched_cand = None
+                    l, t, w, h = res.boundingBox.x, res.boundingBox.y, res.boundingBox.width, res.boundingBox.height
+                    r, b = l + w, t + h
+                    
+                    for cand in field_candidates:
+                        cl, ct, cr, cb = cand["bbox"]
+                        # 座標の中心距離やオーバーラップを計算して同一フィールドか判定
+                        if abs(l - cl) < 50 and abs(t - ct) < 30: 
+                            matched_cand = cand
+                            break
+                            
+                    if matched_cand:
+                        # 継続して一致していればスコアを大きく加算(サジェストと差別化)
+                        matched_cand["score"] += similarity * 2.0 
+                        # 座標を最新のものに更新(文字入力で枠が広がる場合を考慮)
+                        matched_cand["bbox"] = (min(l, cl), min(t, ct), max(r, cr), max(b, cb))
+                        matched_cand["last_text"] = res.content
+                    else:
+                        field_candidates.append({
+                            "bbox": (l, t, r, b),
+                            "score": similarity,
+                            "last_text": res.content
+                        })
+                        
+        except Exception as e:
+            logger.warning(f"Error during OCR tracking for event {event.get('event_id')}: {e}")
+            continue
+
+    if not field_candidates:
+        return None, ""
+        
+    # 最もスコアの高い(継続的に入力バッファと一致し続けた)候補を選択
+    best_candidate = max(field_candidates, key=lambda x: x["score"])
+    
+    # マージンを持たせて返す
+    l, t, r, b = best_candidate["bbox"]
+    margin = 5
+    return (max(0, l-margin), max(0, t-margin), r+margin, b+margin), best_candidate["last_text"]
 
 def generate_macro_workflow(
     workflow_id: str, 
@@ -419,40 +505,47 @@ def generate_macro_workflow(
                         candidate_img_paths_rel.append(p)
 
                 crop_box = None
+                tracked_text = ""
                 base_target_full = macros_root / candidate_img_paths_rel[0] if candidate_img_paths_rel else None
 
                 if base_target_full and base_target_full.exists():
                     try:
-                        with Image.open(base_target_full) as img_temp:
-                            max_w, max_h = img_temp.width, img_temp.height
-                            
-                        full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
-                        
-                        if len(full_img_paths) >= 2:
-                            bbox = get_text_field_bbox_pil(full_img_paths, max_w, max_h)
-                            if bbox:
-                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), bbox)
-                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                
-                                # --- 【新規追加】縦幅のキャッピング処理 ---
-                                # 巨大な枠線（メモアプリやサジェスト結合枠）であっても、OCRクロップは入力行の周辺に強制制限する
-                                l, t, r, b = refined_bbox
-                                dl, dt, dr, db = bbox # 実際に文字が入力された領域 (PILによる差分)
-                                char_h = db - dt if (db - dt) > 0 else 20
-                                
-                                margin_x, margin_y = 5, 5
-                                # OCR用に許容する最大縦マージン (文字サイズの1.5倍、または30px)
-                                max_v_margin = max(30, int(char_h * 1.5))
-                                
-                                # 枠線が上下に大きすぎる場合は、入力文字周辺でカットする
-                                t_crop = max(t, dt - max_v_margin)
-                                b_crop = min(b, db + max_v_margin)
-                                
-                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                                logger.info(f"[{workflow_id}] Capped OCR Crop Box to avoid giant boundaries: {crop_box}")
-
+                        # 1. 新規ロジック: スコアリングによるトラッキング
+                        crop_box, tracked_text = track_text_field_by_scoring(current_group, macros_root)
                     except Exception as e:
-                        logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
+                        logger.error(f"[{workflow_id}] Tracking error: {e}")
+                    
+                    if crop_box:
+                        logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
+                    else:
+                        logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
+                        # 2. 既存ロジック: PIL差分 + CV2枠線
+                        try:
+                            with Image.open(base_target_full) as img_temp:
+                                max_w, max_h = img_temp.width, img_temp.height
+                                
+                            full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
+                            
+                            if len(full_img_paths) >= 2:
+                                bbox = get_text_field_bbox_pil(full_img_paths, max_w, max_h)
+                                if bbox:
+                                    refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), bbox)
+                                    logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
+                                    
+                                    l, t, r, b = refined_bbox
+                                    dl, dt, dr, db = bbox
+                                    char_h = db - dt if (db - dt) > 0 else 20
+                                    
+                                    margin_x, margin_y = 5, 5
+                                    max_v_margin = max(30, int(char_h * 1.5))
+                                    
+                                    t_crop = max(t, dt - max_v_margin)
+                                    b_crop = min(b, db + max_v_margin)
+                                    
+                                    crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
+                                    logger.info(f"[{workflow_id}] Capped OCR Crop Box to avoid giant boundaries: {crop_box}")
+                        except Exception as e:
+                            logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
 
                 if not crop_box and base_target_full and base_target_full.exists():
                     last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
@@ -492,6 +585,9 @@ def generate_macro_workflow(
                 if best_overall_text and (len(best_overall_text) >= 2 or len(base_text) <= 2):
                     text = best_overall_text
                     logger.info(f"[{workflow_id}] Final OCR extracted text from best candidate BBox: {text}")
+                elif tracked_text and len(tracked_text) >= 2:
+                    text = tracked_text
+                    logger.info(f"[{workflow_id}] Final OCR extracted text from tracking candidate: {text}")
                 else:
                     logger.info(f"[{workflow_id}] Falling back to raw typed text: {base_text}")
 
