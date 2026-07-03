@@ -374,6 +374,14 @@ class SettingScreen(QWidget):
         bottom_layout.addWidget(self.save_button)
         
         main_layout.addLayout(bottom_layout)
+        
+        # self.cancel_button.clicked.connect()
+        
+        self.test_button.clicked.connect(self.connect_test)
+        
+    def connect_test(self):
+        QMessageBox.information(self, "接続テスト", "接続テスト要求を受け付けました（バックエンド未結合）")
+
 class MainWindow(FluentWindow):
     """QFluentWidgets ベースのメインウィンドウ。"""
 
