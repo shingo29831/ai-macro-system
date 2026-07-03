@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QButtonGroup,
+    QGridLayout
 )
 from PySide6.QtWidgets import QHeaderView
 
@@ -21,6 +23,9 @@ from qfluentwidgets import (
     Theme,
     TitleLabel,
     setTheme,
+    BodyLabel,
+    RadioButton,
+    LineEdit
 )
 
 from ui.viewmodels.main_viewmodel import MainViewModel
@@ -251,7 +256,7 @@ class MainScreen(QWidget):
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignVCenter
             )
-            
+
             self.table_macros.setItem(row, 0, macro_name)
 
             heals = QTableWidgetItem(macro.heals)
@@ -289,42 +294,86 @@ class SettingScreen(QWidget):
 
         self.setObjectName("SettingScreen")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(16)
+        # 画面全体のメインレイアウト（縦並び）
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(40, 40, 40, 40)
+        main_layout.setSpacing(25)
 
-        title = TitleLabel("設定", self)
-        title_font = QFont("Yu Gothic UI", 22)
-        title_font.setWeight(QFont.Weight.Bold)
-        title.setFont(title_font)
+        # ラベル
+        self.title_label = SubtitleLabel("設定画面", self)
+        main_layout.addWidget(self.title_label)
 
-        description = QLabel(
-            "AI接続先や動作設定を変更できます。",
-            self,
-        )
-        description_font = QFont("Yu Gothic UI", 10)
-        description.setFont(description_font)
-        description.setStyleSheet("color: #64748b;")
+        mode_layout = QVBoxLayout()
+        mode_layout.setSpacing(10)
 
-        btn_open_settings = PrimaryPushButton(
-            "設定画面を開く",
-            self,
-        )
-        button_font = QFont("Yu Gothic UI", 11)
-        button_font.setWeight(QFont.Weight.Bold)
-        btn_open_settings.setFont(button_font)
-        btn_open_settings.setFixedHeight(42)
-        btn_open_settings.clicked.connect(
-            self.open_settings_requested.emit
-        )
+        mode_title = BodyLabel("AI 接続先設定", self)
+        # テーマ対応
+        font_mode = mode_title.font()
+        font_mode.setBold(True)
+        mode_title.setFont(font_mode)
+        mode_layout.addWidget(mode_title)
 
-        layout.addWidget(title)
-        layout.addWidget(description)
-        layout.addSpacing(12)
-        layout.addWidget(btn_open_settings)
-        layout.addStretch(1)
+        # ラジオボタンの作成
+        self.local_ai_radio = RadioButton("ローカルAI", self)
+        self.cloud_ai_radio = RadioButton("クラウドAI", self)
+        
+        # デフォではローカルAIにチェック
+        self.local_ai_radio.setChecked(True)
 
-
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.local_ai_radio)
+        self.mode_group.addButton(self.cloud_ai_radio)
+        
+        mode_layout.addWidget(self.local_ai_radio)
+        mode_layout.addWidget(self.cloud_ai_radio)
+        
+        main_layout.addLayout(mode_layout)
+        
+        
+        server_layout = QGridLayout()
+        server_layout.setVerticalSpacing(15)
+        server_layout.setHorizontalSpacing(15)
+        
+        llm_title = BodyLabel("LLMサーバ設定", self)
+        font_llm = llm_title.font()
+        font_llm.setBold(True)
+        llm_title.setFont(font_llm)
+        
+        self.llm_host_input = LineEdit(self)
+        self.llm_host_input.setPlaceholderText("localhost")
+        
+        server_layout.addWidget(llm_title, 0, 0)
+        server_layout.addWidget(self.llm_host_input, 0, 1)
+        
+        
+        vision_title = BodyLabel("画面解析 サーバ設定", self)
+        font_vision = vision_title.font()
+        font_vision.setBold(True)
+        vision_title.setFont(font_vision)
+        
+        self.vision_host_input = LineEdit(self)
+        self.vision_host_input.setPlaceholderText("localhost")
+        
+        server_layout.addWidget(vision_title, 1, 0)
+        server_layout.addWidget(self.vision_host_input, 1, 1)
+        server_layout.setColumnStretch(1, 1)
+        
+        main_layout.addLayout(server_layout)
+        main_layout.addStretch(1)
+        
+        
+        bottom_layout = QHBoxLayout()
+        
+        self.test_button = PushButton(FluentIcon.SYNC, "接続テスト", self)
+        self.cancel_button = PushButton("キャンセル", self)
+        self.save_button = PrimaryPushButton("保存", self)
+        
+        bottom_layout.addWidget(self.test_button)
+        bottom_layout.addStretch(1)
+        bottom_layout.addWidget(self.cancel_button)
+        bottom_layout.addWidget(self.save_button)
+        
+        main_layout.addLayout(bottom_layout)
 class MainWindow(FluentWindow):
     """QFluentWidgets ベースのメインウィンドウ。"""
 
