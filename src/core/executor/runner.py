@@ -128,7 +128,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
             
-            # --- 修正: 画像比較（Healer起動）は、clickとmoveだけに限定する ---
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
                 crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
@@ -167,9 +166,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         else:
                             needs_recovery = True
                     else:
-                        # 全画面比較を完全に撤廃し、UIの切り抜き画像がない場合は最初からHealerに要素を探させる
                         logger.warning(f"[{workflow_id}] No crop image available. Initiating Healer...")
                         needs_recovery = True
+
+                    # 一時的に自己修復機能をバイパスし、元の座標で続行する
+                    if needs_recovery:
+                        logger.warning(f"[{workflow_id}] Healer is disabled temporarily. Bypassing recovery and continuing.")
+                        needs_recovery = False
 
                     if needs_recovery:
                         if status_callback:
