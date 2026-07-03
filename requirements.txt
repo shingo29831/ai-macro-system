@@ -1,0 +1,21 @@
+# GUI Framework
+PySide6
+
+# Web Framework & Validation
+fastapi
+uvicorn
+pydantic
+requests
+
+# OS Hooks & Automation
+pynput
+mss
+
+# AI Models (Local)
+llama-cpp-python
+ultralytics
+onnxruntime
+
+# CV Utils
+opencv-python
+numpy

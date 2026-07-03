@@ -1,21 +1,29 @@
-/* ===== グローバル設定 (高コントラスト・ダークテーマ風) ===== */
+/* ===== グローバル設定 (最上部フローティングバー・薄い黒の透過背景) ===== */
 QDialog#RecordDialog {
-    background-color: #1e293b; /* 深いスレート色 */
-    color: #f8fafc;
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    border: 1px solid #475569;
-    border-radius: 12px;
+    background-color: rgba(15, 23, 42, 0.75); /* 文字の視認性を担保しつつ、背面が透ける薄い黒 */
+    color: #ffffff; /* 視認性を最優先した純白 */
+    font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+    border: 1px solid rgba(255, 255, 255, 0.15); /* 暗い背景に馴染む微細な境界線 */
+    border-radius: 6px;
 }
 
-/* 終了ボタン (赤で目立たせる) */
+/* 案内テキスト */
+#lblInstructions {
+    color: #e2e8f0;
+    font-size: 12px;
+    font-weight: bold;
+    padding-left: 0px; /* 左端になるためpaddingを削除 */
+}
+
+/* 終了ボタン (背面ウィンドウの操作を邪魔しないコンパクトサイズ) */
 #btnStopRecord {
     color: #ffffff;
-    font-size: 20px;
+    font-size: 12px;
     font-weight: bold;
     background-color: #ef4444;
     border: none;
-    border-radius: 10px;
-    padding: 12px 24px;
+    border-radius: 4px;
+    padding: 4px 12px;
 }
 
 #btnStopRecord:hover {
@@ -24,12 +32,4 @@ QDialog#RecordDialog {
 
 #btnStopRecord:pressed {
     background-color: #b91c1c;
-}
-
-/* タイマー表示 (等幅フォントで数字の揺れを防止) */
-#lblTimer {
-    font-size: 32px;
-    font-weight: bold;
-    color: #f8fafc;
-    font-family: "Consolas", "Courier New", monospace;
 }

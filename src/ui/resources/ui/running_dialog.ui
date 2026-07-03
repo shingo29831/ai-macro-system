@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>RecordDialog</class>
- <widget class="QDialog" name="RecordDialog">
+ <class>RunningDialog</class>
+ <widget class="QDialog" name="RunningDialog">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -26,7 +26,7 @@
    <item>
     <widget class="QLabel" name="lblInstructions">
      <property name="text">
-      <string>記録終了ショートカット: [ Ctrl + バックスラッシュ ]</string>
+      <string>緊急停止キルスイッチ: [ Ctrl + バックスラッシュ ]</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -34,9 +34,9 @@
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="btnStopRecord">
+    <widget class="QPushButton" name="btnEmergencyStop">
      <property name="text">
-      <string>■ 記録停止</string>
+      <string>🚨 強制停止</string>
      </property>
     </widget>
    </item>

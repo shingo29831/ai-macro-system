@@ -1,8 +1,10 @@
+/* @role: メインウィンドウの視覚的なスタイリングを定義する。 */
+
 /* ====================================================================
    メインウィンドウ背景設定（モダンオフホワイト）
    ==================================================================== */
 QWidget#MainWidget {
-    background-color: #f1f5f9; /* 目に優しいスレート系のオフホワイト */
+    background-color: #f1f5f9;
     color: #334155;
     font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
     font-size: 14px;
@@ -14,30 +16,7 @@ QLayout#verticalLayout {
 }
 
 /* ====================================================================
-   ヘッダーエリア：緊急停止ボタン (btnEmergencyStop)
-   直感的な「危険/停止」を示す赤のピル形状
-   ==================================================================== */
-QPushButton#btnEmergencyStop {
-    background-color: #ef4444;
-    color: #ffffff;
-    border: 2px solid #dc2626;
-    border-radius: 20px; /* 完全な角丸 */
-    padding: 8px 24px;
-    font-size: 14px;
-    font-weight: bold;
-}
-
-QPushButton#btnEmergencyStop:hover {
-    background-color: #dc2626;
-}
-
-QPushButton#btnEmergencyStop:pressed {
-    background-color: #b91c1c;
-}
-
-/* ====================================================================
    ヘッダーエリア：ステータス表示ボタン (btnStatus)
-   状態に応じて動的に色が切り替わるバッジデザイン
    ==================================================================== */
 QPushButton#btnStatus {
     font-size: 15px;
@@ -46,50 +25,71 @@ QPushButton#btnStatus {
     padding: 8px 32px;
     border: 2px solid transparent;
 }
+QPushButton#btnStatus[state="idle"] { background-color: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
+QPushButton#btnStatus[state="recording"] { background-color: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+QPushButton#btnStatus[state="running"] { background-color: #fef3c7; color: #b45309; border-color: #fde68a; }
 
-/* 待機中 (青) */
-QPushButton#btnStatus[state="idle"] {
-    background-color: #dbeafe;
-    color: #1d4ed8;
-    border-color: #bfdbfe;
+/* ====================================================================
+   コントロールエリア：実行ボタン (btnRunSelected)
+   ==================================================================== */
+QPushButton#btnRunSelected {
+    background-color: #10b981;
+    color: white;
+    border-radius: 20px;
+    padding: 8px 32px;
+    font-size: 14px;
+    font-weight: bold;
+    border: none;
 }
+QPushButton#btnRunSelected:hover { background-color: #059669; }
+QPushButton#btnRunSelected:disabled { background-color: #cbd5e1; color: #94a3b8; }
 
-/* 記録中 (赤) */
-QPushButton#btnStatus[state="recording"] {
-    background-color: #fee2e2;
-    color: #b91c1c;
-    border-color: #fecaca;
+/* ====================================================================
+   コントロールエリア：削除ボタン (btnDeleteSelected)
+   ==================================================================== */
+QPushButton#btnDeleteSelected {
+    background-color: #f43f5e;
+    color: white;
+    border-radius: 20px;
+    padding: 8px 24px;
+    font-size: 14px;
+    font-weight: bold;
+    border: none;
+    margin-right: 8px; /* 実行ボタンとの間隔 */
 }
+QPushButton#btnDeleteSelected:hover { background-color: #e11d48; }
+QPushButton#btnDeleteSelected:disabled { background-color: #cbd5e1; color: #94a3b8; }
 
-/* 実行中 (黄/オレンジ) */
-QPushButton#btnStatus[state="running"] {
-    background-color: #fef3c7;
-    color: #b45309;
-    border-color: #fde68a;
+/* ====================================================================
+   ヘッダーエリア：設定ボタン (btnSettings)
+   ==================================================================== */
+QPushButton#btnSettings {
+    background-color: #ffffff;
+    color: #475569;
+    border: 1px solid #cbd5e1;
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-size: 14px;
+    font-weight: bold;
 }
+QPushButton#btnSettings:hover { background-color: #f8fafc; color: #1e293b; border-color: #94a3b8; }
+QPushButton#btnSettings:pressed { background-color: #f1f5f9; }
 
 /* ====================================================================
    メインアクション：新規マクロ記録開始ボタン (btnStartRecord)
-   画面内で最も大きく、目立つようにデザイン
    ==================================================================== */
 QPushButton#btnStartRecord {
-    background-color: #2563eb; /* 鮮やかなプライマリブルー */
+    background-color: #2563eb;
     color: #ffffff;
     border: none;
     border-radius: 12px;
     font-size: 18px;
     font-weight: bold;
-    padding: 24px; /* クリック領域を大幅に拡大 */
+    padding: 24px;
     margin: 10px 0px;
 }
-
-QPushButton#btnStartRecord:hover {
-    background-color: #1d4ed8;
-}
-
-QPushButton#btnStartRecord:pressed {
-    background-color: #1e40af;
-}
+QPushButton#btnStartRecord:hover { background-color: #1d4ed8; }
+QPushButton#btnStartRecord:pressed { background-color: #1e40af; }
 
 /* ====================================================================
    コンテンツエリア：マクロ一覧テーブル (tableMacros)
@@ -102,8 +102,6 @@ QTableWidget#tableMacros {
     gridline-color: transparent;
     outline: none;
 }
-
-/* テーブルヘッダー */
 QHeaderView::section {
     background-color: #f8fafc;
     color: #64748b;
@@ -113,53 +111,18 @@ QHeaderView::section {
     font-weight: bold;
     font-size: 13px;
 }
-
-/* テーブルアイテム（行） */
 QTableWidget#tableMacros::item {
     padding: 16px 12px;
     border-bottom: 1px solid #f1f5f9;
 }
-
 QTableWidget#tableMacros::item:selected {
     background-color: #f0f9ff;
     color: #0369a1;
 }
 
-/* テーブル内の実行(▶)・削除(🗑)ボタン */
-QPushButton#btnRun {
-    background-color: #10b981;
-    color: white;
-    border-radius: 6px;
-    padding: 8px;
-    font-weight: bold;
-    font-size: 12px;
-}
-QPushButton#btnRun:hover { background-color: #059669; }
-
-QPushButton#btnDelete {
-    background-color: #f43f5e;
-    color: white;
-    border-radius: 6px;
-    padding: 8px;
-    font-weight: bold;
-    font-size: 12px;
-}
-QPushButton#btnDelete:hover { background-color: #e11d48; }
-
-/* スクロールバー */
-QScrollBar:vertical {
-    border: none;
-    background: #f8fafc;
-    width: 8px;
-    border-radius: 4px;
-}
-QScrollBar::handle:vertical {
-    background: #cbd5e1;
-    border-radius: 4px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #94a3b8;
-}
+QScrollBar:vertical { border: none; background: #f8fafc; width: 8px; border-radius: 4px; }
+QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 4px; }
+QScrollBar::handle:vertical:hover { background: #94a3b8; }
 
 /* ====================================================================
    テーブル内ステータス・修復バッジ (QLabel property="badge")
@@ -170,13 +133,9 @@ QLabel[badge] {
     border-radius: 6px;
     padding: 6px 10px;
 }
-
-/* 直近の結果ステータス */
 QLabel[badge="success"] { background-color: #d1fae5; color: #065f46; }
 QLabel[badge="warning"] { background-color: #fef3c7; color: #b45309; }
 QLabel[badge="danger"] { background-color: #fee2e2; color: #b91c1c; }
-
-/* 修復回数インジケーター */
 QLabel[badge="heal_none"] { background-color: #f1f5f9; color: #64748b; }
 QLabel[badge="heal_low"] { background-color: #e0e7ff; color: #4338ca; }
 QLabel[badge="heal_mid"] { background-color: #ffedd5; color: #c2410c; }
