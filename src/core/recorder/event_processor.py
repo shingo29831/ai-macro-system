@@ -29,32 +29,54 @@ def calculate_and_update_diff(current_img) -> str:
         state.previous_screenshot_img = current_img.copy()
     return diff
 
-def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False):
+def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False, ime_active: bool = False):
     event_no = state.get_next_event_no()
     dt = now_datetime()
     window_info = process_monitor.get_foreground_window_info()
+    
+    pre_img, pre_monitor = None, None
+    if capture_now:
+        pre_img, pre_monitor = screen_capturer.take_screenshot()
+    
     state.key_event_queue.put({
         "event_no": event_no, "datetime": dt, "input_type": input_type,
         "key": key_text, "keys": keys or [], "window_info": window_info,
-        "pre_img": None, "pre_ref": None,
+        "pre_img": pre_img, "pre_ref": None, "pre_monitor": pre_monitor,
+        "ime_active": ime_active
     })
 
 def process_key_event(event: dict):
-    event_no, dt, input_type = event["event_no"], event["datetime"], event["input_type"]
+    input_type = event["input_type"]
+
+    if input_type in ["text_field_search", "text_candidate_confirm"]:
+        return
+
+    event_no, dt = event["event_no"], event["datetime"]
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
+    content["ime_active"] = event.get("ime_active", False)
+    
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
 
-    pre_img = event.get("pre_img") or screen_capturer.take_screenshot()[0]
-    pre_ref = event.get("pre_ref") or screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+    pre_img = event.get("pre_img")
+    pre_ref = event.get("pre_ref")
+    
+    # 背景: リスナーから同期取得された画像オブジェクトが渡されている場合でも、ファイルとしてディスクに保存する
+    if pre_img is not None:
+        if not pre_ref:
+            pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+    else:
+        pre_img, _ = screen_capturer.take_screenshot()
+        pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
+        
     diff = calculate_and_update_diff(pre_img)
 
     log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff}
     state.append_log(log)
-    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}")
+    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}, ime={content['ime_active']}")
 
-def process_hover_event(event: dict):
+def process_move_event(event: dict):
+    # (既存のまま変更なし)
     try:
-        time.sleep(0.2)
         event_no = state.get_next_event_no()
         dt = now_datetime()
         x, y = int(event["x"]), int(event["y"])
@@ -76,7 +98,7 @@ def process_hover_event(event: dict):
                 old_path.rename(old_path.with_name(new_name))
                 pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
 
-        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_hover", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y)
+        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_move", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y)
         ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
 
         if ui_rect is not None:
@@ -84,7 +106,6 @@ def process_hover_event(event: dict):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor)
 
-        # 修正箇所: crop_refがNoneの場合は確実にデフォルトの文字列を割り当てる
         crop_ref = crop.get("ui_image_ref")
         if not crop_ref:
             crop_ref = "切り抜き失敗"
@@ -98,12 +119,13 @@ def process_hover_event(event: dict):
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff_str}
         state.append_log(log)
-        print(f"ホバーログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
+        print(f"マウス移動ログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
     except Exception:
-        print("ホバー処理中にエラーが発生しました")
+        print("マウス移動処理中にエラーが発生しました")
         traceback.print_exc()
 
 def process_click_event(event: dict, input_type: str, click_count: int):
+    # (既存のまま変更なし)
     try:
         event_no, dt = event["event_no"], event["datetime"]
         x, y, button = int(event["x"]), int(event["y"]), event["button"]
@@ -119,7 +141,6 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         else:
             crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor)
 
-        # クリック側も同様にNone対策を適用（Pathの足し算はしませんが、明示的なJSON文字列として安全にするため）
         crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
@@ -132,12 +153,14 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         state.is_click_processing = False
 
 def run_click_process_thread(event: dict, input_type: str, click_count: int):
+    # (既存のまま変更なし)
     if state.is_click_processing:
         return
     state.is_click_processing = True
     threading.Thread(target=process_click_event, args=(event, input_type, click_count), daemon=True).start()
 
 def process_drag_event(event: dict):
+    # (既存のまま変更なし)
     try:
         event_no = event["event_no"]
         dt = event["datetime"]
@@ -214,6 +237,7 @@ def process_pending_single_click():
         run_click_process_thread(event, input_type="mouse_click", click_count=1)
 
 def process_scroll_event(event: dict):
+    # (既存のまま変更なし)
     try:
         x = event["x"]
         y = event["y"]
@@ -230,9 +254,10 @@ def process_scroll_event(event: dict):
         traceback.print_exc()
 
 def _handle_mouse_event(evt: dict):
+    # (既存のまま変更なし)
     evt_type = evt.get("type")
-    if evt_type == "hover":
-        process_hover_event(evt)
+    if evt_type in ["hover", "move"]:
+        process_move_event(evt)
         return
     elif evt_type == "scroll":
         process_scroll_event(evt)
@@ -318,14 +343,12 @@ def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unk
     current_time = time.time()
     
     with _scroll_lock:
-        # pynputとwin_scrollの両方で捕捉された場合の重複記録を防ぐ (50ms以内の同一イベントはスキップ)
-        if (current_time - _last_scroll_time < 0.05) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
+        if (current_time - _last_scroll_time < 0.01) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
             return
         _last_scroll_time = current_time
         _last_scroll_dx = dx
         _last_scroll_dy = dy
 
-    # OSのフックタイムアウトを防ぐため、直接処理せずキューに積む
     state.mouse_event_queue.put({
         "type": "scroll",
         "x": x,

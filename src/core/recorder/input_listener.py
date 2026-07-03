@@ -3,13 +3,39 @@
 import time
 import math
 import threading
-import traceback
+import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
 from core.recorder.event_processor import enqueue_key_event, record_scroll_event
+from core.recorder.ime_detector import is_ime_active
+from core.recorder.romaji_converter import to_hiragana
+
+logger = logging.getLogger(__name__)
 
 MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
+
+def _trigger_field_search(trigger_reason: str):
+    buffer = getattr(state, "typing_buffer", "")
+    if not buffer:
+        return
+
+    ime_on = is_ime_active()
+    target_text = to_hiragana(buffer) if ime_on else buffer
+    
+    # 背景: IME状態をイベントプロセッサに伝達する
+    enqueue_key_event("text_field_search", target_text, capture_now=True, ime_active=ime_on)
+    logger.debug("テキストフィールド探索イベントを発火しました [%s]: %s (IME: %s)", trigger_reason, target_text, ime_on)
+
+def _flush_typing_buffer(trigger_reason: str):
+    if not getattr(state, "typing_buffer", ""):
+        return
+
+    ime_on = is_ime_active()
+    # 背景: IME状態をイベントプロセッサに伝達する
+    enqueue_key_event("text_candidate_confirm", "", capture_now=True, ime_active=ime_on)
+    state.typing_buffer = ""
+    logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
 
 def on_move(x, y):
     if not state.is_recording or state.is_stopping: return
@@ -35,56 +61,63 @@ def on_move(x, y):
 def on_click(x, y, button, pressed):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
+        
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
 def on_scroll(x, y, dx, dy):
     state.cancel_hover()
-    # ネイティブフック動作中であっても、タッチパッドの互換イベントを拾うために排他処理を解除
     if state.is_stopping: return
     try: 
         record_scroll_event(int(x), int(y), float(dx), float(dy), source="pynput")
     except Exception: 
-        traceback.print_exc()
+        logger.exception("スクロールイベントの記録に失敗しました")
 
 def on_press(key):
     state.cancel_hover()
-    if not state.is_recording or state.is_stopping: return
+    if not state.is_recording or state.is_stopping: 
+        return False
 
     key_text = key_to_string(key)
+    
     if key_text in ("\\", "\x1c"):
         with state.pressed_keys_lock:
             has_ctrl = any(pk in ["ctrl", "ctrl_l", "ctrl_r"] for pk in state.pressed_keys)
         if has_ctrl:
             if not state.is_stopping:
                 state.is_stopping = True
-                print("input_listener: Ctrl + \\ が押されたため記録を停止します")
+                logger.info("input_listener: Ctrl + \\ detected. Triggering safe stop.")
+                
                 if state.shortcut_stop_callback:
-                    print("input_listener: ViewModelのコールバックを呼び出します")
-                    state.shortcut_stop_callback()
+                    threading.Thread(target=state.shortcut_stop_callback, daemon=True).start()
                 else:
-                    print("input_listener: UIコールバックが未登録のため単体停止を実行します")
                     import core.recorder.os_hook as hook
                     threading.Thread(target=hook.stop_recording, daemon=True).start()
-            return  # Falseは絶対に返さない(スレッド自爆防止)
+            return False 
+
+    ime_on = is_ime_active()
+
+    # 背景: 文字入力や確定操作の場合は、非同期による画面変化の取りこぼしを防ぐため、即座に同期で画面をキャプチャする
+    is_text_input = (len(key_text) == 1 and key_text.isprintable()) or key_text in ("backspace", "enter", "tab", "space")
+    capture_now = is_text_input
 
     try:
         with state.pressed_keys_lock:
             state.pressed_keys.add(key_text)
             current_keys = set(state.pressed_keys)
 
-        capture_now = (key_text == "enter")
         if should_record_key_combo(current_keys, key_text):
             combo_keys = sorted_combo_keys(current_keys)
             combo_text = make_combo_text(combo_keys)
             if combo_text not in state.logged_combo_keys:
                 state.logged_combo_keys.add(combo_text)
-                enqueue_key_event("key_combo", key_text, combo_keys, capture_now)
+                # 背景: IME状態をイベントプロセッサに伝達する
+                enqueue_key_event("key_combo", key_text, combo_keys, capture_now, ime_active=ime_on)
             return
 
         if key_text in MODIFIER_KEYS and not key_text.startswith("win"): return
-        enqueue_key_event("key_press", key_text, capture_now=capture_now)
+        enqueue_key_event("key_press", key_text, capture_now=capture_now, ime_active=ime_on)
     except Exception:
-        traceback.print_exc()
+        logger.exception("キーフック処理中にエラーが発生しました")
 
 def on_release(key):
     key_text = key_to_string(key)

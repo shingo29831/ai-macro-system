@@ -19,3 +19,8 @@ onnxruntime
 # CV Utils
 opencv-python
 numpy
+
+# Text Processing
+Levenshtein
+
+pywintrace

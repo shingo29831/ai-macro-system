@@ -1,3 +1,4 @@
+# src/core/executor/runner.py
 # @role: 生成されたExecutable Macro (executable_macro.json) を読み込み、ローカルで自律実行する実行エンジン。
 #
 # 【参照元 (呼ばれる側)】
@@ -40,7 +41,7 @@ _set_dpi_awareness()
 _is_running = False
 _stop_requested = False
 
-def run_workflow(workflow_id: str, config: AppConfig):
+def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested
     _is_running = True
     _stop_requested = False
@@ -102,17 +103,16 @@ def run_workflow(workflow_id: str, config: AppConfig):
         with open(executable_macro_path, 'r', encoding='utf-8') as f:
             macro_data = json.load(f)
 
-        # To resolve variables safely
         variables = {}
         if variables_path.exists():
             try:
                 with open(variables_path, 'r', encoding='utf-8') as f:
                     variables = json.load(f)
-                logger.info(f"[{workflow_id}] Loaded variables.json successfully.")
             except Exception as e:
                 logger.warning(f"[{workflow_id}] Failed to load variables.json: {e}")
             
         commands = macro_data.get("commands", [])
+        macro_needs_save = False
         
         for i, cmd in enumerate(commands):
             if _stop_requested:
@@ -124,9 +124,85 @@ def run_workflow(workflow_id: str, config: AppConfig):
             
             logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
             
+            # === Stage 1: UI部品(Crop)の局所的なテンプレートマッチングによる高精度なズレ検知 ===
+            raw_event_id = args.get("raw_event_id")
+            target_id = args.get("target_id")
+            
+            # --- 修正: 画像比較（Healer起動）は、clickとmoveだけに限定する ---
+            if raw_event_id and target_id and method in ["click", "move"]:
+                needs_recovery = False
+                crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
+                
+                try:
+                    from core.recorder.screen_capturer import take_screenshot
+                    from core.healer.recovery_manager import attempt_recovery
+                    import cv2
+                    import numpy as np
+
+                    current_img_pil, _ = take_screenshot()
+
+                    if crop_image_path.exists():
+                        current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
+                        template_cv = cv2.imread(str(crop_image_path), cv2.IMREAD_COLOR)
+
+                        if template_cv is not None:
+                            res = cv2.matchTemplate(current_img_cv, template_cv, cv2.TM_CCOEFF_NORMED)
+                            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                            
+                            if max_val < 0.8:
+                                logger.warning(f"[{workflow_id}] Template match failed (Confidence: {max_val:.2f}). Initiating Healer...")
+                                needs_recovery = True
+                            else:
+                                match_center_x = max_loc[0] + template_cv.shape[1] // 2
+                                match_center_y = max_loc[1] + template_cv.shape[0] // 2
+                                
+                                expected_x = args.get("x", 0)
+                                expected_y = args.get("y", 0)
+                                
+                                dist = ((match_center_x - expected_x)**2 + (match_center_y - expected_y)**2)**0.5
+                                
+                                if dist > 20:
+                                    logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
+                                    needs_recovery = True
+                        else:
+                            needs_recovery = True
+                    else:
+                        # 全画面比較を完全に撤廃し、UIの切り抜き画像がない場合は最初からHealerに要素を探させる
+                        logger.warning(f"[{workflow_id}] No crop image available. Initiating Healer...")
+                        needs_recovery = True
+
+                    if needs_recovery:
+                        if status_callback:
+                            status_callback("自己修復中...", True)
+                            
+                        recovery_result = attempt_recovery(workflow_id, target_id)
+                        
+                        if recovery_result.get("success"):
+                            new_coords = recovery_result.get("new_coordinates")
+                            if new_coords:
+                                args["x"] = new_coords["x"]
+                                args["y"] = new_coords["y"]
+                                logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
+                                macro_needs_save = True
+                        else:
+                            logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'. Aborting execution.")
+                            if status_callback:
+                                status_callback("実行中...", False)
+                            raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
+                        
+                        if status_callback:
+                            status_callback("実行中...", False)
+                            
+                except Exception as e:
+                    logger.error(f"[{workflow_id}] Error during image validation/recovery: {e}")
+                    if status_callback:
+                        status_callback("実行中...", False)
+                    if "安全のため" in str(e):
+                        raise e
+            # =======================================
+            
             if method == "wait":
                 duration = args.get("duration", 0.0)
-                # 緊急停止（stop_workflow）に即座に反応できるよう、細かく分割してスリープ
                 sleep_intervals = int(duration * 10)
                 for _ in range(sleep_intervals):
                     if _stop_requested:
@@ -145,39 +221,39 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                 
                 mouse.position = (x, y)
-                time.sleep(0.05) # 移動直後の入力を安定させるための微小ウェイト
+                time.sleep(0.05)
                 mouse.click(btn, clicks)
 
-            elif method == "hover":
+            elif method == "move":
                 x = args.get("x", 0)
                 y = args.get("y", 0)
                 
                 mouse.position = (x, y)
-                time.sleep(0.5) # ホバー後、UI（ドロップダウン等）が展開されるのを待つ
+                time.sleep(0.5)
                 
             elif method == "scroll":
                 dx = args.get("dx", 0.0)
                 dy = args.get("dy", 0.0)
+                x = args.get("x")
+                y = args.get("y")
+                
+                if x is not None and y is not None and (x != 0 or y != 0):
+                    mouse.position = (x, y)
+                    time.sleep(0.01)
                 
                 if platform.system() == "Windows":
-                    # pynputの内部補正を回避し、Windows API (mouse_event) を直接叩いてネイティブなスクロール量を再現する
                     if dy != 0.0:
-                        # 縦スクロール (1.0 = 120, -1.0 = -120)
                         scroll_amount = int(dy * WHEEL_DELTA)
                         ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
                     if dx != 0.0:
-                        # 横スクロール
                         scroll_amount_x = int(dx * WHEEL_DELTA)
                         ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, scroll_amount_x, 0)
                 else:
                     mouse.scroll(dx, dy)
                     
-                time.sleep(0.05) # スクロール直後の安定化ウェイト
-                
             elif method == "type_text":
                 text = args.get("text", "")
                 if text:
-                    # To apply variables to the text
                     for key, val in variables.items():
                         placeholder = f"{{{{{key}}}}}"
                         if placeholder in text:
@@ -188,9 +264,7 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 key_str = args.get("key", "")
                 if key_str:
                     try:
-                        # Map special key strings (e.g., cmd, enter) to pynput Key enum
                         key_name = key_str.lower()
-                        # pynputではWindowsキーは'cmd'として扱う
                         if key_name in ["win", "windows"]:
                             key_name = "cmd"
                             
@@ -199,7 +273,6 @@ def run_workflow(workflow_id: str, config: AppConfig):
                             keyboard.press(special_key)
                             keyboard.release(special_key)
                         else:
-                            # Fallback for normal character keys sent to press_key by mistake
                             keyboard.press(key_str)
                             keyboard.release(key_str)
                     except Exception as e:
@@ -208,6 +281,14 @@ def run_workflow(workflow_id: str, config: AppConfig):
                 logger.warning(f"Unknown method: {method}")
                 
         if not _stop_requested:
+            if macro_needs_save:
+                try:
+                    with open(executable_macro_path, 'w', encoding='utf-8') as f:
+                        json.dump(macro_data, f, indent=4, ensure_ascii=False)
+                    logger.info(f"[{workflow_id}] Successfully saved healed coordinates to executable_macro.json for future runs.")
+                except Exception as e:
+                    logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
+
             logger.info(f"[{workflow_id}] Macro execution finished successfully.")
         
     except Exception as e:

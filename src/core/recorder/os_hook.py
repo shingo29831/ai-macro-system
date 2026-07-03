@@ -88,19 +88,30 @@ def stop_recording():
         if pending_event is not None:
             run_click_process_thread(pending_event, input_type="mouse_click", click_count=1)
 
-        if _mouse_listener:
-            _mouse_listener.stop()
-            _mouse_listener = None
-        if _keyboard_listener:
-            _keyboard_listener.stop()
-            _keyboard_listener = None
+        # 背景: pynputの停止時にエラーが発生しても処理が止まらないようにtry-exceptで保護
+        try:
+            if _mouse_listener:
+                _mouse_listener.stop()
+                _mouse_listener = None
+            if _keyboard_listener:
+                _keyboard_listener.stop()
+                _keyboard_listener = None
+        except Exception as e:
+            print(f"リスナー停止中にエラー（無視して続行します）: {e}")
 
         stop_native_scroll_hook()
         stop_key_event_worker()
         stop_mouse_event_worker()
 
-        while state.is_click_processing:
+        # 背景: クリック処理がスタックして無限ループ（完全フリーズ）になるのを防ぐため、最大5秒のタイムアウトを設ける
+        max_wait_cycles = 500
+        wait_cycles = 0
+        while state.is_click_processing and wait_cycles < max_wait_cycles:
             threading.Event().wait(0.01)
+            wait_cycles += 1
+            
+        if wait_cycles >= max_wait_cycles:
+            print("警告: クリック処理待ちがタイムアウトしました。強制的に停止プロセスを続行します。")
 
         # 最後にスクリーンショットを撮ってEndログを記録
         end_img, _ = screen_capturer.take_screenshot()
@@ -127,4 +138,5 @@ if __name__ == "__main__":
     print("終了するには Ctrl + \\ キーを押してください")
     start_recording()
     if _keyboard_listener:
-        _keyboard_listener.join()
+        # メインスレッドのブロック回避のためタイムアウト付きjoinを推奨
+        _keyboard_listener.join(timeout=10.0)
