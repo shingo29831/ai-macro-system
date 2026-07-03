@@ -158,11 +158,10 @@ class MainScreen(QWidget):
         main_layout.addLayout(table_header)
 
         self.table_macros = TableWidget(self)
-        self.table_macros.setColumnCount(4)
+        self.table_macros.setColumnCount(3)
         self.table_macros.setHorizontalHeaderLabels(
             [
                 "マクロ名",
-                "直近の結果",
                 "自己修復",
                 "最終実行日時",
             ]
@@ -191,11 +190,9 @@ class MainScreen(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
 
-        self.table_macros.setColumnWidth(1, 145)
-        self.table_macros.setColumnWidth(2, 115)
-        self.table_macros.setColumnWidth(3, 155)
+        self.table_macros.setColumnWidth(1, 115)
+        self.table_macros.setColumnWidth(2, 200)
 
     def _bind_viewmodel(self):
         self.btn_start_record.clicked.connect(
@@ -254,22 +251,8 @@ class MainScreen(QWidget):
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignVCenter
             )
-            macro_name.setFlags(
-                macro_name.flags()
-                & ~Qt.ItemFlag.ItemIsEditable
-            )
+            
             self.table_macros.setItem(row, 0, macro_name)
-
-            status = QTableWidgetItem(macro.status_text)
-            status.setFont(item_font)
-            status.setTextAlignment(
-                Qt.AlignmentFlag.AlignCenter
-            )
-            status.setFlags(
-                status.flags()
-                & ~Qt.ItemFlag.ItemIsEditable
-            )
-            self.table_macros.setItem(row, 1, status)
 
             heals = QTableWidgetItem(macro.heals)
             heals.setFont(item_font)
@@ -280,7 +263,7 @@ class MainScreen(QWidget):
                 heals.flags()
                 & ~Qt.ItemFlag.ItemIsEditable
             )
-            self.table_macros.setItem(row, 2, heals)
+            self.table_macros.setItem(row, 1, heals)
 
             last_run = QTableWidgetItem(macro.last_run)
             last_run.setFont(item_font)
@@ -291,7 +274,7 @@ class MainScreen(QWidget):
                 last_run.flags()
                 & ~Qt.ItemFlag.ItemIsEditable
             )
-            self.table_macros.setItem(row, 3, last_run)
+            self.table_macros.setItem(row, 2, last_run)
 
         self.viewmodel.select_macro("")
 
