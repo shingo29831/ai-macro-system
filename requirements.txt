@@ -24,3 +24,5 @@ numpy
 Levenshtein
 
 pywintrace
+
+PySide6-Fluent-Widgets
