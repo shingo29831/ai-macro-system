@@ -61,6 +61,10 @@ def on_move(x, y):
 def on_click(x, y, button, pressed):
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
+    
+    # 追加: マウスクリック時（別のUI要素にフォーカスが移ったとみなす）にタイピング状態を確定する
+    if pressed:
+        _flush_typing_buffer("mouse_clicked")
         
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
@@ -106,6 +110,21 @@ def on_press(key):
     # 背景: 文字入力や確定操作の場合は、非同期による画面変化の取りこぼしを防ぐため、即座に同期で画面をキャプチャする
     is_text_input = (len(key_text) == 1 and key_text.isprintable()) or key_text in ("backspace", "enter", "tab", "space")
     capture_now = is_text_input
+
+    # 追加: タイピングバッファの管理と、サーチ・確定メタイベントの発火
+    if is_text_input:
+        if key_text in ("enter", "tab"):
+            _flush_typing_buffer(f"{key_text}_pressed")
+        else:
+            if not getattr(state, "typing_buffer", ""):
+                _trigger_field_search("typing_started")
+            
+            if len(key_text) == 1 and key_text.isprintable():
+                state.typing_buffer = getattr(state, "typing_buffer", "") + key_text
+            elif key_text == "space":
+                state.typing_buffer = getattr(state, "typing_buffer", "") + " "
+            elif key_text == "backspace":
+                state.typing_buffer = getattr(state, "typing_buffer", "")[:-1]
 
     try:
         with state.pressed_keys_lock:

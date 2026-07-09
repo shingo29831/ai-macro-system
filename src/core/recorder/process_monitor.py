@@ -303,8 +303,8 @@ def get_window_title_at_point(x: int, y: int) -> dict:
 
 def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
     """
-    カーソル地点のUI要素矩形をUI Automationで取得する。
-    取れない場合は None。
+    カーソル地点のUI要素矩形と内部テキストをUI Automationで取得し、
+    診断情報をログに付与して返す。取れない場合は None。
     """
     try:
         from pywinauto import Desktop
@@ -335,16 +335,35 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
 
         name = ""
         control_type = ""
+        value_text = ""
+        debug_info = []
 
         try:
             name = element.window_text() or ""
-        except Exception:
-            pass
+            debug_info.append(f"Name: {name}")
+        except Exception as e:
+            debug_info.append(f"Name Error: {e}")
 
         try:
             control_type = getattr(element.element_info, "control_type", "") or ""
-        except Exception:
-            pass
+            debug_info.append(f"Type: {control_type}")
+        except Exception as e:
+            debug_info.append(f"Type Error: {e}")
+
+        # テキスト値の積極的な抽出
+        try:
+            if element.is_value_pattern_available():
+                value_text = element.get_value() or ""
+                debug_info.append(f"ValuePattern: {value_text}")
+        except Exception as e:
+            debug_info.append(f"ValuePattern Error: {e}")
+
+        if not value_text:
+            try:
+                value_text = element.legacy_properties().get("Value", "") or ""
+                debug_info.append(f"LegacyValue: {value_text}")
+            except Exception:
+                pass
 
         return {
             "left": left,
@@ -355,10 +374,13 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
             "height": height,
             "name": name,
             "control_type": control_type,
+            "value": value_text,
             "source": "uia",
+            "uia_debug": " | ".join(debug_info)
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"[process_monitor] UIA rect取得エラー ({x}, {y}): {e}")
         return None
     finally:
         try:

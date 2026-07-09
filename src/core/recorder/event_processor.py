@@ -59,12 +59,14 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
 def process_key_event(event: dict):
     input_type = event["input_type"]
 
-    if input_type in ["text_field_search", "text_candidate_confirm"]:
-        return
-
+    # 修正: text_field_search 等のメタイベントもログの集約に必須なため return で無視せず記録する
     event_no, dt = event["event_no"], event["datetime"]
-    content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
-    content["ime_active"] = event.get("ime_active", False)
+    
+    if input_type in ["text_field_search", "text_candidate_confirm"]:
+        content = {"key": event["key"], "ime_active": event.get("ime_active", False)}
+    else:
+        content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
+        content["ime_active"] = event.get("ime_active", False)
     
     app_context = _get_app_context(event["window_info"])
     log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"], app_specific_context=app_context)
@@ -80,11 +82,19 @@ def process_key_event(event: dict):
         pre_img, _ = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
         
-    diff = calculate_and_update_diff(pre_img)
+    diff_str = calculate_and_update_diff(pre_img)
 
-    log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff}
+    log["Images"] = {"Pre": pre_ref, "Crop": None, "Diff": diff_str}
     state.append_log(log)
-    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}, ime={content['ime_active']}")
+    print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff_str}, ime={content['ime_active']}")
+
+    # 追加: 画像変化率によるタイピングバッファの動的フラッシュ処理
+    # 変化率が一定（例: 5.0%）を超えた場合、UIの大幅な更新や画面遷移が起きたと判断し、文字入力を確定させる
+    if getattr(state, "typing_buffer", "") and input_type not in ["text_field_search", "text_candidate_confirm"]:
+        diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
+        if diff_val > 5.0:
+            from core.recorder.input_listener import _flush_typing_buffer
+            _flush_typing_buffer("diff_exceeded")
 
 def process_move_event(event: dict):
     try:

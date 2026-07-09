@@ -680,302 +680,33 @@ def generate_macro_workflow(
                 })
 
         if progress_callback:
-            progress_callback(75, "入力ログの最適化... 変数候補の抽出とグループ化")
+            progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
 
-        variables = {}
-        processed_info = []
-        current_group = []
+            variables = {} # ★復元: 変数辞書の初期化（これがないとエラーになります）
 
-        def flush_group(current_index: int):
-            if not current_group:
-                return
-            
-            if len(current_group) == 1 and str(current_group[0]["semantic_role"]).lower() not in ["space", "tab", "backspace", "delete"]:
-                processed_info.append(current_group[0])
-                current_group.clear()
-                return
-
-            avg_diff = sum(item["diff_val"] for item in current_group) / len(current_group)
-            
-            if avg_diff < 0.3:
-                base_text = ""
-                any_ime_active = any(item.get("ime_active", False) for item in current_group)
-                for item in current_group:
-                    role = str(item["semantic_role"])
-                    r_lower = role.lower()
-                    if r_lower == "backspace":
-                        base_text = base_text[:-1]
-                    elif r_lower == "space":
-                        base_text += " "
-                    elif r_lower not in ["tab", "delete", "esc"]:
-                        base_text += role
+            try:
+                from core.generator.typing_aggregator import TypingSessionAggregator
+                aggregator = TypingSessionAggregator(session_timeout_ms=600)
                 
-                try:
-                    from core.recorder.romaji_converter import to_hiragana
-                except ImportError:
-                    to_hiragana = lambda x: x
-                    
-                target_lower = base_text.lower()
-                hiragana_target = to_hiragana(target_lower) if any_ime_active else target_lower
+                # 1文字ずつのイベントを、集約されたきれいなセッションイベントへと変換
+                temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
                 
-                text = base_text
-                
-                # アプリ固有のコンテキストから確定文字が取れるか確認する (ブラウザのタブ補完など)
-                context_text = ""
-                for item in reversed(current_group):
-                    app_ctx = item.get("app_context", {})
-                    extracted = app_ctx.get("text") or app_ctx.get("value") or app_ctx.get("url")
-                    if extracted:
-                        context_text = str(extracted)
-                        break
-
-                group_img_paths_rel = []
-                for item in current_group:
-                    if item.get("pre_img_path"):
-                        group_img_paths_rel.append(item["pre_img_path"])
-
-                candidate_img_paths_rel = []
-                if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
-                    candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
-                    
-                if current_index < len(temp_workflow_info):
-                    next_evt_img = temp_workflow_info[current_index].get("pre_img_path")
-                    if next_evt_img and next_evt_img not in candidate_img_paths_rel:
-                        candidate_img_paths_rel.append(next_evt_img)
-
-                if any_ime_active:
-                    for idx in range(current_index + 1, min(current_index + 3, len(temp_workflow_info))):
-                        evt = temp_workflow_info[idx]
-                        p = evt.get("pre_img_path")
-                        if p and p not in candidate_img_paths_rel:
-                            candidate_img_paths_rel.append(p)
-
-                crop_box = None
-                tracked_text = ""
-                base_target_full = macros_root / candidate_img_paths_rel[0] if candidate_img_paths_rel else None
-                
-                target_event_id = current_group[-1]['event_id']
-
-                if progress_callback:
-                    prog_val = 75 + int((current_index / max(1, len(temp_workflow_info))) * 4)
-                    progress_callback(prog_val, f"テキストフィールド追跡中... ({current_index}/{len(temp_workflow_info)})")
-
-                search_areas = []
-                last_click_pos = None
-                
-                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
-                if last_click:
-                    last_click_pos = (last_click.get("cursor_x", 0), last_click.get("cursor_y", 0))
-
-                best_overall_text = ""
-
-                if context_text:
-                    logger.info(f"[{workflow_id}] App-specific text found '{context_text}'. Skipping OCR tracking for typing group.")
-                    best_overall_text = context_text
-                else:
-                    if base_target_full and base_target_full.exists():
-                        try:
-                            with Image.open(base_target_full) as img_temp:
-                                max_w, max_h = img_temp.width, img_temp.height
-                                
-                            full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
-                            
-                            if len(full_img_paths) >= 2:
-                                eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
-                                diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
-                                
-                                if diff_bboxes:
-                                    raw_search_areas = []
-                                    for dbbox in diff_bboxes:
-                                        dl, dt, dr, db = dbbox
-                                        raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
-                                    
-                                    merged_areas = []
-                                    for rect in raw_search_areas:
-                                        x1, y1, x2, y2 = rect
-                                        has_merged = True
-                                        while has_merged:
-                                            has_merged = False
-                                            for i, (mx1, my1, mx2, my2) in enumerate(merged_areas):
-                                                if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
-                                                    new_rect = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
-                                                    merged_areas.pop(i)
-                                                    x1, y1, x2, y2 = new_rect
-                                                    has_merged = True
-                                                    break
-                                        merged_areas.append((x1, y1, x2, y2))
-                                    search_areas = merged_areas
-                                    
-                        except Exception as e:
-                            logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
-
-                    if base_target_full and base_target_full.exists():
-                        try:
-                            crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
-                        except Exception as e:
-                            logger.error(f"[{workflow_id}] Tracking error: {e}")
+                # ★復元追加: 集約されたテキストを変数として登録し、プレースホルダーに置き換える
+                for info in temp_workflow_info:
+                    if info.get("raw_action") == "type_text" and info.get("semantic_role"):
+                        role_str = str(info["semantic_role"])
+                        role_lower = role_str.lower()
                         
-                        if crop_box:
-                            logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
-                        else:
-                            logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
-                            try:
-                                if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
-                                    best_fallback_bbox = diff_bboxes[0]
-                                    if last_click_pos:
-                                        best_dist = float('inf')
-                                        for dbbox in diff_bboxes:
-                                            cx = (dbbox[0] + dbbox[2]) / 2
-                                            cy = (dbbox[1] + dbbox[3]) / 2
-                                            dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
-                                            if dist < best_dist:
-                                                best_dist = dist
-                                                best_fallback_bbox = dbbox
+                        # 特殊キー単体ではない、純粋な入力文字列の場合のみ変数化する
+                        if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
+                            var_name = f"search_query_{len(variables) + 1}"
+                            variables[var_name] = role_str
+                            # マクロのアクションテキストを {{search_query_N}} に置き換える
+                            info["semantic_role"] = f"{{{{{var_name}}}}}"
 
-                                    refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
-                                    logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                    
-                                    l, t, r, b = refined_bbox
-                                    dl, dt, dr, db = best_fallback_bbox
-                                    char_h = db - dt if (db - dt) > 0 else 20
-                                    
-                                    margin_x, margin_y = 5, 5
-                                    max_v_margin = max(30, int(char_h * 1.5))
-                                    
-                                    t_crop = max(t, dt - max_v_margin)
-                                    b_crop = min(b, db + max_v_margin)
-                                    
-                                    crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                            except Exception as e:
-                                logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
-
-                    if not crop_box and base_target_full and base_target_full.exists():
-                        if last_click_pos:
-                            with Image.open(base_target_full) as img:
-                                cx, cy = last_click_pos
-                                left, top = max(0, cx - 300), max(0, cy - 100)
-                                right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
-                                crop_box = (left, top, right, bottom)
-                                logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
-
-                    if candidate_img_paths_rel and crop_box:
-                        cand_path_rel = candidate_img_paths_rel[-1]
-                        cand_full = macros_root / cand_path_rel
-                        if cand_full.exists():
-                            try:
-                                with Image.open(cand_full) as img:
-                                    left, top, right, bottom = crop_box
-                                    left, top = max(0, left), max(0, top)
-                                    right, bottom = min(img.width, right), min(img.height, bottom)
-                                    current_crop_box = (left, top, right, bottom)
-                                    
-                                    crop_img = img.crop(current_crop_box)
-                                    temp_crop_path = temp_dir / f"temp_FINAL_TEXT_CROP_{target_event_id}.png"
-                                    crop_img.save(temp_crop_path)
-                                    
-                                    ocr_results = read_text_from_image(str(temp_crop_path))
-                                    if ocr_results:
-                                        valid_results = [res for res in ocr_results if res.content]
-                                            
-                                        if valid_results:
-                                            filtered_ocr_results = []
-                                            for i, res1 in enumerate(valid_results):
-                                                bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
-                                                br1, bb1 = bx1 + res1.boundingBox.width, by1 + res1.boundingBox.height
-                                                is_enclosing = False
-                                                for j, res2 in enumerate(valid_results):
-                                                    if i == j: continue
-                                                    bx2, by2 = res2.boundingBox.x, res2.boundingBox.y
-                                                    br2, bb2 = bx2 + res2.boundingBox.width, by2 + res2.boundingBox.height
-                                                    if bx1 <= bx2 and by1 <= by2 and br1 >= br2 and bb1 >= bb2:
-                                                        if (br1 - bx1) > (br2 - bx2) or (bb1 - by1) > (bb2 - by2):
-                                                            is_enclosing = True
-                                                            break
-                                                if not is_enclosing:
-                                                    filtered_ocr_results.append(res1)
-                                            
-                                            filtered_ocr_results.sort(key=lambda r: r.boundingBox.x)
-                                            
-                                            combined_text = ""
-                                            prev_right = -1
-                                            
-                                            for res in filtered_ocr_results:
-                                                text_part = res.content.strip()
-                                                bx = res.boundingBox.x
-                                                bw = res.boundingBox.width
-                                                bh = res.boundingBox.height
-                                                
-                                                if prev_right == -1:
-                                                    combined_text += text_part
-                                                    prev_right = bx + bw
-                                                else:
-                                                    gap = bx - prev_right
-                                                    max_gap = max(20, bh * 1.5)
-                                                    
-                                                    if gap <= max_gap:
-                                                        combined_text += text_part
-                                                        prev_right = max(prev_right, bx + bw)
-                                                    else:
-                                                        logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
-                                                        break
-                                                
-                                            if len(combined_text) > len(best_overall_text):
-                                                best_overall_text = combined_text
-                                                
-                            except Exception as e:
-                                logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for final candidate: {e}")
-
-                if best_overall_text:
-                    text = best_overall_text
-                    logger.info(f"[{workflow_id}] Final OCR extracted text from BBox: {text}")
-                else:
-                    text = base_text
-                    logger.info(f"[{workflow_id}] Falling back to raw typed text: {text}")
-
-                var_name = f"search_query_{len(variables) + 1}"
-                variables[var_name] = text
-                
-                rep = current_group[0].copy()
-                rep["semantic_role"] = f"{{{{{var_name}}}}}"
-                rep["raw_action"] = "type_text"
-                rep["fallback_events"] = [item["event_id"] for item in current_group]
-                processed_info.append(rep)
-            else:
-                processed_info.extend(current_group)
-            
-            current_group.clear()
-
-        for i, info in enumerate(temp_workflow_info):
-            if info["raw_action"] == "unknown" or "recording" in info["raw_type"].lower():
-                continue
-                
-            if info["raw_action"] == "key_down":
-                role_lower = str(info["semantic_role"]).lower() if info["semantic_role"] else ""
-                
-                is_special = False
-                is_text_modifier = False
-                
-                if role_lower.startswith("key."):
-                    is_special = True
-                elif role_lower in ["space", "tab", "backspace", "delete"]:
-                    is_special = True
-                    is_text_modifier = True
-                elif role_lower in ["enter", "esc", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
-                    is_special = True
-                
-                if not is_special:
-                    current_group.append(info)
-                elif is_text_modifier and len(current_group) > 0:
-                    current_group.append(info)
-                else:
-                    flush_group(i)
-                    processed_info.append(info)
-            else:
-                flush_group(i)
-                processed_info.append(info)
-                
-        flush_group(len(temp_workflow_info))
-        temp_workflow_info = processed_info
+                logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
+            except Exception as e:
+                logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
 
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
