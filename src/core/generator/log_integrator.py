@@ -896,7 +896,7 @@ def generate_macro_workflow(
                                                 else:
                                                     logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
                                                     break
-                                                    
+                                            
                                         if len(combined_text) > len(best_overall_text):
                                             best_overall_text = combined_text
                                             
@@ -955,85 +955,10 @@ def generate_macro_workflow(
         temp_workflow_info = processed_info
 
         if progress_callback:
-            progress_callback(80, "AI推論準備(LLM)... 文脈データの構築中")
-            
-        llm_client = LLMClient(host=config.llm_host, port=int(config.llm_port))
-        llm_enhanced_data = {}
-        
-        try:
-            summary_for_llm = [
-                {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
-                for info in temp_workflow_info
-                if info["raw_action"] in ["click", "move"]
-            ]
-            
-            if summary_for_llm:
-                llm_prompt = (
-                    "Analyze the following UI interaction sequence. "
-                    "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
-                    "based on the context of the entire sequence.\n"
-                    f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
-                )
-                
-                max_retries = 3
-                is_valid_response = False
-                
-                for attempt in range(max_retries):
-                    if progress_callback:
-                        retry_text = f" (再生成 {attempt}/{max_retries})" if attempt > 0 else ""
-                        progress_callback(80 + attempt * 2, f"AI推論中(LLM)... UIの役割を解釈中{retry_text}")
-
-                    logger.info(f"[{workflow_id}] Sending prompt to LLM (Attempt {attempt+1}/{max_retries})...")
-                    llm_response = llm_client.generate(prompt=llm_prompt)
-                    
-                    if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
-                        resp_data = llm_response.get("response", {})
-                        
-                        content = ""
-                        if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
-                            content = resp_data["choices"][0].get("message", {}).get("content", "")
-                        elif isinstance(resp_data, str):
-                            content = resp_data
-                            
-                        json_start = content.find('[')
-                        json_end = content.rfind(']') + 1
-                        
-                        if progress_callback:
-                            progress_callback(86 + attempt, f"AI推論の検証中(LLM)... ハルシネーション検査{retry_text}")
-
-                        if json_start != -1 and json_end != -1:
-                            try:
-                                parsed_array = json.loads(content[json_start:json_end])
-                                
-                                if len(parsed_array) != len(summary_for_llm):
-                                    raise ValueError(f"Array length mismatch. Expected {len(summary_for_llm)}, got {len(parsed_array)}")
-                                
-                                temp_enhanced_data = {}
-                                for item in parsed_array:
-                                    if "id" not in item or "semantic_role" not in item:
-                                        raise ValueError("Missing 'id' or 'semantic_role' in JSON object")
-                                    
-                                    role = str(item["semantic_role"])
-                                    temp_enhanced_data[item["id"]] = role
-                                
-                                llm_enhanced_data = temp_enhanced_data
-                                is_valid_response = True
-                                logger.info(f"[{workflow_id}] LLM inference successful and validated.")
-                                break
-                                
-                            except json.JSONDecodeError:
-                                logger.warning(f"[{workflow_id}] JSON parsing failed on attempt {attempt+1}")
-                            except ValueError as ve:
-                                logger.warning(f"[{workflow_id}] Validation failed on attempt {attempt+1}: {ve}")
-                
-                if not is_valid_response:
-                    logger.warning(f"[{workflow_id}] All LLM retry attempts failed due to hallucination. Falling back to raw CV data.")
-                    
-        except Exception as e:
-            logger.warning(f"[{workflow_id}] LLM inference encountered fatal error. Falling back to CV results. Error: {e}")
-
-        if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
+
+        # LLMをバイパスし、生のセマンティックロールをそのまま使用する
+        llm_enhanced_data = {} 
 
         workflow_steps = []
         ui_targets_dict = {}
