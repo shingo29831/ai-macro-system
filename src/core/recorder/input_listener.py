@@ -6,7 +6,7 @@ import threading
 import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
-from core.recorder.event_processor import enqueue_key_event, record_scroll_event
+from core.recorder.event_processor import enqueue_key_event, process_scroll_event
 from core.recorder.ime_detector import is_ime_active
 from core.recorder.romaji_converter import to_hiragana
 
@@ -68,7 +68,14 @@ def on_scroll(x, y, dx, dy):
     state.cancel_hover()
     if state.is_stopping: return
     try: 
-        record_scroll_event(int(x), int(y), float(dx), float(dy), source="pynput")
+        # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
+        process_scroll_event({
+            "x": int(x),
+            "y": int(y),
+            "dx": float(dx),
+            "dy": float(dy),
+            "source": "pynput"
+        })
     except Exception: 
         logger.exception("スクロールイベントの記録に失敗しました")
 

@@ -5,7 +5,7 @@ from ctypes import wintypes
 import threading
 import traceback
 from core.recorder.state import state
-from core.recorder.event_processor import record_scroll_event
+from core.recorder.event_processor import process_scroll_event
 
 WH_MOUSE_LL = 14
 WM_MOUSEWHEEL = 0x020A
@@ -52,7 +52,15 @@ def native_scroll_hook_callback(n_code, w_param, l_param):
                 mouse_info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 delta = ctypes.c_short((mouse_info.mouseData >> 16) & 0xFFFF).value / WHEEL_DELTA
                 dx, dy = (0.0, delta) if w_param == WM_MOUSEWHEEL else (delta, 0.0)
-                record_scroll_event(x=int(mouse_info.pt.x), y=int(mouse_info.pt.y), dx=dx, dy=dy, source="win_scroll")
+                
+                # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
+                process_scroll_event({
+                    "x": int(mouse_info.pt.x),
+                    "y": int(mouse_info.pt.y),
+                    "dx": dx,
+                    "dy": dy,
+                    "source": "win_scroll"
+                })
             except Exception:
                 traceback.print_exc()
     return user32.CallNextHookEx(state.native_scroll_hook_handle, n_code, w_param, l_param)
