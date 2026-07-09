@@ -5,7 +5,7 @@ from datetime import datetime
 from core.recorder import process_monitor, screen_capturer
 from core.recorder.state import state
 
-def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict | None, window_info: dict, cursor_x: int | None = None, cursor_y: int | None = None) -> dict:
+def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict | None, window_info: dict, cursor_x: int | None = None, cursor_y: int | None = None, app_specific_context: dict | None = None) -> dict:
     window_fields = process_monitor.build_recording_window_fields(window_info, cursor_x=cursor_x, cursor_y=cursor_y)
     return {
         "EventNo": event_no,
@@ -16,6 +16,7 @@ def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict |
         "WindowSize": window_fields["WindowSize"],
         "WindowCoordinates": window_fields["WindowCoordinates"],
         "CursorCoordinates": window_fields["CursorCoordinates"],
+        "AppSpecificContext": app_specific_context,
         "Images": {"Pre": None, "Crop": None, "Diff": None},
     }
 
@@ -41,6 +42,7 @@ def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy:
         "WindowSize": None,
         "WindowCoordinates": None,
         "CursorCoordinates": None,
+        "AppSpecificContext": None,
         "Images": {"Pre": None, "Crop": None, "Diff": None},
     }
 
@@ -60,6 +62,7 @@ def create_end_log(diff_str: str, end_ref: str) -> dict:
         "WindowSize": window_fields["WindowSize"],
         "WindowCoordinates": None,
         "CursorCoordinates": None,
+        "AppSpecificContext": None,
         "Images": {"Pre": end_ref, "Crop": None, "Diff": diff_str},
     }
 

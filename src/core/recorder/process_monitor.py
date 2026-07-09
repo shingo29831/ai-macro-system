@@ -305,13 +305,13 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
     """
     カーソル地点のUI要素矩形をUI Automationで取得する。
     取れない場合は None。
-
-    注意:
-      pywinauto が必要。
-      pip install pywinauto
     """
     try:
         from pywinauto import Desktop
+        import pythoncom
+        
+        # 別スレッドからの呼び出しを考慮し、COM環境を安全に初期化
+        pythoncom.CoInitialize()
 
         desktop = Desktop(backend="uia")
         element = desktop.from_point(int(x), int(y))
@@ -360,6 +360,12 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
 
     except Exception:
         return None
+    finally:
+        try:
+            import pythoncom
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
 
 # =========================

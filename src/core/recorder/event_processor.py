@@ -10,6 +10,7 @@ from core.recorder import screen_capturer, process_monitor
 from core.recorder.state import state
 from core.recorder.utils import now_datetime, mouse_button_to_string, make_combo_text, calculate_distance, serialize_ui_rect
 from core.recorder.log_builder import build_base_log, build_scroll_log
+from core.recorder.app_inspectors.inspector_factory import InspectorFactory
 
 DOUBLE_CLICK_INTERVAL_SEC = 0.35
 DOUBLE_CLICK_MAX_DISTANCE = 8
@@ -28,6 +29,16 @@ def calculate_and_update_diff(current_img) -> str:
             diff = screen_capturer.calculate_diff_percent(state.previous_screenshot_img, current_img)
         state.previous_screenshot_img = current_img.copy()
     return diff
+
+def _get_app_context(window_info: dict, x: int | None = None, y: int | None = None) -> dict | None:
+    """該当アプリケーション専用のインスペクターがあれば、それを実行してコンテキストを取得する"""
+    inspector = InspectorFactory.get_inspector(window_info)
+    if inspector:
+        try:
+            return inspector.inspect(window_info, x=x, y=y)
+        except Exception as e:
+            print(f"Inspector error: {e}")
+    return None
 
 def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False, ime_active: bool = False):
     event_no = state.get_next_event_no()
@@ -55,7 +66,8 @@ def process_key_event(event: dict):
     content = {"keys": event["keys"], "combo": make_combo_text(event["keys"])} if input_type == "key_combo" else {"key": event["key"]}
     content["ime_active"] = event.get("ime_active", False)
     
-    log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"])
+    app_context = _get_app_context(event["window_info"])
+    log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"], app_specific_context=app_context)
 
     pre_img = event.get("pre_img")
     pre_ref = event.get("pre_ref")
@@ -75,7 +87,6 @@ def process_key_event(event: dict):
     print(f"キー入力ログ追加: evt_{event_no}, type={input_type}, diff={diff}, ime={content['ime_active']}")
 
 def process_move_event(event: dict):
-    # (既存のまま変更なし)
     try:
         event_no = state.get_next_event_no()
         dt = now_datetime()
@@ -98,7 +109,8 @@ def process_move_event(event: dict):
                 old_path.rename(old_path.with_name(new_name))
                 pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
 
-        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_move", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y)
+        app_context = _get_app_context(window_info, x=x, y=y)
+        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_move", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y, app_specific_context=app_context)
         ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
 
         if ui_rect is not None:
@@ -125,14 +137,14 @@ def process_move_event(event: dict):
         traceback.print_exc()
 
 def process_click_event(event: dict, input_type: str, click_count: int):
-    # (既存のまま変更なし)
     try:
         event_no, dt = event["event_no"], event["datetime"]
         x, y, button = int(event["x"]), int(event["y"]), event["button"]
         pre_img, pre_monitor, pre_ref = event["pre_full_img"], event["pre_monitor"], event["pre_ref"]
 
+        app_context = _get_app_context(event["window_info"], x=x, y=y)
         content = {"button": mouse_button_to_string(button), "click_count": int(click_count), "screen_coordinates": {"x": x, "y": y}}
-        log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"], cursor_x=x, cursor_y=y)
+        log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"], cursor_x=x, cursor_y=y, app_specific_context=app_context)
         diff = calculate_and_update_diff(pre_img)
 
         ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
@@ -153,14 +165,12 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         state.is_click_processing = False
 
 def run_click_process_thread(event: dict, input_type: str, click_count: int):
-    # (既存のまま変更なし)
     if state.is_click_processing:
         return
     state.is_click_processing = True
     threading.Thread(target=process_click_event, args=(event, input_type, click_count), daemon=True).start()
 
 def process_drag_event(event: dict):
-    # (既存のまま変更なし)
     try:
         event_no = event["event_no"]
         dt = event["datetime"]
@@ -191,9 +201,11 @@ def process_drag_event(event: dict):
             "target_ui_rect": serialize_ui_rect(event.get("drop_ui_rect")),
         }
 
+        app_context = _get_app_context(event["window_info"], x=start_x, y=start_y)
         log = build_base_log(
             event_no=event_no, dt=dt, input_type="mouse_drag", content=content,
-            window_info=event["window_info"], cursor_x=start_x, cursor_y=start_y
+            window_info=event["window_info"], cursor_x=start_x, cursor_y=start_y,
+            app_specific_context=app_context
         )
 
         if source_ui_rect is not None:
@@ -237,7 +249,6 @@ def process_pending_single_click():
         run_click_process_thread(event, input_type="mouse_click", click_count=1)
 
 def process_scroll_event(event: dict):
-    # (既存のまま変更なし)
     try:
         x = event["x"]
         y = event["y"]
@@ -254,7 +265,6 @@ def process_scroll_event(event: dict):
         traceback.print_exc()
 
 def _handle_mouse_event(evt: dict):
-    # (既存のまま変更なし)
     evt_type = evt.get("type")
     if evt_type in ["hover", "move"]:
         process_move_event(evt)
@@ -335,28 +345,6 @@ def _handle_mouse_event(evt: dict):
 
     if previous_event_to_process is not None:
         run_click_process_thread(previous_event_to_process, input_type="mouse_click", click_count=1)
-
-def record_scroll_event(x: int, y: int, dx: float, dy: float, source: str = "unknown"):
-    if not state.is_recording or state.is_stopping: return
-    
-    global _last_scroll_time, _last_scroll_dx, _last_scroll_dy
-    current_time = time.time()
-    
-    with _scroll_lock:
-        if (current_time - _last_scroll_time < 0.01) and (dx == _last_scroll_dx) and (dy == _last_scroll_dy):
-            return
-        _last_scroll_time = current_time
-        _last_scroll_dx = dx
-        _last_scroll_dy = dy
-
-    state.mouse_event_queue.put({
-        "type": "scroll",
-        "x": x,
-        "y": y,
-        "dx": dx,
-        "dy": dy,
-        "source": source
-    })
 
 # Workers
 def key_event_worker():
