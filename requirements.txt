@@ -10,6 +10,8 @@ requests
 # OS Hooks & Automation
 pynput
 mss
+pywinauto
+pywin32
 
 # AI Models (Local)
 llama-cpp-python
