@@ -517,6 +517,7 @@ def generate_macro_workflow(
 
                 raw_type = str(log_entry.get("Type", ""))
                 content_data = log_entry.get("Content") or {}
+                app_context = log_entry.get("AppSpecificContext") or log_entry.get("appSpecificContext") or {}
                 
                 raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
                 if raw_screen_coords:
@@ -593,33 +594,40 @@ def generate_macro_workflow(
                         continue
                 
                 if crop_path_str and crop_path_str != "切り抜き失敗":
-                    full_crop_path = macros_root / crop_path_str
-                    if full_crop_path.exists():
-                        logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
-                        
-                        future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
-                        future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
-                        
-                        yolo_results = future_yolo.result()
-                        ocr_results = future_ocr.result()
+                    # 専用インスペクター等から確定文字列が取れている場合はCVをスキップ
+                    context_text = app_context.get("text") or app_context.get("value") or app_context.get("url")
+                    if context_text:
+                        logger.info(f"[{workflow_id}] Found app_specific_context for Event {event_id}. Skipping CV inference.")
+                        semantic_role = context_text
+                        ui_type = app_context.get("type", "unknown")
+                    else:
+                        full_crop_path = macros_root / crop_path_str
+                        if full_crop_path.exists():
+                            logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
+                            
+                            future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
+                            future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
+                            
+                            yolo_results = future_yolo.result()
+                            ocr_results = future_ocr.result()
 
-                        if yolo_results:
-                            best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                            ui_type = best_yolo.type
-                        
-                        if ocr_results:
-                            best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                            if best_ocr.content and action_type in ["click", "move"]:
-                                semantic_role = best_ocr.content
-                                
-                            for ocr_res in ocr_results:
-                                context_components.append(ContextComponent(
-                                    type="text",
-                                    content=ocr_res.content,
-                                    relativeBoundingBox=ocr_res.boundingBox,
-                                    confidence=ocr_res.confidence,
-                                    parentRelevance=1.0
-                                ))
+                            if yolo_results:
+                                best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                                ui_type = best_yolo.type
+                            
+                            if ocr_results:
+                                best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                                if best_ocr.content and action_type in ["click", "move"]:
+                                    semantic_role = best_ocr.content
+                                    
+                                for ocr_res in ocr_results:
+                                    context_components.append(ContextComponent(
+                                        type="text",
+                                        content=ocr_res.content,
+                                        relativeBoundingBox=ocr_res.boundingBox,
+                                        confidence=ocr_res.confidence,
+                                        parentRelevance=1.0
+                                    ))
 
                 action_detail = ActionDetail(
                     inputType=raw_type,
@@ -667,7 +675,8 @@ def generate_macro_workflow(
                     "win_y": win_y,
                     "win_w": win_size_data.get("width", 0),
                     "win_h": win_size_data.get("height", 0),
-                    "ime_active": ime_active
+                    "ime_active": ime_active,
+                    "app_context": app_context
                 })
 
         if progress_callback:
@@ -711,6 +720,15 @@ def generate_macro_workflow(
                 
                 text = base_text
                 
+                # アプリ固有のコンテキストから確定文字が取れるか確認する (ブラウザのタブ補完など)
+                context_text = ""
+                for item in reversed(current_group):
+                    app_ctx = item.get("app_context", {})
+                    extracted = app_ctx.get("text") or app_ctx.get("value") or app_ctx.get("url")
+                    if extracted:
+                        context_text = str(extracted)
+                        break
+
                 group_img_paths_rel = []
                 for item in current_group:
                     if item.get("pre_img_path"):
@@ -749,165 +767,170 @@ def generate_macro_workflow(
                 if last_click:
                     last_click_pos = (last_click.get("cursor_x", 0), last_click.get("cursor_y", 0))
 
-                if base_target_full and base_target_full.exists():
-                    try:
-                        with Image.open(base_target_full) as img_temp:
-                            max_w, max_h = img_temp.width, img_temp.height
-                            
-                        full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
-                        
-                        if len(full_img_paths) >= 2:
-                            eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
-                            diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
-                            
-                            if diff_bboxes:
-                                raw_search_areas = []
-                                for dbbox in diff_bboxes:
-                                    dl, dt, dr, db = dbbox
-                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
-                                
-                                merged_areas = []
-                                for rect in raw_search_areas:
-                                    x1, y1, x2, y2 = rect
-                                    has_merged = True
-                                    while has_merged:
-                                        has_merged = False
-                                        for i, (mx1, my1, mx2, my2) in enumerate(merged_areas):
-                                            if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
-                                                new_rect = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
-                                                merged_areas.pop(i)
-                                                x1, y1, x2, y2 = new_rect
-                                                has_merged = True
-                                                break
-                                    merged_areas.append((x1, y1, x2, y2))
-                                search_areas = merged_areas
-                                
-                    except Exception as e:
-                        logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
-
-                if base_target_full and base_target_full.exists():
-                    try:
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
-                    except Exception as e:
-                        logger.error(f"[{workflow_id}] Tracking error: {e}")
-                    
-                    if crop_box:
-                        logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
-                    else:
-                        logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
-                        try:
-                            if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
-                                best_fallback_bbox = diff_bboxes[0]
-                                if last_click_pos:
-                                    best_dist = float('inf')
-                                    for dbbox in diff_bboxes:
-                                        cx = (dbbox[0] + dbbox[2]) / 2
-                                        cy = (dbbox[1] + dbbox[3]) / 2
-                                        dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
-                                        if dist < best_dist:
-                                            best_dist = dist
-                                            best_fallback_bbox = dbbox
-
-                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
-                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                
-                                l, t, r, b = refined_bbox
-                                dl, dt, dr, db = best_fallback_bbox
-                                char_h = db - dt if (db - dt) > 0 else 20
-                                
-                                margin_x, margin_y = 5, 5
-                                max_v_margin = max(30, int(char_h * 1.5))
-                                
-                                t_crop = max(t, dt - max_v_margin)
-                                b_crop = min(b, db + max_v_margin)
-                                
-                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                        except Exception as e:
-                            logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
-
-                if not crop_box and base_target_full and base_target_full.exists():
-                    if last_click_pos:
-                        with Image.open(base_target_full) as img:
-                            cx, cy = last_click_pos
-                            left, top = max(0, cx - 300), max(0, cy - 100)
-                            right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
-                            crop_box = (left, top, right, bottom)
-                            logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
-
                 best_overall_text = ""
-                
-                if candidate_img_paths_rel and crop_box:
-                    cand_path_rel = candidate_img_paths_rel[-1]
-                    cand_full = macros_root / cand_path_rel
-                    if cand_full.exists():
+
+                if context_text:
+                    logger.info(f"[{workflow_id}] App-specific text found '{context_text}'. Skipping OCR tracking for typing group.")
+                    best_overall_text = context_text
+                else:
+                    if base_target_full and base_target_full.exists():
                         try:
-                            with Image.open(cand_full) as img:
-                                left, top, right, bottom = crop_box
-                                left, top = max(0, left), max(0, top)
-                                right, bottom = min(img.width, right), min(img.height, bottom)
-                                current_crop_box = (left, top, right, bottom)
+                            with Image.open(base_target_full) as img_temp:
+                                max_w, max_h = img_temp.width, img_temp.height
                                 
-                                crop_img = img.crop(current_crop_box)
-                                temp_crop_path = temp_dir / f"temp_FINAL_TEXT_CROP_{target_event_id}.png"
-                                crop_img.save(temp_crop_path)
+                            full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
+                            
+                            if len(full_img_paths) >= 2:
+                                eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
+                                diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
                                 
-                                ocr_results = read_text_from_image(str(temp_crop_path))
-                                if ocr_results:
-                                    valid_results = [res for res in ocr_results if res.content]
-                                        
-                                    if valid_results:
-                                        filtered_ocr_results = []
-                                        for i, res1 in enumerate(valid_results):
-                                            bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
-                                            br1, bb1 = bx1 + res1.boundingBox.width, by1 + res1.boundingBox.height
-                                            is_enclosing = False
-                                            for j, res2 in enumerate(valid_results):
-                                                if i == j: continue
-                                                bx2, by2 = res2.boundingBox.x, res2.boundingBox.y
-                                                br2, bb2 = bx2 + res2.boundingBox.width, by2 + res2.boundingBox.height
-                                                if bx1 <= bx2 and by1 <= by2 and br1 >= br2 and bb1 >= bb2:
-                                                    if (br1 - bx1) > (br2 - bx2) or (bb1 - by1) > (bb2 - by2):
-                                                        is_enclosing = True
-                                                        break
-                                            if not is_enclosing:
-                                                filtered_ocr_results.append(res1)
-                                        
-                                        filtered_ocr_results.sort(key=lambda r: r.boundingBox.x)
-                                        
-                                        combined_text = ""
-                                        prev_right = -1
-                                        
-                                        for res in filtered_ocr_results:
-                                            text_part = res.content.strip()
-                                            bx = res.boundingBox.x
-                                            bw = res.boundingBox.width
-                                            bh = res.boundingBox.height
-                                            
-                                            if prev_right == -1:
-                                                combined_text += text_part
-                                                prev_right = bx + bw
-                                            else:
-                                                gap = bx - prev_right
-                                                max_gap = max(20, bh * 1.5)
-                                                
-                                                if gap <= max_gap:
-                                                    combined_text += text_part
-                                                    prev_right = max(prev_right, bx + bw)
-                                                else:
-                                                    logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
+                                if diff_bboxes:
+                                    raw_search_areas = []
+                                    for dbbox in diff_bboxes:
+                                        dl, dt, dr, db = dbbox
+                                        raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
+                                    
+                                    merged_areas = []
+                                    for rect in raw_search_areas:
+                                        x1, y1, x2, y2 = rect
+                                        has_merged = True
+                                        while has_merged:
+                                            has_merged = False
+                                            for i, (mx1, my1, mx2, my2) in enumerate(merged_areas):
+                                                if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
+                                                    new_rect = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
+                                                    merged_areas.pop(i)
+                                                    x1, y1, x2, y2 = new_rect
+                                                    has_merged = True
                                                     break
-                                            
-                                        if len(combined_text) > len(best_overall_text):
-                                            best_overall_text = combined_text
-                                            
+                                        merged_areas.append((x1, y1, x2, y2))
+                                    search_areas = merged_areas
+                                    
                         except Exception as e:
-                            logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for final candidate: {e}")
+                            logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
+
+                    if base_target_full and base_target_full.exists():
+                        try:
+                            crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
+                        except Exception as e:
+                            logger.error(f"[{workflow_id}] Tracking error: {e}")
+                        
+                        if crop_box:
+                            logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
+                        else:
+                            logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
+                            try:
+                                if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
+                                    best_fallback_bbox = diff_bboxes[0]
+                                    if last_click_pos:
+                                        best_dist = float('inf')
+                                        for dbbox in diff_bboxes:
+                                            cx = (dbbox[0] + dbbox[2]) / 2
+                                            cy = (dbbox[1] + dbbox[3]) / 2
+                                            dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
+                                            if dist < best_dist:
+                                                best_dist = dist
+                                                best_fallback_bbox = dbbox
+
+                                    refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
+                                    logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
+                                    
+                                    l, t, r, b = refined_bbox
+                                    dl, dt, dr, db = best_fallback_bbox
+                                    char_h = db - dt if (db - dt) > 0 else 20
+                                    
+                                    margin_x, margin_y = 5, 5
+                                    max_v_margin = max(30, int(char_h * 1.5))
+                                    
+                                    t_crop = max(t, dt - max_v_margin)
+                                    b_crop = min(b, db + max_v_margin)
+                                    
+                                    crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
+                            except Exception as e:
+                                logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
+
+                    if not crop_box and base_target_full and base_target_full.exists():
+                        if last_click_pos:
+                            with Image.open(base_target_full) as img:
+                                cx, cy = last_click_pos
+                                left, top = max(0, cx - 300), max(0, cy - 100)
+                                right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
+                                crop_box = (left, top, right, bottom)
+                                logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
+
+                    if candidate_img_paths_rel and crop_box:
+                        cand_path_rel = candidate_img_paths_rel[-1]
+                        cand_full = macros_root / cand_path_rel
+                        if cand_full.exists():
+                            try:
+                                with Image.open(cand_full) as img:
+                                    left, top, right, bottom = crop_box
+                                    left, top = max(0, left), max(0, top)
+                                    right, bottom = min(img.width, right), min(img.height, bottom)
+                                    current_crop_box = (left, top, right, bottom)
+                                    
+                                    crop_img = img.crop(current_crop_box)
+                                    temp_crop_path = temp_dir / f"temp_FINAL_TEXT_CROP_{target_event_id}.png"
+                                    crop_img.save(temp_crop_path)
+                                    
+                                    ocr_results = read_text_from_image(str(temp_crop_path))
+                                    if ocr_results:
+                                        valid_results = [res for res in ocr_results if res.content]
+                                            
+                                        if valid_results:
+                                            filtered_ocr_results = []
+                                            for i, res1 in enumerate(valid_results):
+                                                bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
+                                                br1, bb1 = bx1 + res1.boundingBox.width, by1 + res1.boundingBox.height
+                                                is_enclosing = False
+                                                for j, res2 in enumerate(valid_results):
+                                                    if i == j: continue
+                                                    bx2, by2 = res2.boundingBox.x, res2.boundingBox.y
+                                                    br2, bb2 = bx2 + res2.boundingBox.width, by2 + res2.boundingBox.height
+                                                    if bx1 <= bx2 and by1 <= by2 and br1 >= br2 and bb1 >= bb2:
+                                                        if (br1 - bx1) > (br2 - bx2) or (bb1 - by1) > (bb2 - by2):
+                                                            is_enclosing = True
+                                                            break
+                                                if not is_enclosing:
+                                                    filtered_ocr_results.append(res1)
+                                            
+                                            filtered_ocr_results.sort(key=lambda r: r.boundingBox.x)
+                                            
+                                            combined_text = ""
+                                            prev_right = -1
+                                            
+                                            for res in filtered_ocr_results:
+                                                text_part = res.content.strip()
+                                                bx = res.boundingBox.x
+                                                bw = res.boundingBox.width
+                                                bh = res.boundingBox.height
+                                                
+                                                if prev_right == -1:
+                                                    combined_text += text_part
+                                                    prev_right = bx + bw
+                                                else:
+                                                    gap = bx - prev_right
+                                                    max_gap = max(20, bh * 1.5)
+                                                    
+                                                    if gap <= max_gap:
+                                                        combined_text += text_part
+                                                        prev_right = max(prev_right, bx + bw)
+                                                    else:
+                                                        logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
+                                                        break
+                                                
+                                            if len(combined_text) > len(best_overall_text):
+                                                best_overall_text = combined_text
+                                                
+                            except Exception as e:
+                                logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for final candidate: {e}")
 
                 if best_overall_text:
                     text = best_overall_text
                     logger.info(f"[{workflow_id}] Final OCR extracted text from BBox: {text}")
                 else:
-                    logger.info(f"[{workflow_id}] Falling back to raw typed text: {base_text}")
+                    text = base_text
+                    logger.info(f"[{workflow_id}] Falling back to raw typed text: {text}")
 
                 var_name = f"search_query_{len(variables) + 1}"
                 variables[var_name] = text
