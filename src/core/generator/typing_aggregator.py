@@ -102,14 +102,25 @@ class TypingSessionAggregator:
         fallback_text = ""
         any_ime_active = any(item.get("ime_active", False) for item in session)
         
+        # 制御キーや修飾キーの除外リスト
+        ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd"}
+        ignore_modifiers = ["shift", "ctrl", "alt", "win", "cmd"]
+        
         for item in session:
             role = str(item.get("semantic_role", ""))
             r_lower = role.lower()
+            
             if r_lower == "backspace":
                 fallback_text = fallback_text[:-1]
             elif r_lower == "space":
                 fallback_text += " "
-            elif r_lower not in ["tab", "enter", "delete", "esc"] and not r_lower.startswith("key."):
+            elif r_lower in ignore_exact_keys or r_lower.startswith("key."):
+                # 特殊キー単体はテキストとして結合しない
+                continue
+            elif len(r_lower) > 1 and any(mod in r_lower for mod in ignore_modifiers):
+                # shift+space などのコンボキー文字列はテキストとして結合しない
+                continue
+            else:
                 fallback_text += role
 
         if any_ime_active and fallback_text:

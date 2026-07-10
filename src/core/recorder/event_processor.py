@@ -96,6 +96,60 @@ def process_key_event(event: dict):
             from core.recorder.input_listener import _flush_typing_buffer
             _flush_typing_buffer("diff_exceeded")
 
+def process_uia_event(info: dict):
+    """Tabキー押下時などに取得されたUIAの情報をログに記録する"""
+    try:
+        if "error" in info:
+            print(f"UIA Error: {info['error']}")
+            return
+
+        event_no = state.get_next_event_no()
+        dt = now_datetime()
+        window_info = process_monitor.get_foreground_window_info()
+        
+        content = {
+            "uia_info": info,
+            "action": "uia_scan"
+        }
+        
+        log = build_base_log(
+            event_no=event_no, 
+            dt=dt, 
+            input_type="uia_scan", 
+            content=content, 
+            window_info=window_info
+        )
+        state.append_log(log)
+        print(f"UIAログ追加: evt_{event_no}, name={info.get('name')}")
+    except Exception:
+        print("UIAイベントの処理中にエラーが発生しました")
+        traceback.print_exc()
+
+def process_office_event(info: dict):
+    """Excel等からCOM経由で受け取ったイベント情報をログに記録する"""
+    try:
+        event_no = state.get_next_event_no()
+        dt = now_datetime()
+        window_info = process_monitor.get_foreground_window_info()
+        
+        content = {
+            "office_info": info,
+            "action": "office_event"
+        }
+        
+        log = build_base_log(
+            event_no=event_no, 
+            dt=dt, 
+            input_type="office_event", 
+            content=content, 
+            window_info=window_info
+        )
+        state.append_log(log)
+        print(f"Officeログ追加: evt_{event_no}, msg={info.get('message')}")
+    except Exception:
+        print("Officeイベントの処理中にエラーが発生しました")
+        traceback.print_exc()
+
 def process_move_event(event: dict):
     try:
         event_no = state.get_next_event_no()
