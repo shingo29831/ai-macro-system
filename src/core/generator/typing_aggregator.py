@@ -21,37 +21,34 @@ class TypingSessionAggregator:
 
         aggregated_events: List[Dict[str, Any]] = []
         current_session: List[Dict[str, Any]] = []
-        last_timestamp = 0
 
         for i, event in enumerate(raw_events):
             action = event.get("raw_action", "")
-            timestamp = event.get("timestamp", 0)
             
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
-            is_special_key = action == "key_down" and (
+            is_special_key = action in ["key_down", "key_press"] and (
                 role_lower.startswith("key.") or 
                 role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"]
             )
-            is_text_input = action in ["type_text", "key_down"] and not is_special_key
+            is_text_input = action in ["type_text", "key_down", "key_press"] and not is_special_key
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
 
-            # セッションの継続条件: 文字入力、UIAスキャン、または確定キー(Enter/Tab)
-            # これらを同一セッションに含めることで、確定後の文字列を後から抽出可能にする
-            if is_text_input or is_uia_scan or is_confirm_key:
-                if not current_session or (timestamp - last_timestamp <= self.session_timeout_ms):
-                    current_session.append(event)
-                    last_timestamp = timestamp
-                    continue
-                else:
-                    # タイムアウトした場合は既存のセッションをフラッシュして新規開始
-                    self._flush_session(current_session, aggregated_events)
-                    current_session = [event]
-                    last_timestamp = timestamp
-                    continue
+            # マウス移動は入力セッションを中断しないようにする
+            is_mouse_move = action in ["mouse_move", "mouse_hover"]
 
-            # 文字入力・確定以外のイベント（クリック、移動、Esc等の特殊キー）が来た場合
+            # セッションの継続条件: 文字入力、UIAスキャン、または確定キー(Enter/Tab)
+            # タイムアウト条件を撤廃し、間にクリックなどの別アクションが挟まらない限り同一セッションとする
+            if is_text_input or is_uia_scan or is_confirm_key:
+                current_session.append(event)
+                continue
+            elif is_mouse_move:
+                # マウス移動はセッションに追加せず、フラッシュもさせない（無視してスキップ）
+                aggregated_events.append(event)
+                continue
+
+            # クリックやTab以外の特殊キーなどが来た場合、セッションをフラッシュ
             if current_session:
                 self._flush_session(current_session, aggregated_events)
 
@@ -71,7 +68,7 @@ class TypingSessionAggregator:
             return
 
         # uia_scanのみのセッションなど、実質的なキー入力がない場合はそのまま出力して終了
-        has_key_input = any(e.get("raw_action") in ["key_down", "type_text"] for e in session)
+        has_key_input = any(e.get("raw_action") in ["key_down", "key_press", "type_text"] for e in session)
         if not has_key_input:
             output_list.extend(session)
             session.clear()
@@ -93,7 +90,7 @@ class TypingSessionAggregator:
             last_event = session[-1]
             action = last_event.get("raw_action", "")
             role_lower = str(last_event.get("semantic_role", "")).lower()
-            is_special = action == "key_down" and (
+            is_special = action in ["key_down", "key_press"] and (
                 role_lower.startswith("key.") or 
                 role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"]
             )

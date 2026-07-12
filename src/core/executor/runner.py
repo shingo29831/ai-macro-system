@@ -267,18 +267,22 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         import unicodedata
                         def contains_zenkaku(s: str) -> bool:
                             for c in s:
-                                if unicodedata.east_asian_width(c) in ('F', 'W', 'A'):
+                                # 'F' (Fullwidth), 'W' (Wide) のみを全角と判定
+                                # 'A' (Ambiguous) は環境依存のため除外（誤判定防止）
+                                if unicodedata.east_asian_width(c) in ('F', 'W'):
                                     return True
                             return False
                         
                         try:
                             hwnd = ctypes.windll.user32.GetForegroundWindow()
-                            imm32 = ctypes.windll.imm32
-                            himc = imm32.ImmGetContext(hwnd)
-                            if himc:
+                            # 別プロセスのIMEを制御するためには DefaultIMEWnd にメッセージを送る必要がある
+                            default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
+                            if default_ime_wnd:
                                 is_zenkaku = contains_zenkaku(text)
-                                imm32.ImmSetOpenStatus(himc, 1 if is_zenkaku else 0)
-                                imm32.ImmReleaseContext(hwnd, himc)
+                                WM_IME_CONTROL = 0x0283
+                                IMC_SETOPENSTATUS = 0x0006
+                                ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
+                                time.sleep(0.05) # IMEの状態が反映されるまで少し待つ
                         except Exception as e:
                             logger.warning(f"Failed to set IME state: {e}")
 
