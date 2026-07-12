@@ -297,6 +297,75 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 keyboard.release('t')
                                 keyboard.release(Key.ctrl)
                                 time.sleep(0.5)
+                                
+                            # --- 画面の一致待機処理 ---
+                            raw_event_id = args.get("raw_event_id")
+                            if raw_event_id and win_w > 0 and win_h > 0:
+                                pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+                                if pre_image_path.exists():
+                                    try:
+                                        import cv2
+                                        import numpy as np
+                                        from core.recorder.screen_capturer import take_screenshot
+                                        
+                                        pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
+                                        if pre_img_cv is not None:
+                                            img_h, img_w = pre_img_cv.shape
+                                            x1 = max(0, win_x)
+                                            y1 = max(0, win_y)
+                                            x2 = min(img_w, win_x + win_w)
+                                            y2 = min(img_h, win_y + win_h)
+                                            
+                                            if x2 > x1 and y2 > y1:
+                                                pre_crop = pre_img_cv[y1:y2, x1:x2]
+                                                waiting_logged = False
+                                                
+                                                while not _stop_requested:
+                                                    curr_img_pil, _ = take_screenshot()
+                                                    curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+                                                    
+                                                    curr_h, curr_w = curr_img_cv.shape
+                                                    cx1 = max(0, win_x)
+                                                    cy1 = max(0, win_y)
+                                                    cx2 = min(curr_w, win_x + win_w)
+                                                    cy2 = min(curr_h, win_y + win_h)
+                                                    
+                                                    if cx2 > cx1 and cy2 > cy1:
+                                                        curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+                                                        
+                                                        if pre_crop.shape == curr_crop.shape:
+                                                            diff = cv2.absdiff(pre_crop, curr_crop)
+                                                            _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+                                                            diff_ratio = np.count_nonzero(thresh) / thresh.size
+                                                            
+                                                            # 10%以下の違いなら同じ画面とみなす
+                                                            if diff_ratio <= 0.10: 
+                                                                if waiting_logged:
+                                                                    if status_callback:
+                                                                        status_callback("マクロを再開します。", False)
+                                                                    logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}). Resuming macro.")
+                                                                    time.sleep(1.0)
+                                                                    if status_callback:
+                                                                        status_callback("実行中...", False)
+                                                                break
+                                                            else:
+                                                                if not waiting_logged:
+                                                                    if status_callback:
+                                                                        status_callback("記録時と同じ画面にしてください。", True)
+                                                                    logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%})")
+                                                                    waiting_logged = True
+                                                        else:
+                                                            if not waiting_logged:
+                                                                if status_callback:
+                                                                    status_callback("記録時と同じ画面にしてください。", True)
+                                                                logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                                                                waiting_logged = True
+                                                    
+                                                    time.sleep(0.5)
+                                    except Exception as e:
+                                        logger.warning(f"Error during screen match waiting: {e}")
+                            # --------------------------
+
                         else:
                             logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
                             # 見つからない場合はエラーにしてマクロを安全停止する
