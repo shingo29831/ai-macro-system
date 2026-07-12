@@ -113,6 +113,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
         commands = macro_data.get("commands", [])
         macro_needs_save = False
+        _browser_activated_once = False
         
         for i, cmd in enumerate(commands):
             if _stop_requested:
@@ -263,6 +264,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 # 再検索
                                 windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
                                 
+                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                            if is_browser:
+                                _browser_activated_once = True
+                                
                         if windows:
                             win = windows[0]
                             # 最小化されている場合は元に戻す
@@ -281,6 +286,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                     logger.warning(f"Failed to resize window: {e}")
                                     
                             time.sleep(0.5)
+                            
+                            # ブラウザの初回アクティブ化時に新規タブを開く
+                            lower_app_name = app_name.lower()
+                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                            if is_browser and not _browser_activated_once:
+                                _browser_activated_once = True
+                                logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
+                                keyboard.press(Key.ctrl)
+                                keyboard.press('t')
+                                keyboard.release('t')
+                                keyboard.release(Key.ctrl)
+                                time.sleep(0.5)
                         else:
                             logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
                             # 見つからない場合はエラーにしてマクロを安全停止する

@@ -121,6 +121,20 @@ class TypingSessionAggregator:
         # -------------------------------------------------------------------------
         # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
         # -------------------------------------------------------------------------
+        import urllib.parse
+        def _extract_search_query(url_or_text: str) -> str:
+            if not url_or_text.startswith("http"):
+                return url_or_text
+            try:
+                parsed = urllib.parse.urlparse(url_or_text)
+                qs = urllib.parse.parse_qs(parsed.query)
+                if 'q' in qs: return qs['q'][0]
+                elif 'p' in qs: return qs['p'][0]
+                elif 'text' in qs: return qs['text'][0]
+            except Exception:
+                pass
+            return url_or_text
+
         uia_rescued_text = ""
         # 抽出対象は session 本体と、分離した trailing_events (Enter, Tab, uia_scan) の両方
         all_events_in_session = session + trailing_events
@@ -130,7 +144,7 @@ class TypingSessionAggregator:
                 uia_info = item.get("content", {}).get("uia_info", {})
                 val = uia_info.get("value") or uia_info.get("name")
                 if val and len(str(val).strip()) > 0:
-                    uia_rescued_text = str(val).strip()
+                    uia_rescued_text = _extract_search_query(str(val).strip())
                     logger.info(f"[TypingAggregator] UIAレスキュー成功(uia_scan): 確定文字列 '{uia_rescued_text}' を採用")
                     break
 
@@ -139,13 +153,13 @@ class TypingSessionAggregator:
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
                 ctrl_type = str(app_ctx.get("control_type", "")).lower()
-                # DocumentControl や PaneControl など、入力欄ではない要素のテキストは無視する（URL誤検知防止）
-                if "document" in ctrl_type or "pane" in ctrl_type:
+                # ButtonControl や WindowControl などのテキストは無視する（「キャンセル」等の誤検知防止）
+                if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
                     continue
                     
-                val = app_ctx.get("value") or app_ctx.get("text")
+                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
                 if val and len(str(val).strip()) > 0:
-                    uia_rescued_text = str(val).strip()
+                    uia_rescued_text = _extract_search_query(str(val).strip())
                     logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
                     break
 
