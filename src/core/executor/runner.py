@@ -157,54 +157,99 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
             return
             
         img_h, img_w = pre_img_cv.shape
-        x1, y1 = max(0, win_x), max(0, win_y)
-        x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+        
+        # マルチモニターのオフセットを考慮するため、ダミー呼び出しでモニター情報を取得
+        _, monitor_info = take_screenshot()
+        offset_x = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
+        offset_y = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
+        
+        # 記録時の画像も同じオフセットでキャプチャされている前提で座標を変換
+        x1 = max(0, win_x - offset_x)
+        y1 = max(0, win_y - offset_y)
+        x2 = min(img_w, win_x - offset_x + win_w)
+        y2 = min(img_h, win_y - offset_y + win_h)
         
         if x2 <= x1 or y2 <= y1:
-            return
+            # オフセット計算が合わない場合のフォールバック（旧ロジック）
+            x1, y1 = max(0, win_x), max(0, win_y)
+            x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+            if x2 <= x1 or y2 <= y1:
+                return
             
         pre_crop = pre_img_cv[y1:y2, x1:x2]
+        # 比較用に128x128へリサイズ（微小なノイズ軽減と処理高速化）
+        pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
+        
         waiting_logged = False
         
         while not _stop_requested:
-            curr_img_pil, _ = take_screenshot()
+            curr_img_pil, curr_monitor = take_screenshot()
             curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
             
-            curr_h, curr_w = curr_img_cv.shape
-            cx1, cy1 = max(0, win_x), max(0, win_y)
-            cx2, cy2 = min(curr_w, win_x + win_w), min(curr_h, win_y + win_h)
+            c_offset_x = curr_monitor.get("left", 0) if isinstance(curr_monitor, dict) else 0
+            c_offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
             
+            curr_h, curr_w = curr_img_cv.shape
+            cx1 = max(0, win_x - c_offset_x)
+            cy1 = max(0, win_y - c_offset_y)
+            cx2 = min(curr_w, win_x - c_offset_x + win_w)
+            cy2 = min(curr_h, win_y - c_offset_y + win_h)
+            
+            if cx2 <= cx1 or cy2 <= cy1:
+                cx1, cy1 = max(0, win_x), max(0, win_y)
+                cx2, cy2 = min(curr_w, win_x + win_w), min(curr_h, win_y + win_h)
+                
             if cx2 > cx1 and cy2 > cy1:
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+                curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
                 
-                if pre_crop.shape == curr_crop.shape:
-                    # ピクセル単位の絶対差分で変化率を計算
-                    diff = cv2.absdiff(pre_crop, curr_crop)
-                    _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-                    diff_ratio = np.count_nonzero(thresh) / thresh.size
+                diff = cv2.absdiff(pre_crop_small, curr_crop_small)
+                _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+                
+                total_diff_ratio = np.count_nonzero(thresh) / thresh.size
+                
+                is_match = False
+                if total_diff_ratio <= 0.02:
+                    is_match = True # ほぼ完全一致
+                elif total_diff_ratio > 0.15:
+                    is_match = False # 全体的に違いすぎる
+                else:
+                    # 局所的な大きな変化（別画面の中央コンテンツ等）がないかブロック分割で確認
+                    grid_size = 4
+                    h_step = 128 // grid_size
+                    w_step = 128 // grid_size
                     
-                    # テンプレートマッチングによる構造的類似度
-                    res = cv2.matchTemplate(curr_crop, pre_crop, cv2.TM_CCOEFF_NORMED)
-                    _, max_val, _, _ = cv2.minMaxLoc(res)
-                    
-                    # 一致判定: ピクセル差分が非常に小さい(3%以下) または 構造的に似ていて(85%以上)差分も許容範囲(15%以下)
-                    if diff_ratio <= 0.03 or (max_val >= 0.85 and diff_ratio <= 0.15):
-                        if waiting_logged:
-                            update_ui("マクロを再開します。", False)
-                            logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}). Resuming macro.")
-                            time.sleep(1.5)
-                            update_ui("実行中...", False)
-                        break
+                    max_block_diff = 0.0
+                    for row in range(grid_size):
+                        for col in range(grid_size):
+                            block = thresh[row*h_step:(row+1)*h_step, col*w_step:(col+1)*w_step]
+                            block_diff = np.count_nonzero(block) / block.size
+                            if block_diff > max_block_diff:
+                                max_block_diff = block_diff
+                                
+                    # 1つのブロックでも25%以上違えば、決定的なコンテンツの違いとみなす
+                    if max_block_diff < 0.25:
+                        is_match = True
                     else:
-                        if not waiting_logged:
-                            update_ui("記録時と同じ画面にしてください。", True)
-                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f})")
-                            waiting_logged = True
+                        is_match = False
+                
+                if is_match:
+                    if waiting_logged:
+                        update_ui("マクロを再開します。", False)
+                        logger.info(f"[{workflow_id}] Screen matched (diff: {total_diff_ratio:.1%}). Resuming macro.")
+                        time.sleep(1.5)
+                        update_ui("実行中...", False)
+                    break
                 else:
                     if not waiting_logged:
                         update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {total_diff_ratio:.1%})")
                         waiting_logged = True
+            else:
+                if not waiting_logged:
+                    update_ui("記録時と同じ画面にしてください。", True)
+                    logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                    waiting_logged = True
             
             time.sleep(0.5)
     except Exception as e:
