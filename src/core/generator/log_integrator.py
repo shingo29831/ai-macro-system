@@ -590,12 +590,10 @@ def generate_macro_workflow(
                 if action_type == "move":
                     if crop_path_str and "delete_" in crop_path_str:
                         continue
-                    # 画面変化率が低い(5%未満)カーソル移動は不要な記録として除外する
                     if diff_val < 0.05:
                         continue
                 
                 if crop_path_str and crop_path_str != "切り抜き失敗":
-                    # 専用インスペクター等から確定文字列が取れている場合はCVをスキップ
                     context_text = app_context.get("text") or app_context.get("value") or app_context.get("url")
                     if context_text:
                         logger.info(f"[{workflow_id}] Found app_specific_context for Event {event_id}. Skipping CV inference.")
@@ -683,26 +681,22 @@ def generate_macro_workflow(
         if progress_callback:
             progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
 
-            variables = {} # ★復元: 変数辞書の初期化（これがないとエラーになります）
+            variables = {}
 
             try:
                 from core.generator.typing_aggregator import TypingSessionAggregator
                 aggregator = TypingSessionAggregator(session_timeout_ms=600)
                 
-                # 1文字ずつのイベントを、集約されたきれいなセッションイベントへと変換
                 temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
                 
-                # ★復元追加: 集約されたテキストを変数として登録し、プレースホルダーに置き換える
                 for info in temp_workflow_info:
                     if info.get("raw_action") == "type_text" and info.get("semantic_role"):
                         role_str = str(info["semantic_role"])
                         role_lower = role_str.lower()
                         
-                        # 特殊キー単体ではない、純粋な入力文字列の場合のみ変数化する
                         if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
                             var_name = f"search_query_{len(variables) + 1}"
                             variables[var_name] = role_str
-                            # マクロのアクションテキストを {{search_query_N}} に置き換える
                             info["semantic_role"] = f"{{{{{var_name}}}}}"
 
                 logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
@@ -712,7 +706,6 @@ def generate_macro_workflow(
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
 
-        # LLMをバイパスし、生のセマンティックロールをそのまま使用する
         llm_enhanced_data = {} 
 
         workflow_steps = []
@@ -724,6 +717,8 @@ def generate_macro_workflow(
         screen_size = Size(width=1920, height=1080)
         
         step_idx = 1
+        prev_window_name = None  # 追加: ウィンドウ切り替え検知用
+        
         for info in temp_workflow_info:
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
@@ -733,6 +728,24 @@ def generate_macro_workflow(
 
             event_id = info["event_id"]
             fallback_evts = info.get("fallback_events", [event_id])
+            
+            # --- ウィンドウアクティブ化コマンドの自動挿入 ---
+            current_window = next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+            if current_window != "Unknown" and current_window != prev_window_name:
+                workflow_steps.append(WorkflowStep(
+                    step_id=step_idx,
+                    intent="ACTIVATE_WINDOW",
+                    description=f"Activate window: {current_window}",
+                    context=WorkflowStepContext(active_window_name=current_window),
+                    action=WorkflowCommandAction(
+                        command="ACTIVATE_WINDOW",
+                        parameters=ActionParameters(text=current_window)
+                    ),
+                    fallback_raw_events=[event_id]
+                ))
+                step_idx += 1
+                prev_window_name = current_window
+            # ------------------------------------------------
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
@@ -794,7 +807,7 @@ def generate_macro_workflow(
                     params = ActionParameters(text=final_semantic_role)
 
             step_context = WorkflowStepContext(
-                active_window_name=next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+                active_window_name=current_window
             )
 
             workflow_steps.append(WorkflowStep(
@@ -868,13 +881,20 @@ def generate_macro_workflow(
                 cmd_type = step.action.command
                 params = step.action.parameters
                 
-                # ---------------------------------------------------------
-                # 一時的無効化: 発表時の安定稼働のため、自己修復機能(Healer)をバイパス
-                # ---------------------------------------------------------
-                # target_id_for_healer = f"tgt_{step.step_id}"
                 target_id_for_healer = None
 
-                if cmd_type == "MOUSE_CLICK":
+                # --- 実行用コマンドの生成 ---
+                if cmd_type == "ACTIVATE_WINDOW":
+                    if params.text:
+                        raw_commands_data.append({
+                            "method": "activate_window",
+                            "args": {
+                                "window_title": params.text,
+                                "target_id": target_id_for_healer,
+                                "raw_event_id": raw_event_id
+                            }
+                        })
+                elif cmd_type == "MOUSE_CLICK":
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
