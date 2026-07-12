@@ -590,7 +590,8 @@ def generate_macro_workflow(
                 if action_type == "move":
                     if crop_path_str and "delete_" in crop_path_str:
                         continue
-                    if diff_val < 0.001:
+                    # 画面変化率が低い(5%未満)カーソル移動は不要な記録として除外する
+                    if diff_val < 0.05:
                         continue
                 
                 if crop_path_str and crop_path_str != "切り抜き失敗":
