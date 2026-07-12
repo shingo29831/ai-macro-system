@@ -128,7 +128,7 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
 def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback):
-    """記録時のスクリーンショットと現在の画面を比較し、類似度が閾値を超えるまで待機する"""
+    """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
     if not raw_event_id or win_w <= 0 or win_h <= 0:
         return
@@ -136,6 +136,16 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
         return
+
+    def update_ui(text, is_warning):
+        if status_callback:
+            status_callback(text, is_warning)
+        else:
+            try:
+                from ui.views.running_dialog import RunningDialog
+                RunningDialog.set_status(text, is_warning)
+            except Exception:
+                pass
 
     try:
         import cv2
@@ -168,30 +178,27 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
                 
                 if pre_crop.shape == curr_crop.shape:
-                    # テンプレートマッチングで類似度を判定 (0.0 ~ 1.0)
-                    res = cv2.matchTemplate(curr_crop, pre_crop, cv2.TM_CCOEFF_NORMED)
-                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                    # ピクセル単位の絶対差分で変化率を計算
+                    diff = cv2.absdiff(pre_crop, curr_crop)
+                    _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+                    diff_ratio = np.count_nonzero(thresh) / thresh.size
                     
-                    # 類似度が85%以上なら同じ画面とみなす
-                    if max_val >= 0.85: 
+                    # 10%以下の違いなら同じ画面とみなす
+                    if diff_ratio <= 0.10: 
                         if waiting_logged:
-                            if status_callback:
-                                status_callback("マクロを再開します。", False)
-                            logger.info(f"[{workflow_id}] Screen matched (Similarity: {max_val:.1%}). Resuming macro.")
-                            time.sleep(1.0)
-                            if status_callback:
-                                status_callback("実行中...", False)
+                            update_ui("マクロを再開します。", False)
+                            logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}). Resuming macro.")
+                            time.sleep(1.5)
+                            update_ui("実行中...", False)
                         break
                     else:
                         if not waiting_logged:
-                            if status_callback:
-                                status_callback("記録時と同じ画面にしてください。", True)
-                            logger.info(f"[{workflow_id}] Waiting for screen to match... (Similarity: {max_val:.1%})")
+                            update_ui("記録時と同じ画面にしてください。", True)
+                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%})")
                             waiting_logged = True
                 else:
                     if not waiting_logged:
-                        if status_callback:
-                            status_callback("記録時と同じ画面にしてください。", True)
+                        update_ui("記録時と同じ画面にしてください。", True)
                         logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
                         waiting_logged = True
             
