@@ -25,6 +25,13 @@ class TypingSessionAggregator:
         for i, event in enumerate(raw_events):
             action = event.get("raw_action", "")
             
+            # ウィンドウの切り替わりを検知してセッションを区切る
+            current_window = event.get("window_info", {}).get("title", "")
+            if current_session:
+                last_window = current_session[-1].get("window_info", {}).get("title", "")
+                if current_window and last_window and current_window != last_window:
+                    self._flush_session(current_session, aggregated_events)
+
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
             is_special_key = action in ["key_down", "key_press"] and (
@@ -34,12 +41,17 @@ class TypingSessionAggregator:
             is_text_input = action in ["type_text", "key_down", "key_press"] and not is_special_key
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
+            ime_active = event.get("ime_active", False)
 
-            # マウス移動は入力セッションを中断しないようにする
             is_mouse_move = action in ["mouse_move", "mouse_hover"]
 
+            # IMEオフのEnterは送信/実行を意味するため、ここでセッションを区切る
+            if role_lower == "enter" and not ime_active:
+                current_session.append(event)
+                self._flush_session(current_session, aggregated_events)
+                continue
+
             # セッションの継続条件: 文字入力、UIAスキャン、または確定キー(Enter/Tab)
-            # タイムアウト条件を撤廃し、間にクリックなどの別アクションが挟まらない限り同一セッションとする
             if is_text_input or is_uia_scan or is_confirm_key:
                 current_session.append(event)
                 continue
@@ -126,8 +138,12 @@ class TypingSessionAggregator:
             # ログのキー名揺れに対応 (app_context, AppSpecificContext, appSpecificContext)
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
-                # Edit要素やValuePatternから取れた確定文字列を探す
-                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
+                ctrl_type = str(app_ctx.get("control_type", "")).lower()
+                # DocumentControl や PaneControl など、入力欄ではない要素のテキストは無視する（URL誤検知防止）
+                if "document" in ctrl_type or "pane" in ctrl_type:
+                    continue
+                    
+                val = app_ctx.get("value") or app_ctx.get("text")
                 if val and len(str(val).strip()) > 0:
                     uia_rescued_text = str(val).strip()
                     logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
