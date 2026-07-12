@@ -183,18 +183,22 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh) / thresh.size
                     
-                    # 10%以下の違いなら同じ画面とみなす
-                    if diff_ratio <= 0.10: 
+                    # テンプレートマッチングによる構造的類似度
+                    res = cv2.matchTemplate(curr_crop, pre_crop, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                    
+                    # 一致判定: ピクセル差分が非常に小さい(3%以下) または 構造的に似ていて(85%以上)差分も許容範囲(15%以下)
+                    if diff_ratio <= 0.03 or (max_val >= 0.85 and diff_ratio <= 0.15):
                         if waiting_logged:
                             update_ui("マクロを再開します。", False)
-                            logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}). Resuming macro.")
+                            logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}). Resuming macro.")
                             time.sleep(1.5)
                             update_ui("実行中...", False)
                         break
                     else:
                         if not waiting_logged:
                             update_ui("記録時と同じ画面にしてください。", True)
-                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%})")
+                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f})")
                             waiting_logged = True
                 else:
                     if not waiting_logged:
