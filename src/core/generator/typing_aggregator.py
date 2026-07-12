@@ -191,7 +191,24 @@ class TypingSessionAggregator:
             output_list.extend(session)
 
         # 分離しておいた末尾の特殊キーイベントを復元して追加（uia_scanは実行アクションではないため除外）
-        trailing_special_keys = [e for e in trailing_events if e.get("raw_action") != "uia_scan"]
+        trailing_special_keys = []
+        for e in trailing_events:
+            if e.get("raw_action") == "uia_scan":
+                continue
+                
+            role_lower = str(e.get("semantic_role", "")).lower()
+            
+            if final_text:
+                # 文字入力が確定した場合、それに付随する tab(補完) や enter(IME確定) は不要なため除外する
+                if role_lower == "tab":
+                    logger.info("[TypingAggregator] 文字入力に付随する 'tab' (補完操作) をマクロから除外します")
+                    continue
+                if role_lower == "enter" and e.get("ime_active", False):
+                    logger.info("[TypingAggregator] 文字入力に付随する 'enter' (IME確定操作) をマクロから除外します")
+                    continue
+
+            trailing_special_keys.append(e)
+
         output_list.extend(trailing_special_keys)
         
         session.clear()
