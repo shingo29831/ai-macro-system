@@ -261,6 +261,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         placeholder = f"{{{{{key}}}}}"
                         if placeholder in text:
                             text = text.replace(placeholder, str(val))
+                            
+                    # 半角/全角の自動制御 (Windows)
+                    if platform.system() == "Windows":
+                        import unicodedata
+                        def contains_zenkaku(s: str) -> bool:
+                            for c in s:
+                                if unicodedata.east_asian_width(c) in ('F', 'W', 'A'):
+                                    return True
+                            return False
+                        
+                        try:
+                            hwnd = ctypes.windll.user32.GetForegroundWindow()
+                            imm32 = ctypes.windll.imm32
+                            himc = imm32.ImmGetContext(hwnd)
+                            if himc:
+                                is_zenkaku = contains_zenkaku(text)
+                                imm32.ImmSetOpenStatus(himc, 1 if is_zenkaku else 0)
+                                imm32.ImmReleaseContext(hwnd, himc)
+                        except Exception as e:
+                            logger.warning(f"Failed to set IME state: {e}")
+
                     keyboard.type(text)
                     
             elif method == "press_key":
