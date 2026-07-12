@@ -163,24 +163,22 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         offset_x = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
         offset_y = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
         
-        # 記録時の画像も同じオフセットでキャプチャされている前提で座標を変換
         x1 = max(0, win_x - offset_x)
         y1 = max(0, win_y - offset_y)
         x2 = min(img_w, win_x - offset_x + win_w)
         y2 = min(img_h, win_y - offset_y + win_h)
         
         if x2 <= x1 or y2 <= y1:
-            # オフセット計算が合わない場合のフォールバック（旧ロジック）
             x1, y1 = max(0, win_x), max(0, win_y)
             x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
             if x2 <= x1 or y2 <= y1:
                 return
             
         pre_crop = pre_img_cv[y1:y2, x1:x2]
-        # 比較用に128x128へリサイズ（微小なノイズ軽減と処理高速化）
         pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
         
         waiting_logged = False
+        frame_buffer = [] # 直近のフレームを保持するバッファ
         
         while not _stop_requested:
             curr_img_pil, curr_monitor = take_screenshot()
@@ -203,47 +201,52 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
                 curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
                 
+                # フレームバッファの更新（直近5フレームを保持）
+                frame_buffer.append(curr_crop_small)
+                if len(frame_buffer) > 5:
+                    frame_buffer.pop(0)
+                
+                dynamic_mask = np.zeros((128, 128), dtype=np.uint8)
+                
+                # 3フレーム以上蓄積されたら、動画領域（動的マスク）を計算
+                if len(frame_buffer) >= 3:
+                    # ピクセルごとの標準偏差（変化の激しさ）を計算
+                    std_dev = np.std(frame_buffer, axis=0)
+                    # 標準偏差が一定以上（変化し続けている）箇所を動画領域としてマスク
+                    dynamic_mask = (std_dev > 10).astype(np.uint8) * 255
+                    
+                    # マスクを少し膨張させて、動画の境界の揺らぎをカバーする
+                    kernel = np.ones((5, 5), np.uint8)
+                    dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
+                
+                # 記録時画像と現在画像の差分を計算
                 diff = cv2.absdiff(pre_crop_small, curr_crop_small)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
-                total_diff_ratio = np.count_nonzero(thresh) / thresh.size
+                # ★動画領域（動的マスク）を差分から除外（無視）する
+                static_thresh = cv2.bitwise_and(thresh, cv2.bitwise_not(dynamic_mask))
                 
-                is_match = False
-                if total_diff_ratio <= 0.02:
-                    is_match = True # ほぼ完全一致
-                elif total_diff_ratio > 0.15:
-                    is_match = False # 全体的に違いすぎる
+                # 静的領域（比較対象となるUI部分）のピクセル数
+                static_area_size = (128 * 128) - np.count_nonzero(dynamic_mask)
+                
+                # 静的領域が極端に少ない（画面のほぼ全体が動画）場合を除き、静的領域のみで変化率を計算
+                if static_area_size > 1000: 
+                    diff_ratio = np.count_nonzero(static_thresh) / static_area_size
                 else:
-                    # 局所的な大きな変化（別画面の中央コンテンツ等）がないかブロック分割で確認
-                    grid_size = 4
-                    h_step = 128 // grid_size
-                    w_step = 128 // grid_size
-                    
-                    max_block_diff = 0.0
-                    for row in range(grid_size):
-                        for col in range(grid_size):
-                            block = thresh[row*h_step:(row+1)*h_step, col*w_step:(col+1)*w_step]
-                            block_diff = np.count_nonzero(block) / block.size
-                            if block_diff > max_block_diff:
-                                max_block_diff = block_diff
-                                
-                    # 1つのブロックでも25%以上違えば、決定的なコンテンツの違いとみなす
-                    if max_block_diff < 0.25:
-                        is_match = True
-                    else:
-                        is_match = False
+                    diff_ratio = np.count_nonzero(thresh) / (128 * 128)
                 
-                if is_match:
+                # 静的領域の変化率が10%以下なら「同じ画面」と判定
+                if diff_ratio <= 0.10:
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
-                        logger.info(f"[{workflow_id}] Screen matched (diff: {total_diff_ratio:.1%}). Resuming macro.")
+                        logger.info(f"[{workflow_id}] Screen matched (static diff: {diff_ratio:.1%}). Resuming macro.")
                         time.sleep(1.5)
                         update_ui("実行中...", False)
                     break
                 else:
                     if not waiting_logged:
                         update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {total_diff_ratio:.1%})")
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (static diff: {diff_ratio:.1%})")
                         waiting_logged = True
             else:
                 if not waiting_logged:
