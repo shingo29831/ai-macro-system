@@ -32,13 +32,39 @@ def calculate_and_update_diff(current_img) -> str:
 
 def _get_app_context(window_info: dict, x: int | None = None, y: int | None = None) -> dict | None:
     """該当アプリケーション専用のインスペクターがあれば、それを実行してコンテキストを取得する"""
+    context = None
     inspector = InspectorFactory.get_inspector(window_info)
     if inspector:
         try:
-            return inspector.inspect(window_info, x=x, y=y)
+            context = inspector.inspect(window_info, x=x, y=y)
         except Exception as e:
             print(f"Inspector error: {e}")
-    return None
+            
+    # インスペクターが無い、またはテキストが取得できなかった場合のフォールバック
+    if not context or not context.get("text"):
+        try:
+            from core.recorder.uia_scanner import get_focused_element_info
+            focused_info = get_focused_element_info()
+            if focused_info:
+                if context is None:
+                    context = {
+                        "app": "GenericUIA",
+                        "element_name": focused_info.get("name", ""),
+                        "control_type": focused_info.get("control_type", ""),
+                        "text": focused_info.get("value", "") or focused_info.get("name", ""),
+                        "value": focused_info.get("value", "")
+                    }
+                else:
+                    context["text"] = focused_info.get("value", "") or focused_info.get("name", "")
+                    context["value"] = focused_info.get("value", "")
+                    if not context.get("element_name"):
+                        context["element_name"] = focused_info.get("name", "")
+                    if not context.get("control_type"):
+                        context["control_type"] = focused_info.get("control_type", "")
+        except Exception as e:
+            print(f"UIA fallback error: {e}")
+            
+    return context
 
 def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False, ime_active: bool = False):
     event_no = state.get_next_event_no()

@@ -34,9 +34,12 @@ class TypingSessionAggregator:
                 role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"]
             )
             is_text_input = action in ["type_text", "key_down"] and not is_special_key
+            is_uia_scan = action == "uia_scan"
+            is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
 
-            # セッションの継続条件: 文字入力であり、かつ前回の入力からタイムアウト以内であること
-            if is_text_input:
+            # セッションの継続条件: 文字入力、UIAスキャン、または確定キー(Enter/Tab)
+            # これらを同一セッションに含めることで、確定後の文字列を後から抽出可能にする
+            if is_text_input or is_uia_scan or is_confirm_key:
                 if not current_session or (timestamp - last_timestamp <= self.session_timeout_ms):
                     current_session.append(event)
                     last_timestamp = timestamp
@@ -48,15 +51,9 @@ class TypingSessionAggregator:
                     last_timestamp = timestamp
                     continue
 
-            # 文字入力以外のイベント（クリック、移動、Enter/Tab等の特殊キー）が来た場合
+            # 文字入力・確定以外のイベント（クリック、移動、Esc等の特殊キー）が来た場合
             if current_session:
-                # EnterやTabは入力確定トリガーとして扱うため、セッションに含めて評価する
-                if is_special_key and role_lower in ["enter", "tab"]:
-                    current_session.append(event)
-                    self._flush_session(current_session, aggregated_events)
-                    continue
-                else:
-                    self._flush_session(current_session, aggregated_events)
+                self._flush_session(current_session, aggregated_events)
 
             aggregated_events.append(event)
 
@@ -73,8 +70,15 @@ class TypingSessionAggregator:
         if not session:
             return
 
+        # uia_scanのみのセッションなど、実質的なキー入力がない場合はそのまま出力して終了
+        has_key_input = any(e.get("raw_action") in ["key_down", "type_text"] for e in session)
+        if not has_key_input:
+            output_list.extend(session)
+            session.clear()
+            return
+
         # 単一のイベントで、かつ特殊な削除キーなどの場合はそのまま出力して終了
-        if len(session) == 1 and str(session[0].get("semantic_role", "")).lower() not in ["space", "backspace", "delete"]:
+        if len(session) == 1 and str(session[0].get("semantic_role", "")).lower() not in ["space", "backspace", "delete"] and session[0].get("raw_action") != "uia_scan":
             output_list.append(session[0])
             session.clear()
             return
@@ -82,18 +86,54 @@ class TypingSessionAggregator:
         target_event_id = session[0].get("event_id", "unknown")
         logger.info(f"[TypingAggregator] セッション集約を開始 (イベント数: {len(session)}, 開始ID: {target_event_id})")
 
+        # セッションの末尾にある特殊キー（Enter, Tabなど）や uia_scan を抽出して分離する
+        # これらは type_text の後に独立したキーイベントとして実行させるため
+        trailing_events = []
+        while session:
+            last_event = session[-1]
+            action = last_event.get("raw_action", "")
+            role_lower = str(last_event.get("semantic_role", "")).lower()
+            is_special = action == "key_down" and (
+                role_lower.startswith("key.") or 
+                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"]
+            )
+            is_uia = action == "uia_scan"
+            
+            if is_special or is_uia:
+                trailing_events.insert(0, session.pop())
+            else:
+                break
+
+        if not session:
+            # すべて特殊キーやuia_scanだった場合はそのまま出力して終了
+            output_list.extend(trailing_events)
+            return
+
         # -------------------------------------------------------------------------
         # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
         # -------------------------------------------------------------------------
         uia_rescued_text = ""
-        for item in reversed(session):
-            app_ctx = item.get("app_context")
+        # 抽出対象は session 本体と、分離した trailing_events (Enter, Tab, uia_scan) の両方
+        all_events_in_session = session + trailing_events
+        for item in reversed(all_events_in_session):
+            # パターンA: uia_scan イベントからの抽出（タブ補完後の文字など）
+            if item.get("raw_action") == "uia_scan":
+                uia_info = item.get("content", {}).get("uia_info", {})
+                val = uia_info.get("value") or uia_info.get("name")
+                if val and len(str(val).strip()) > 0:
+                    uia_rescued_text = str(val).strip()
+                    logger.info(f"[TypingAggregator] UIAレスキュー成功(uia_scan): 確定文字列 '{uia_rescued_text}' を採用")
+                    break
+
+            # パターンB: app_context からの抽出（Enter確定時の文字など）
+            # ログのキー名揺れに対応 (app_context, AppSpecificContext, appSpecificContext)
+            app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
                 # Edit要素やValuePatternから取れた確定文字列を探す
                 val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
                 if val and len(str(val).strip()) > 0:
                     uia_rescued_text = str(val).strip()
-                    logger.info(f"[TypingAggregator] UIAレスキュー成功: 確定文字列 '{uia_rescued_text}' を採用")
+                    logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
                     break
 
         # -------------------------------------------------------------------------
@@ -134,24 +174,27 @@ class TypingSessionAggregator:
         # 最終採用テキストの決定 (UIA > Fallback Key Log)
         final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
-        if not final_text:
+        if final_text:
+            # 集約された1つの代表イベントを生成
+            representative_event = session[0].copy()
+            representative_event["raw_action"] = "type_text"
+            representative_event["semantic_role"] = final_text
+            representative_event["ui_type"] = "text"
+            
+            # 実行エンジンの自己修復・フォールバック用にセッション内の全イベントIDを記録
+            representative_event["fallback_events"] = [item.get("event_id") for item in session if item.get("event_id")]
+            
+            # 不要な1文字ごとのOCR画像パスやノイズをクリア
+            representative_event["diff_val"] = 0.0
+            
+            output_list.append(representative_event)
+            logger.info(f"[TypingAggregator] セッションを1つのアクションへ統合完了: TYPE_TEXT -> '{final_text}'")
+        else:
             logger.warning(f"[TypingAggregator] セッション ({target_event_id}) から有効なテキストを抽出できませんでした。生イベントを復元します。")
             output_list.extend(session)
-            session.clear()
-            return
 
-        # 集約された1つの代表イベントを生成
-        representative_event = session[0].copy()
-        representative_event["raw_action"] = "type_text"
-        representative_event["semantic_role"] = final_text
-        representative_event["ui_type"] = "text"
+        # 分離しておいた末尾の特殊キーイベントを復元して追加（uia_scanは実行アクションではないため除外）
+        trailing_special_keys = [e for e in trailing_events if e.get("raw_action") != "uia_scan"]
+        output_list.extend(trailing_special_keys)
         
-        # 実行エンジンの自己修復・フォールバック用にセッション内の全イベントIDを記録
-        representative_event["fallback_events"] = [item.get("event_id") for item in session if item.get("event_id")]
-        
-        # 不要な1文字ごとのOCR画像パスやノイズをクリア
-        representative_event["diff_val"] = 0.0
-        
-        output_list.append(representative_event)
-        logger.info(f"[TypingAggregator] セッションを1つのアクションへ統合完了: TYPE_TEXT -> '{final_text}'")
         session.clear()
