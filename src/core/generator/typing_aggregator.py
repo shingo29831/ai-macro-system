@@ -122,7 +122,7 @@ class TypingSessionAggregator:
         # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
         # -------------------------------------------------------------------------
         import urllib.parse
-        def _extract_search_query(url_or_text: str) -> str:
+        def _extract_search_query(url_or_text: str) -> Optional[str]:
             if not url_or_text.startswith("http"):
                 return url_or_text
             try:
@@ -133,7 +133,8 @@ class TypingSessionAggregator:
                 elif 'text' in qs: return qs['text'][0]
             except Exception:
                 pass
-            return url_or_text
+            # 検索クエリが含まれない純粋なURLの場合は、サジェストの誤検知とみなして採用しない
+            return None
 
         uia_rescued_text = ""
         # 抽出対象は session 本体と、分離した trailing_events (Enter, Tab, uia_scan) の両方
@@ -144,9 +145,11 @@ class TypingSessionAggregator:
                 uia_info = item.get("content", {}).get("uia_info", {})
                 val = uia_info.get("value") or uia_info.get("name")
                 if val and len(str(val).strip()) > 0:
-                    uia_rescued_text = _extract_search_query(str(val).strip())
-                    logger.info(f"[TypingAggregator] UIAレスキュー成功(uia_scan): 確定文字列 '{uia_rescued_text}' を採用")
-                    break
+                    extracted = _extract_search_query(str(val).strip())
+                    if extracted:
+                        uia_rescued_text = extracted
+                        logger.info(f"[TypingAggregator] UIAレスキュー成功(uia_scan): 確定文字列 '{uia_rescued_text}' を採用")
+                        break
 
             # パターンB: app_context からの抽出（Enter確定時の文字など）
             # ログのキー名揺れに対応 (app_context, AppSpecificContext, appSpecificContext)
@@ -159,9 +162,11 @@ class TypingSessionAggregator:
                     
                 val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
                 if val and len(str(val).strip()) > 0:
-                    uia_rescued_text = _extract_search_query(str(val).strip())
-                    logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
-                    break
+                    extracted = _extract_search_query(str(val).strip())
+                    if extracted:
+                        uia_rescued_text = extracted
+                        logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
+                        break
 
         # -------------------------------------------------------------------------
         # 優先順位 2: UIAが取れなかった場合の生キーログ結合 ＋ ローマ字/かな変換

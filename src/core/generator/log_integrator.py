@@ -495,6 +495,12 @@ def generate_macro_workflow(
                 if not isinstance(log_entry, dict):
                     continue
                     
+                window_name = log_entry.get("WindowName") or "Unknown Window"
+                # --- システムウィンドウ（記録ウィジェット等）の操作をマクロから除外 ---
+                if "python" in window_name.lower() or "unknown window" in window_name.lower():
+                    continue
+                # --------------------------------------------------------------------
+                    
                 event_no = log_entry.get("EventNo", f"{i+1:03d}")
                 event_id = f"evt_{event_no}" if not str(event_no).startswith("evt_") else str(event_no)
                 
@@ -508,7 +514,6 @@ def generate_macro_workflow(
                 except Exception:
                     safe_timestamp = 0
 
-                window_name = log_entry.get("WindowName") or "Unknown Window"
                 win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
                 win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
                 

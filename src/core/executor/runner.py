@@ -253,12 +253,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 launch_cmd = "start msedge"
                             elif "excel" in lower_app_name:
                                 launch_cmd = "start excel"
-                            else:
-                                # 汎用的なフォールバック
-                                launch_cmd = f"start \"\" \"{app_name}\""
                                 
                             if launch_cmd:
-                                subprocess.Popen(launch_cmd, shell=True)
+                                # cmdウィンドウを表示させないフラグ
+                                creationflags = 0x08000000 # CREATE_NO_WINDOW
+                                subprocess.Popen(launch_cmd, shell=True, creationflags=creationflags)
                                 time.sleep(4.0) # 起動待ち
                                 
                                 # 再検索
