@@ -10,6 +10,8 @@ requests
 # OS Hooks & Automation
 pynput
 mss
+pywinauto
+pywin32
 
 # AI Models (Local)
 llama-cpp-python
@@ -26,3 +28,5 @@ Levenshtein
 pywintrace
 
 PySide6-Fluent-Widgets
+
+uiautomation==2.0.29

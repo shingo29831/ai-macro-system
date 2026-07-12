@@ -5,13 +5,18 @@ import threading
 import traceback
 from core.recorder.state import state
 from core.recorder import process_monitor, screen_capturer
-from core.recorder.event_processor import start_key_event_worker, start_mouse_event_worker, stop_key_event_worker, stop_mouse_event_worker, run_click_process_thread
+from core.recorder.event_processor import start_key_event_worker, start_mouse_event_worker, stop_key_event_worker, stop_mouse_event_worker, run_click_process_thread, process_uia_event, process_office_event
+
 from core.recorder.win_scroll import start_native_scroll_hook, stop_native_scroll_hook
 from core.recorder.input_listener import on_move, on_click, on_scroll, on_press, on_release
 from core.recorder.log_builder import create_end_log, save_input_logs
 
+from core.recorder.key_hook import KeyHookManager
+from core.recorder.office_monitor import OfficeMonitorManager
+
 _mouse_listener = None
 _keyboard_listener = None
+_key_hook_manager = None
 
 def set_shortcut_stop_callback(callback):
     state.shortcut_stop_callback = callback
@@ -22,7 +27,7 @@ def get_current_workflow_id() -> str | None:
     return None
 
 def start_recording():
-    global _mouse_listener, _keyboard_listener
+    global _mouse_listener, _keyboard_listener, _key_hook_manager, _office_monitor_manager
 
     if state.is_recording:
         print("すでに記録中です")
@@ -48,6 +53,12 @@ def start_recording():
         start_mouse_event_worker()
         start_native_scroll_hook()
 
+        # 追加: 新規モニター・フックの初期化と起動
+        _key_hook_manager = KeyHookManager(on_tab_pressed_callback=process_uia_event)
+        _office_monitor_manager = OfficeMonitorManager(callback=process_office_event)
+        _key_hook_manager.start()
+        _office_monitor_manager.start()
+
         _mouse_listener = mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll)
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         _mouse_listener.start()
@@ -60,6 +71,10 @@ def start_recording():
     except Exception:
         state.is_recording = False
         state.is_stopping = False
+        if _key_hook_manager:
+            _key_hook_manager.stop()
+        if _office_monitor_manager:
+            _office_monitor_manager.stop()
         stop_native_scroll_hook()
         stop_mouse_event_worker()
         stop_key_event_worker()

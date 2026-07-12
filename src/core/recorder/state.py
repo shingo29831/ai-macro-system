@@ -9,6 +9,8 @@ class RecorderState:
         self.is_stopping = False
         self.is_click_processing = False
         
+        self.is_loop_recording = False  # 追加: 繰り返し作業の記録状態フラグ
+        
         self.input_logs = []
         self.input_logs_lock = threading.Lock()
         

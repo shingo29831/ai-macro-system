@@ -65,6 +65,7 @@ class InputLogData(BaseModel):
     windowSize: Size = Field(..., description="対象ウィンドウの全体サイズ")
     windowCoordinates: Coordinates = Field(..., description="対象ウィンドウのデスクトップ上における絶対座標")
     cursorCoordinates: Optional[Coordinates] = Field(None, description="操作が実行された瞬間のマウスカーソルの絶対座標（キーボード操作時などは省略可）")
+    appSpecificContext: Optional[dict] = Field(None, description="アプリ固有の詳細コンテキスト情報（Excelのセル内容、ブラウザのURLなど）")
 
 class PythonOsHookOutput(BaseModel):
     inputLog: InputLogData

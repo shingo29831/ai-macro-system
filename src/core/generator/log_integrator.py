@@ -495,6 +495,12 @@ def generate_macro_workflow(
                 if not isinstance(log_entry, dict):
                     continue
                     
+                window_name = log_entry.get("WindowName") or "Unknown Window"
+                # --- システムウィンドウ（記録ウィジェット等）の操作をマクロから除外 ---
+                if "python" in window_name.lower() or "unknown window" in window_name.lower():
+                    continue
+                # --------------------------------------------------------------------
+                    
                 event_no = log_entry.get("EventNo", f"{i+1:03d}")
                 event_id = f"evt_{event_no}" if not str(event_no).startswith("evt_") else str(event_no)
                 
@@ -508,7 +514,6 @@ def generate_macro_workflow(
                 except Exception:
                     safe_timestamp = 0
 
-                window_name = log_entry.get("WindowName") or "Unknown Window"
                 win_size_data = log_entry.get("WindowSize") or {"width": 0, "height": 0}
                 win_coord_data = log_entry.get("WindowCoordinates") or {"x": 0, "y": 0}
                 
@@ -517,6 +522,7 @@ def generate_macro_workflow(
 
                 raw_type = str(log_entry.get("Type", ""))
                 content_data = log_entry.get("Content") or {}
+                app_context = log_entry.get("AppSpecificContext") or log_entry.get("appSpecificContext") or {}
                 
                 raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
                 if raw_screen_coords:
@@ -589,37 +595,43 @@ def generate_macro_workflow(
                 if action_type == "move":
                     if crop_path_str and "delete_" in crop_path_str:
                         continue
-                    if diff_val < 0.001:
+                    if diff_val < 0.05:
                         continue
                 
                 if crop_path_str and crop_path_str != "切り抜き失敗":
-                    full_crop_path = macros_root / crop_path_str
-                    if full_crop_path.exists():
-                        logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
-                        
-                        future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
-                        future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
-                        
-                        yolo_results = future_yolo.result()
-                        ocr_results = future_ocr.result()
+                    context_text = app_context.get("text") or app_context.get("value") or app_context.get("url")
+                    if context_text:
+                        logger.info(f"[{workflow_id}] Found app_specific_context for Event {event_id}. Skipping CV inference.")
+                        semantic_role = context_text
+                        ui_type = app_context.get("type", "unknown")
+                    else:
+                        full_crop_path = macros_root / crop_path_str
+                        if full_crop_path.exists():
+                            logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
+                            
+                            future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
+                            future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
+                            
+                            yolo_results = future_yolo.result()
+                            ocr_results = future_ocr.result()
 
-                        if yolo_results:
-                            best_yolo = max(yolo_results, key=lambda x: x.confidence)
-                            ui_type = best_yolo.type
-                        
-                        if ocr_results:
-                            best_ocr = max(ocr_results, key=lambda x: x.confidence)
-                            if best_ocr.content and action_type in ["click", "move"]:
-                                semantic_role = best_ocr.content
-                                
-                            for ocr_res in ocr_results:
-                                context_components.append(ContextComponent(
-                                    type="text",
-                                    content=ocr_res.content,
-                                    relativeBoundingBox=ocr_res.boundingBox,
-                                    confidence=ocr_res.confidence,
-                                    parentRelevance=1.0
-                                ))
+                            if yolo_results:
+                                best_yolo = max(yolo_results, key=lambda x: x.confidence)
+                                ui_type = best_yolo.type
+                            
+                            if ocr_results:
+                                best_ocr = max(ocr_results, key=lambda x: x.confidence)
+                                if best_ocr.content and action_type in ["click", "move"]:
+                                    semantic_role = best_ocr.content
+                                    
+                                for ocr_res in ocr_results:
+                                    context_components.append(ContextComponent(
+                                        type="text",
+                                        content=ocr_res.content,
+                                        relativeBoundingBox=ocr_res.boundingBox,
+                                        confidence=ocr_res.confidence,
+                                        parentRelevance=1.0
+                                    ))
 
                 action_detail = ActionDetail(
                     inputType=raw_type,
@@ -667,373 +679,39 @@ def generate_macro_workflow(
                     "win_y": win_y,
                     "win_w": win_size_data.get("width", 0),
                     "win_h": win_size_data.get("height", 0),
-                    "ime_active": ime_active
+                    "ime_active": ime_active,
+                    "app_context": app_context
                 })
 
         if progress_callback:
-            progress_callback(75, "入力ログの最適化... 変数候補の抽出とグループ化")
+            progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
 
-        variables = {}
-        processed_info = []
-        current_group = []
+            variables = {}
 
-        def flush_group(current_index: int):
-            if not current_group:
-                return
-            
-            if len(current_group) == 1 and str(current_group[0]["semantic_role"]).lower() not in ["space", "tab", "backspace", "delete"]:
-                processed_info.append(current_group[0])
-                current_group.clear()
-                return
-
-            avg_diff = sum(item["diff_val"] for item in current_group) / len(current_group)
-            
-            if avg_diff < 0.3:
-                base_text = ""
-                any_ime_active = any(item.get("ime_active", False) for item in current_group)
-                for item in current_group:
-                    role = str(item["semantic_role"])
-                    r_lower = role.lower()
-                    if r_lower == "backspace":
-                        base_text = base_text[:-1]
-                    elif r_lower == "space":
-                        base_text += " "
-                    elif r_lower not in ["tab", "delete", "esc"]:
-                        base_text += role
+            try:
+                from core.generator.typing_aggregator import TypingSessionAggregator
+                aggregator = TypingSessionAggregator(session_timeout_ms=600)
                 
-                try:
-                    from core.recorder.romaji_converter import to_hiragana
-                except ImportError:
-                    to_hiragana = lambda x: x
-                    
-                target_lower = base_text.lower()
-                hiragana_target = to_hiragana(target_lower) if any_ime_active else target_lower
+                temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
                 
-                text = base_text
-                
-                group_img_paths_rel = []
-                for item in current_group:
-                    if item.get("pre_img_path"):
-                        group_img_paths_rel.append(item["pre_img_path"])
-
-                candidate_img_paths_rel = []
-                if len(current_group) > 0 and current_group[-1].get("pre_img_path"):
-                    candidate_img_paths_rel.append(current_group[-1]["pre_img_path"])
-                    
-                if current_index < len(temp_workflow_info):
-                    next_evt_img = temp_workflow_info[current_index].get("pre_img_path")
-                    if next_evt_img and next_evt_img not in candidate_img_paths_rel:
-                        candidate_img_paths_rel.append(next_evt_img)
-
-                if any_ime_active:
-                    for idx in range(current_index + 1, min(current_index + 3, len(temp_workflow_info))):
-                        evt = temp_workflow_info[idx]
-                        p = evt.get("pre_img_path")
-                        if p and p not in candidate_img_paths_rel:
-                            candidate_img_paths_rel.append(p)
-
-                crop_box = None
-                tracked_text = ""
-                base_target_full = macros_root / candidate_img_paths_rel[0] if candidate_img_paths_rel else None
-                
-                target_event_id = current_group[-1]['event_id']
-
-                if progress_callback:
-                    prog_val = 75 + int((current_index / max(1, len(temp_workflow_info))) * 4)
-                    progress_callback(prog_val, f"テキストフィールド追跡中... ({current_index}/{len(temp_workflow_info)})")
-
-                search_areas = []
-                last_click_pos = None
-                
-                last_click = next((item for item in reversed(processed_info) if item["raw_action"] == "click"), None)
-                if last_click:
-                    last_click_pos = (last_click.get("cursor_x", 0), last_click.get("cursor_y", 0))
-
-                if base_target_full and base_target_full.exists():
-                    try:
-                        with Image.open(base_target_full) as img_temp:
-                            max_w, max_h = img_temp.width, img_temp.height
-                            
-                        full_img_paths = [macros_root / p for p in group_img_paths_rel if (macros_root / p).exists()]
+                for info in temp_workflow_info:
+                    if info.get("raw_action") == "type_text" and info.get("semantic_role"):
+                        role_str = str(info["semantic_role"])
+                        role_lower = role_str.lower()
                         
-                        if len(full_img_paths) >= 2:
-                            eval_paths = full_img_paths[:5] if len(full_img_paths) > 5 else full_img_paths
-                            diff_bboxes = get_text_field_bboxes_cv(eval_paths, max_w, max_h)
-                            
-                            if diff_bboxes:
-                                raw_search_areas = []
-                                for dbbox in diff_bboxes:
-                                    dl, dt, dr, db = dbbox
-                                    raw_search_areas.append((max(0, dl - 30), max(0, dt - 20), min(max_w, dr + 400), min(max_h, db + 50)))
-                                
-                                merged_areas = []
-                                for rect in raw_search_areas:
-                                    x1, y1, x2, y2 = rect
-                                    has_merged = True
-                                    while has_merged:
-                                        has_merged = False
-                                        for i, (mx1, my1, mx2, my2) in enumerate(merged_areas):
-                                            if not (x2 < mx1 or x1 > mx2 or y2 < my1 or y1 > my2):
-                                                new_rect = (min(x1, mx1), min(y1, my1), max(x2, mx2), max(y2, my2))
-                                                merged_areas.pop(i)
-                                                x1, y1, x2, y2 = new_rect
-                                                has_merged = True
-                                                break
-                                    merged_areas.append((x1, y1, x2, y2))
-                                search_areas = merged_areas
-                                
-                    except Exception as e:
-                        logger.warning(f"[{workflow_id}] search_area calculation failed: {e}")
+                        if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
+                            var_name = f"search_query_{len(variables) + 1}"
+                            variables[var_name] = role_str
+                            info["semantic_role"] = f"{{{{{var_name}}}}}"
 
-                if base_target_full and base_target_full.exists():
-                    try:
-                        crop_box, tracked_text = track_text_field_by_scoring(current_group, candidate_img_paths_rel, macros_root, temp_dir, target_event_id, search_areas, last_click_pos)
-                    except Exception as e:
-                        logger.error(f"[{workflow_id}] Tracking error: {e}")
-                    
-                    if crop_box:
-                        logger.info(f"[{workflow_id}] Text field identified by tracking score: BBox={crop_box}")
-                    else:
-                        logger.warning(f"[{workflow_id}] Tracking failed. Falling back to differential BBox extraction.")
-                        try:
-                            if search_areas and 'diff_bboxes' in locals() and diff_bboxes:
-                                best_fallback_bbox = diff_bboxes[0]
-                                if last_click_pos:
-                                    best_dist = float('inf')
-                                    for dbbox in diff_bboxes:
-                                        cx = (dbbox[0] + dbbox[2]) / 2
-                                        cy = (dbbox[1] + dbbox[3]) / 2
-                                        dist = math.hypot(cx - last_click_pos[0], cy - last_click_pos[1])
-                                        if dist < best_dist:
-                                            best_dist = dist
-                                            best_fallback_bbox = dbbox
-
-                                refined_bbox, shape_info = refine_textfield_bbox_cv(str(base_target_full), best_fallback_bbox)
-                                logger.info(f"[{workflow_id}] Text field refined via CV. Shape: {shape_info}, BBox: {refined_bbox}")
-                                
-                                l, t, r, b = refined_bbox
-                                dl, dt, dr, db = best_fallback_bbox
-                                char_h = db - dt if (db - dt) > 0 else 20
-                                
-                                margin_x, margin_y = 5, 5
-                                max_v_margin = max(30, int(char_h * 1.5))
-                                
-                                t_crop = max(t, dt - max_v_margin)
-                                b_crop = min(b, db + max_v_margin)
-                                
-                                crop_box = (max(0, l - margin_x), max(0, t_crop - margin_y), min(max_w, r + margin_x), min(max_h, b_crop + margin_y))
-                        except Exception as e:
-                            logger.warning(f"[{workflow_id}] Error in text field extraction: {e}")
-
-                if not crop_box and base_target_full and base_target_full.exists():
-                    if last_click_pos:
-                        with Image.open(base_target_full) as img:
-                            cx, cy = last_click_pos
-                            left, top = max(0, cx - 300), max(0, cy - 100)
-                            right, bottom = min(img.width, cx + 300), min(img.height, cy + 100)
-                            crop_box = (left, top, right, bottom)
-                            logger.info(f"[{workflow_id}] Using click location fallback box: {crop_box}")
-
-                best_overall_text = ""
-                
-                if candidate_img_paths_rel and crop_box:
-                    cand_path_rel = candidate_img_paths_rel[-1]
-                    cand_full = macros_root / cand_path_rel
-                    if cand_full.exists():
-                        try:
-                            with Image.open(cand_full) as img:
-                                left, top, right, bottom = crop_box
-                                left, top = max(0, left), max(0, top)
-                                right, bottom = min(img.width, right), min(img.height, bottom)
-                                current_crop_box = (left, top, right, bottom)
-                                
-                                crop_img = img.crop(current_crop_box)
-                                temp_crop_path = temp_dir / f"temp_FINAL_TEXT_CROP_{target_event_id}.png"
-                                crop_img.save(temp_crop_path)
-                                
-                                ocr_results = read_text_from_image(str(temp_crop_path))
-                                if ocr_results:
-                                    valid_results = [res for res in ocr_results if res.content]
-                                        
-                                    if valid_results:
-                                        filtered_ocr_results = []
-                                        for i, res1 in enumerate(valid_results):
-                                            bx1, by1 = res1.boundingBox.x, res1.boundingBox.y
-                                            br1, bb1 = bx1 + res1.boundingBox.width, by1 + res1.boundingBox.height
-                                            is_enclosing = False
-                                            for j, res2 in enumerate(valid_results):
-                                                if i == j: continue
-                                                bx2, by2 = res2.boundingBox.x, res2.boundingBox.y
-                                                br2, bb2 = bx2 + res2.boundingBox.width, by2 + res2.boundingBox.height
-                                                if bx1 <= bx2 and by1 <= by2 and br1 >= br2 and bb1 >= bb2:
-                                                    if (br1 - bx1) > (br2 - bx2) or (bb1 - by1) > (bb2 - by2):
-                                                        is_enclosing = True
-                                                        break
-                                            if not is_enclosing:
-                                                filtered_ocr_results.append(res1)
-                                        
-                                        filtered_ocr_results.sort(key=lambda r: r.boundingBox.x)
-                                        
-                                        combined_text = ""
-                                        prev_right = -1
-                                        
-                                        for res in filtered_ocr_results:
-                                            text_part = res.content.strip()
-                                            bx = res.boundingBox.x
-                                            bw = res.boundingBox.width
-                                            bh = res.boundingBox.height
-                                            
-                                            if prev_right == -1:
-                                                combined_text += text_part
-                                                prev_right = bx + bw
-                                            else:
-                                                gap = bx - prev_right
-                                                max_gap = max(20, bh * 1.5)
-                                                
-                                                if gap <= max_gap:
-                                                    combined_text += text_part
-                                                    prev_right = max(prev_right, bx + bw)
-                                                else:
-                                                    logger.info(f"[{workflow_id}] Spatial gap {gap} exceeded max_gap {max_gap} at text '{text_part}'. Stopping concatenation to exclude unrelated UI elements.")
-                                                    break
-                                                    
-                                        if len(combined_text) > len(best_overall_text):
-                                            best_overall_text = combined_text
-                                            
-                        except Exception as e:
-                            logger.error(f"[{workflow_id}] Failed to extract text via cropped OCR for final candidate: {e}")
-
-                if best_overall_text:
-                    text = best_overall_text
-                    logger.info(f"[{workflow_id}] Final OCR extracted text from BBox: {text}")
-                else:
-                    logger.info(f"[{workflow_id}] Falling back to raw typed text: {base_text}")
-
-                var_name = f"search_query_{len(variables) + 1}"
-                variables[var_name] = text
-                
-                rep = current_group[0].copy()
-                rep["semantic_role"] = f"{{{{{var_name}}}}}"
-                rep["raw_action"] = "type_text"
-                rep["fallback_events"] = [item["event_id"] for item in current_group]
-                processed_info.append(rep)
-            else:
-                processed_info.extend(current_group)
-            
-            current_group.clear()
-
-        for i, info in enumerate(temp_workflow_info):
-            if info["raw_action"] == "unknown" or "recording" in info["raw_type"].lower():
-                continue
-                
-            if info["raw_action"] == "key_down":
-                role_lower = str(info["semantic_role"]).lower() if info["semantic_role"] else ""
-                
-                is_special = False
-                is_text_modifier = False
-                
-                if role_lower.startswith("key."):
-                    is_special = True
-                elif role_lower in ["space", "tab", "backspace", "delete"]:
-                    is_special = True
-                    is_text_modifier = True
-                elif role_lower in ["enter", "esc", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
-                    is_special = True
-                
-                if not is_special:
-                    current_group.append(info)
-                elif is_text_modifier and len(current_group) > 0:
-                    current_group.append(info)
-                else:
-                    flush_group(i)
-                    processed_info.append(info)
-            else:
-                flush_group(i)
-                processed_info.append(info)
-                
-        flush_group(len(temp_workflow_info))
-        temp_workflow_info = processed_info
-
-        if progress_callback:
-            progress_callback(80, "AI推論準備(LLM)... 文脈データの構築中")
-            
-        llm_client = LLMClient(host=config.llm_host, port=int(config.llm_port))
-        llm_enhanced_data = {}
-        
-        try:
-            summary_for_llm = [
-                {"id": info["event_id"], "ui": info["ui_type"], "text": info["semantic_role"]} 
-                for info in temp_workflow_info
-                if info["raw_action"] in ["click", "move"]
-            ]
-            
-            if summary_for_llm:
-                llm_prompt = (
-                    "Analyze the following UI interaction sequence. "
-                    "Return a JSON array where each object contains the original 'id', and an improved 'semantic_role' "
-                    "based on the context of the entire sequence.\n"
-                    f"{json.dumps(summary_for_llm, ensure_ascii=False)}"
-                )
-                
-                max_retries = 3
-                is_valid_response = False
-                
-                for attempt in range(max_retries):
-                    if progress_callback:
-                        retry_text = f" (再生成 {attempt}/{max_retries})" if attempt > 0 else ""
-                        progress_callback(80 + attempt * 2, f"AI推論中(LLM)... UIの役割を解釈中{retry_text}")
-
-                    logger.info(f"[{workflow_id}] Sending prompt to LLM (Attempt {attempt+1}/{max_retries})...")
-                    llm_response = llm_client.generate(prompt=llm_prompt)
-                    
-                    if llm_response and isinstance(llm_response, dict) and llm_response.get("success"):
-                        resp_data = llm_response.get("response", {})
-                        
-                        content = ""
-                        if isinstance(resp_data, dict) and "choices" in resp_data and len(resp_data["choices"]) > 0:
-                            content = resp_data["choices"][0].get("message", {}).get("content", "")
-                        elif isinstance(resp_data, str):
-                            content = resp_data
-                            
-                        json_start = content.find('[')
-                        json_end = content.rfind(']') + 1
-                        
-                        if progress_callback:
-                            progress_callback(86 + attempt, f"AI推論の検証中(LLM)... ハルシネーション検査{retry_text}")
-
-                        if json_start != -1 and json_end != -1:
-                            try:
-                                parsed_array = json.loads(content[json_start:json_end])
-                                
-                                if len(parsed_array) != len(summary_for_llm):
-                                    raise ValueError(f"Array length mismatch. Expected {len(summary_for_llm)}, got {len(parsed_array)}")
-                                
-                                temp_enhanced_data = {}
-                                for item in parsed_array:
-                                    if "id" not in item or "semantic_role" not in item:
-                                        raise ValueError("Missing 'id' or 'semantic_role' in JSON object")
-                                    
-                                    role = str(item["semantic_role"])
-                                    temp_enhanced_data[item["id"]] = role
-                                
-                                llm_enhanced_data = temp_enhanced_data
-                                is_valid_response = True
-                                logger.info(f"[{workflow_id}] LLM inference successful and validated.")
-                                break
-                                
-                            except json.JSONDecodeError:
-                                logger.warning(f"[{workflow_id}] JSON parsing failed on attempt {attempt+1}")
-                            except ValueError as ve:
-                                logger.warning(f"[{workflow_id}] Validation failed on attempt {attempt+1}: {ve}")
-                
-                if not is_valid_response:
-                    logger.warning(f"[{workflow_id}] All LLM retry attempts failed due to hallucination. Falling back to raw CV data.")
-                    
-        except Exception as e:
-            logger.warning(f"[{workflow_id}] LLM inference encountered fatal error. Falling back to CV results. Error: {e}")
+                logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
+            except Exception as e:
+                logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
 
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
+
+        llm_enhanced_data = {} 
 
         workflow_steps = []
         ui_targets_dict = {}
@@ -1044,6 +722,8 @@ def generate_macro_workflow(
         screen_size = Size(width=1920, height=1080)
         
         step_idx = 1
+        prev_window_name = None
+        
         for info in temp_workflow_info:
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
@@ -1053,6 +733,38 @@ def generate_macro_workflow(
 
             event_id = info["event_id"]
             fallback_evts = info.get("fallback_events", [event_id])
+            
+            # --- ウィンドウアクティブ化コマンドの自動挿入（サイズと座標情報をJSONで付与） ---
+            current_window = next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+            if current_window != "Unknown" and current_window != prev_window_name:
+                win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
+                win_x = win_ctx.coordinates.x if win_ctx else 0
+                win_y = win_ctx.coordinates.y if win_ctx else 0
+                win_w = win_ctx.size.width if win_ctx else 0
+                win_h = win_ctx.size.height if win_ctx else 0
+
+                win_info_json = json.dumps({
+                    "title": current_window,
+                    "x": win_x,
+                    "y": win_y,
+                    "width": win_w,
+                    "height": win_h
+                }, ensure_ascii=False)
+
+                workflow_steps.append(WorkflowStep(
+                    step_id=step_idx,
+                    intent="ACTIVATE_WINDOW",
+                    description=f"Activate window: {current_window}",
+                    context=WorkflowStepContext(active_window_name=current_window),
+                    action=WorkflowCommandAction(
+                        command="ACTIVATE_WINDOW",
+                        parameters=ActionParameters(text=win_info_json)
+                    ),
+                    fallback_raw_events=[event_id]
+                ))
+                step_idx += 1
+                prev_window_name = current_window
+            # ------------------------------------------------
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
             
@@ -1114,7 +826,7 @@ def generate_macro_workflow(
                     params = ActionParameters(text=final_semantic_role)
 
             step_context = WorkflowStepContext(
-                active_window_name=next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+                active_window_name=current_window
             )
 
             workflow_steps.append(WorkflowStep(
@@ -1188,13 +900,34 @@ def generate_macro_workflow(
                 cmd_type = step.action.command
                 params = step.action.parameters
                 
-                # ---------------------------------------------------------
-                # 一時的無効化: 発表時の安定稼働のため、自己修復機能(Healer)をバイパス
-                # ---------------------------------------------------------
-                # target_id_for_healer = f"tgt_{step.step_id}"
                 target_id_for_healer = None
 
-                if cmd_type == "MOUSE_CLICK":
+                # --- 実行用コマンドの生成 ---
+                if cmd_type == "ACTIVATE_WINDOW":
+                    if params.text:
+                        try:
+                            win_info = json.loads(params.text)
+                            window_title = win_info.get("title", "")
+                            win_x = win_info.get("x", 0)
+                            win_y = win_info.get("y", 0)
+                            win_w = win_info.get("width", 0)
+                            win_h = win_info.get("height", 0)
+                            
+                            raw_commands_data.append({
+                                "method": "activate_window",
+                                "args": {
+                                    "window_title": window_title,
+                                    "x": win_x,
+                                    "y": win_y,
+                                    "width": win_w,
+                                    "height": win_h,
+                                    "target_id": target_id_for_healer,
+                                    "raw_event_id": raw_event_id
+                                }
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
+                elif cmd_type == "MOUSE_CLICK":
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates

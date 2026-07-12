@@ -113,6 +113,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
         commands = macro_data.get("commands", [])
         macro_needs_save = False
+        _browser_activated_once = False
         
         for i, cmd in enumerate(commands):
             if _stop_requested:
@@ -215,6 +216,97 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 if remainder > 0 and not _stop_requested:
                     time.sleep(remainder)
                     
+            elif method == "activate_window":
+                window_title = args.get("window_title", "")
+                win_x = args.get("x", 0)
+                win_y = args.get("y", 0)
+                win_w = args.get("width", 0)
+                win_h = args.get("height", 0)
+                
+                if window_title and platform.system() == "Windows":
+                    try:
+                        import pywinauto
+                        import re
+                        import subprocess
+                        
+                        desktop = pywinauto.Desktop(backend="uia")
+                        safe_title = re.escape(window_title)
+                        windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+                        
+                        # タイトルからアプリ名（末尾の - 以降）を抽出
+                        app_name = window_title.split("—")[-1].split("-")[-1].strip()
+                        
+                        if not windows and app_name:
+                            safe_app_name = re.escape(app_name)
+                            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                                
+                        if not windows:
+                            logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
+                            # アプリが立ち上がっていない場合の起動試行
+                            lower_app_name = app_name.lower()
+                            launch_cmd = None
+                            if "firefox" in lower_app_name:
+                                launch_cmd = "start firefox"
+                            elif "chrome" in lower_app_name:
+                                launch_cmd = "start chrome"
+                            elif "edge" in lower_app_name:
+                                launch_cmd = "start msedge"
+                            elif "excel" in lower_app_name:
+                                launch_cmd = "start excel"
+                                
+                            if launch_cmd:
+                                # cmdウィンドウを表示させないフラグ
+                                creationflags = 0x08000000 # CREATE_NO_WINDOW
+                                subprocess.Popen(launch_cmd, shell=True, creationflags=creationflags)
+                                time.sleep(4.0) # 起動待ち
+                                
+                                # 再検索
+                                windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                                
+                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                            if is_browser:
+                                _browser_activated_once = True
+                                
+                        if windows:
+                            win = windows[0]
+                            # 最小化されている場合は元に戻す
+                            if win.is_minimized():
+                                win.restore()
+                            win.set_focus()
+                            
+                            # ウィンドウサイズと位置の復元
+                            if win_w > 0 and win_h > 0:
+                                try:
+                                    import ctypes
+                                    hwnd = win.handle
+                                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
+                                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+                                except Exception as e:
+                                    logger.warning(f"Failed to resize window: {e}")
+                                    
+                            time.sleep(0.5)
+                            
+                            # ブラウザの初回アクティブ化時に新規タブを開く
+                            lower_app_name = app_name.lower()
+                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                            if is_browser and not _browser_activated_once:
+                                _browser_activated_once = True
+                                logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
+                                keyboard.press(Key.ctrl)
+                                keyboard.press('t')
+                                keyboard.release('t')
+                                keyboard.release(Key.ctrl)
+                                time.sleep(0.5)
+                        else:
+                            logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
+                            # 見つからない場合はエラーにしてマクロを安全停止する
+                            raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
+                            
+                    except Exception as e:
+                        logger.warning(f"[{workflow_id}] Failed to activate window {window_title}: {e}")
+                        if "対象のアプリ" in str(e):
+                            raise e
+
             elif method == "click":
                 x = args.get("x", 0)
                 y = args.get("y", 0)
@@ -261,6 +353,31 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         placeholder = f"{{{{{key}}}}}"
                         if placeholder in text:
                             text = text.replace(placeholder, str(val))
+                            
+                    # 半角/全角の自動制御 (Windows)
+                    if platform.system() == "Windows":
+                        import unicodedata
+                        def contains_zenkaku(s: str) -> bool:
+                            for c in s:
+                                # 'F' (Fullwidth), 'W' (Wide) のみを全角と判定
+                                # 'A' (Ambiguous) は環境依存のため除外（誤判定防止）
+                                if unicodedata.east_asian_width(c) in ('F', 'W'):
+                                    return True
+                            return False
+                        
+                        try:
+                            hwnd = ctypes.windll.user32.GetForegroundWindow()
+                            # 別プロセスのIMEを制御するためには DefaultIMEWnd にメッセージを送る必要がある
+                            default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
+                            if default_ime_wnd:
+                                is_zenkaku = contains_zenkaku(text)
+                                WM_IME_CONTROL = 0x0283
+                                IMC_SETOPENSTATUS = 0x0006
+                                ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
+                                time.sleep(0.05) # IMEの状態が反映されるまで少し待つ
+                        except Exception as e:
+                            logger.warning(f"Failed to set IME state: {e}")
+
                     keyboard.type(text)
                     
             elif method == "press_key":
