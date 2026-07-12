@@ -717,7 +717,7 @@ def generate_macro_workflow(
         screen_size = Size(width=1920, height=1080)
         
         step_idx = 1
-        prev_window_name = None  # 追加: ウィンドウ切り替え検知用
+        prev_window_name = None
         
         for info in temp_workflow_info:
             raw_action = info["raw_action"]
@@ -729,9 +729,15 @@ def generate_macro_workflow(
             event_id = info["event_id"]
             fallback_evts = info.get("fallback_events", [event_id])
             
-            # --- ウィンドウアクティブ化コマンドの自動挿入 ---
+            # --- ウィンドウアクティブ化コマンドの自動挿入（サイズと座標情報を付与） ---
             current_window = next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
             if current_window != "Unknown" and current_window != prev_window_name:
+                win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
+                win_x = win_ctx.coordinates.x if win_ctx else 0
+                win_y = win_ctx.coordinates.y if win_ctx else 0
+                win_w = win_ctx.size.width if win_ctx else 0
+                win_h = win_ctx.size.height if win_ctx else 0
+
                 workflow_steps.append(WorkflowStep(
                     step_id=step_idx,
                     intent="ACTIVATE_WINDOW",
@@ -739,7 +745,7 @@ def generate_macro_workflow(
                     context=WorkflowStepContext(active_window_name=current_window),
                     action=WorkflowCommandAction(
                         command="ACTIVATE_WINDOW",
-                        parameters=ActionParameters(text=current_window)
+                        parameters=ActionParameters(text=f"{current_window}|{win_x}|{win_y}|{win_w}|{win_h}")
                     ),
                     fallback_raw_events=[event_id]
                 ))
@@ -886,10 +892,21 @@ def generate_macro_workflow(
                 # --- 実行用コマンドの生成 ---
                 if cmd_type == "ACTIVATE_WINDOW":
                     if params.text:
+                        parts = params.text.split('|')
+                        window_title = parts[0]
+                        win_x = int(parts[1]) if len(parts) > 1 else 0
+                        win_y = int(parts[2]) if len(parts) > 2 else 0
+                        win_w = int(parts[3]) if len(parts) > 3 else 0
+                        win_h = int(parts[4]) if len(parts) > 4 else 0
+                        
                         raw_commands_data.append({
                             "method": "activate_window",
                             "args": {
-                                "window_title": params.text,
+                                "window_title": window_title,
+                                "x": win_x,
+                                "y": win_y,
+                                "width": win_w,
+                                "height": win_h,
                                 "target_id": target_id_for_healer,
                                 "raw_event_id": raw_event_id
                             }

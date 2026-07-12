@@ -215,6 +215,82 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 if remainder > 0 and not _stop_requested:
                     time.sleep(remainder)
                     
+            elif method == "activate_window":
+                window_title = args.get("window_title", "")
+                win_x = args.get("x", 0)
+                win_y = args.get("y", 0)
+                win_w = args.get("width", 0)
+                win_h = args.get("height", 0)
+                
+                if window_title and platform.system() == "Windows":
+                    try:
+                        import pywinauto
+                        import re
+                        import subprocess
+                        
+                        desktop = pywinauto.Desktop(backend="uia")
+                        safe_title = re.escape(window_title)
+                        windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+                        
+                        # タイトルからアプリ名（末尾の - 以降）を抽出
+                        app_name = window_title.split("—")[-1].split("-")[-1].strip()
+                        
+                        if not windows and app_name:
+                            safe_app_name = re.escape(app_name)
+                            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                                
+                        if not windows:
+                            logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
+                            # アプリが立ち上がっていない場合の起動試行
+                            lower_app_name = app_name.lower()
+                            launch_cmd = None
+                            if "firefox" in lower_app_name:
+                                launch_cmd = "start firefox"
+                            elif "chrome" in lower_app_name:
+                                launch_cmd = "start chrome"
+                            elif "edge" in lower_app_name:
+                                launch_cmd = "start msedge"
+                            elif "excel" in lower_app_name:
+                                launch_cmd = "start excel"
+                            else:
+                                # 汎用的なフォールバック
+                                launch_cmd = f"start \"\" \"{app_name}\""
+                                
+                            if launch_cmd:
+                                subprocess.Popen(launch_cmd, shell=True)
+                                time.sleep(4.0) # 起動待ち
+                                
+                                # 再検索
+                                windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                                
+                        if windows:
+                            win = windows[0]
+                            # 最小化されている場合は元に戻す
+                            if win.is_minimized():
+                                win.restore()
+                            win.set_focus()
+                            
+                            # ウィンドウサイズと位置の復元
+                            if win_w > 0 and win_h > 0:
+                                try:
+                                    import ctypes
+                                    hwnd = win.handle
+                                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
+                                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+                                except Exception as e:
+                                    logger.warning(f"Failed to resize window: {e}")
+                                    
+                            time.sleep(0.5)
+                        else:
+                            logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
+                            # 見つからない場合はエラーにしてマクロを安全停止する
+                            raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
+                            
+                    except Exception as e:
+                        logger.warning(f"[{workflow_id}] Failed to activate window {window_title}: {e}")
+                        if "対象のアプリ" in str(e):
+                            raise e
+
             elif method == "click":
                 x = args.get("x", 0)
                 y = args.get("y", 0)
