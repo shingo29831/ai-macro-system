@@ -1,17 +1,13 @@
 # src/core/executor/runner.py
 # @role: 生成されたExecutable Macro (executable_macro.json) を読み込み、ローカルで自律実行する実行エンジン。
-#
-# 【参照元 (呼ばれる側)】
-#   - ui/viewmodels/* (ユーザーの実行ボタン押下時)
-#
-# 【参照先 (呼ぶ側)】
-#   - models/data_types (設定ファイルの型参照)
 
 import json
 import logging
 import time
 import platform
 import ctypes
+import re
+import subprocess
 from pathlib import Path
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key, Listener as KeyboardListener
@@ -20,16 +16,18 @@ from models.data_types import AppConfig
 
 logger = logging.getLogger(__name__)
 
-# Windows API Constants for Scroll Simulation
 MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
 WHEEL_DELTA = 120
 
-# OSレベルのDPIスケーリングによるマウス座標のズレを防止
+_is_running = False
+_stop_requested = False
+_browser_activated_once = False
+
 def _set_dpi_awareness():
     if platform.system() == "Windows":
         try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2) # PROCESS_PER_MONITOR_DPI_AWARE
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
             try:
                 ctypes.windll.user32.SetProcessDPIAware()
@@ -38,13 +36,174 @@ def _set_dpi_awareness():
 
 _set_dpi_awareness()
 
-_is_running = False
-_stop_requested = False
+def _set_ime_state(text: str):
+    """テキストに全角文字が含まれるか判定し、WindowsのIMEを自動でオン/オフする"""
+    if platform.system() != "Windows":
+        return
+    import unicodedata
+    def contains_zenkaku(s: str) -> bool:
+        for c in s:
+            if unicodedata.east_asian_width(c) in ('F', 'W'):
+                return True
+        return False
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
+        if default_ime_wnd:
+            is_zenkaku = contains_zenkaku(text)
+            WM_IME_CONTROL = 0x0283
+            IMC_SETOPENSTATUS = 0x0006
+            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
+            time.sleep(0.05)
+    except Exception as e:
+        logger.warning(f"Failed to set IME state: {e}")
+
+def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str):
+    """対象のウィンドウをアクティブにし、必要に応じてアプリを起動・サイズ復元を行う"""
+    global _browser_activated_once
+    if not window_title or platform.system() != "Windows":
+        return
+
+    import pywinauto
+    desktop = pywinauto.Desktop(backend="uia")
+    safe_title = re.escape(window_title)
+    windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+    
+    app_name = window_title.split("—")[-1].split("-")[-1].strip()
+    
+    if not windows and app_name:
+        safe_app_name = re.escape(app_name)
+        windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            
+    if not windows:
+        logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
+        lower_app_name = app_name.lower()
+        launch_cmd = None
+        if "firefox" in lower_app_name:
+            launch_cmd = "start firefox"
+        elif "chrome" in lower_app_name:
+            launch_cmd = "start chrome"
+        elif "edge" in lower_app_name:
+            launch_cmd = "start msedge"
+        elif "excel" in lower_app_name:
+            launch_cmd = "start excel"
+            
+        if launch_cmd:
+            creationflags = 0x08000000 # CREATE_NO_WINDOW (cmd画面を非表示)
+            subprocess.Popen(launch_cmd, shell=True, creationflags=creationflags)
+            time.sleep(4.0)
+            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            
+        is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        if is_browser:
+            _browser_activated_once = True
+            
+    if windows:
+        win = windows[0]
+        if win.is_minimized():
+            win.restore()
+        win.set_focus()
+        
+        if win_w > 0 and win_h > 0:
+            try:
+                hwnd = win.handle
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+            except Exception as e:
+                logger.warning(f"Failed to resize window: {e}")
+                
+        time.sleep(0.5)
+        
+        lower_app_name = app_name.lower()
+        is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        if is_browser and not _browser_activated_once:
+            _browser_activated_once = True
+            logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
+            keyboard.press(Key.ctrl)
+            keyboard.press('t')
+            keyboard.release('t')
+            keyboard.release(Key.ctrl)
+            time.sleep(0.5)
+    else:
+        logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
+        raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
+
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback):
+    """記録時のスクリーンショットと現在の画面を比較し、類似度が閾値を超えるまで待機する"""
+    global _stop_requested
+    if not raw_event_id or win_w <= 0 or win_h <= 0:
+        return
+
+    pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+    if not pre_image_path.exists():
+        return
+
+    try:
+        import cv2
+        import numpy as np
+        from core.recorder.screen_capturer import take_screenshot
+        
+        pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
+        if pre_img_cv is None:
+            return
+            
+        img_h, img_w = pre_img_cv.shape
+        x1, y1 = max(0, win_x), max(0, win_y)
+        x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+        
+        if x2 <= x1 or y2 <= y1:
+            return
+            
+        pre_crop = pre_img_cv[y1:y2, x1:x2]
+        waiting_logged = False
+        
+        while not _stop_requested:
+            curr_img_pil, _ = take_screenshot()
+            curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+            
+            curr_h, curr_w = curr_img_cv.shape
+            cx1, cy1 = max(0, win_x), max(0, win_y)
+            cx2, cy2 = min(curr_w, win_x + win_w), min(curr_h, win_y + win_h)
+            
+            if cx2 > cx1 and cy2 > cy1:
+                curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+                
+                if pre_crop.shape == curr_crop.shape:
+                    # テンプレートマッチングで類似度を判定 (0.0 ~ 1.0)
+                    res = cv2.matchTemplate(curr_crop, pre_crop, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                    
+                    # 類似度が85%以上なら同じ画面とみなす
+                    if max_val >= 0.85: 
+                        if waiting_logged:
+                            if status_callback:
+                                status_callback("マクロを再開します。", False)
+                            logger.info(f"[{workflow_id}] Screen matched (Similarity: {max_val:.1%}). Resuming macro.")
+                            time.sleep(1.0)
+                            if status_callback:
+                                status_callback("実行中...", False)
+                        break
+                    else:
+                        if not waiting_logged:
+                            if status_callback:
+                                status_callback("記録時と同じ画面にしてください。", True)
+                            logger.info(f"[{workflow_id}] Waiting for screen to match... (Similarity: {max_val:.1%})")
+                            waiting_logged = True
+                else:
+                    if not waiting_logged:
+                        if status_callback:
+                            status_callback("記録時と同じ画面にしてください。", True)
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                        waiting_logged = True
+            
+            time.sleep(0.5)
+    except Exception as e:
+        logger.warning(f"Error during screen match waiting: {e}")
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
-    global _is_running, _stop_requested
+    global _is_running, _stop_requested, _browser_activated_once
     _is_running = True
     _stop_requested = False
+    _browser_activated_once = False
     
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     mouse = MouseController()
@@ -113,7 +272,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
         commands = macro_data.get("commands", [])
         macro_needs_save = False
-        _browser_activated_once = False
         
         for i, cmd in enumerate(commands):
             if _stop_requested:
@@ -223,158 +381,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 
-                if window_title and platform.system() == "Windows":
-                    try:
-                        import pywinauto
-                        import re
-                        import subprocess
-                        
-                        desktop = pywinauto.Desktop(backend="uia")
-                        safe_title = re.escape(window_title)
-                        windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
-                        
-                        # タイトルからアプリ名（末尾の - 以降）を抽出
-                        app_name = window_title.split("—")[-1].split("-")[-1].strip()
-                        
-                        if not windows and app_name:
-                            safe_app_name = re.escape(app_name)
-                            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
-                                
-                        if not windows:
-                            logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
-                            # アプリが立ち上がっていない場合の起動試行
-                            lower_app_name = app_name.lower()
-                            launch_cmd = None
-                            if "firefox" in lower_app_name:
-                                launch_cmd = "start firefox"
-                            elif "chrome" in lower_app_name:
-                                launch_cmd = "start chrome"
-                            elif "edge" in lower_app_name:
-                                launch_cmd = "start msedge"
-                            elif "excel" in lower_app_name:
-                                launch_cmd = "start excel"
-                                
-                            if launch_cmd:
-                                # cmdウィンドウを表示させないフラグ
-                                creationflags = 0x08000000 # CREATE_NO_WINDOW
-                                subprocess.Popen(launch_cmd, shell=True, creationflags=creationflags)
-                                time.sleep(4.0) # 起動待ち
-                                
-                                # 再検索
-                                windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
-                                
-                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
-                            if is_browser:
-                                _browser_activated_once = True
-                                
-                        if windows:
-                            win = windows[0]
-                            # 最小化されている場合は元に戻す
-                            if win.is_minimized():
-                                win.restore()
-                            win.set_focus()
-                            
-                            # ウィンドウサイズと位置の復元
-                            if win_w > 0 and win_h > 0:
-                                try:
-                                    import ctypes
-                                    hwnd = win.handle
-                                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
-                                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
-                                except Exception as e:
-                                    logger.warning(f"Failed to resize window: {e}")
-                                    
-                            time.sleep(0.5)
-                            
-                            # ブラウザの初回アクティブ化時に新規タブを開く
-                            lower_app_name = app_name.lower()
-                            is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
-                            if is_browser and not _browser_activated_once:
-                                _browser_activated_once = True
-                                logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
-                                keyboard.press(Key.ctrl)
-                                keyboard.press('t')
-                                keyboard.release('t')
-                                keyboard.release(Key.ctrl)
-                                time.sleep(0.5)
-                                
-                            # --- 画面の一致待機処理 ---
-                            raw_event_id = args.get("raw_event_id")
-                            if raw_event_id and win_w > 0 and win_h > 0:
-                                pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
-                                if pre_image_path.exists():
-                                    try:
-                                        import cv2
-                                        import numpy as np
-                                        from core.recorder.screen_capturer import take_screenshot
-                                        
-                                        pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
-                                        if pre_img_cv is not None:
-                                            img_h, img_w = pre_img_cv.shape
-                                            x1 = max(0, win_x)
-                                            y1 = max(0, win_y)
-                                            x2 = min(img_w, win_x + win_w)
-                                            y2 = min(img_h, win_y + win_h)
-                                            
-                                            if x2 > x1 and y2 > y1:
-                                                pre_crop = pre_img_cv[y1:y2, x1:x2]
-                                                waiting_logged = False
-                                                
-                                                while not _stop_requested:
-                                                    curr_img_pil, _ = take_screenshot()
-                                                    curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
-                                                    
-                                                    curr_h, curr_w = curr_img_cv.shape
-                                                    cx1 = max(0, win_x)
-                                                    cy1 = max(0, win_y)
-                                                    cx2 = min(curr_w, win_x + win_w)
-                                                    cy2 = min(curr_h, win_y + win_h)
-                                                    
-                                                    if cx2 > cx1 and cy2 > cy1:
-                                                        curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
-                                                        
-                                                        if pre_crop.shape == curr_crop.shape:
-                                                            diff = cv2.absdiff(pre_crop, curr_crop)
-                                                            _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-                                                            diff_ratio = np.count_nonzero(thresh) / thresh.size
-                                                            
-                                                            # 10%以下の違いなら同じ画面とみなす
-                                                            if diff_ratio <= 0.10: 
-                                                                if waiting_logged:
-                                                                    if status_callback:
-                                                                        status_callback("マクロを再開します。", False)
-                                                                    logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}). Resuming macro.")
-                                                                    time.sleep(1.0)
-                                                                    if status_callback:
-                                                                        status_callback("実行中...", False)
-                                                                break
-                                                            else:
-                                                                if not waiting_logged:
-                                                                    if status_callback:
-                                                                        status_callback("記録時と同じ画面にしてください。", True)
-                                                                    logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%})")
-                                                                    waiting_logged = True
-                                                        else:
-                                                            if not waiting_logged:
-                                                                if status_callback:
-                                                                    status_callback("記録時と同じ画面にしてください。", True)
-                                                                logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
-                                                                waiting_logged = True
-                                                    
-                                                    time.sleep(0.5)
-                                    except Exception as e:
-                                        logger.warning(f"Error during screen match waiting: {e}")
-                            # --------------------------
-
-                        else:
-                            logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
-                            # 見つからない場合はエラーにしてマクロを安全停止する
-                            raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
-                            
-                    except Exception as e:
-                        logger.warning(f"[{workflow_id}] Failed to activate window {window_title}: {e}")
-                        if "対象のアプリ" in str(e):
-                            raise e
+                _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id)
+                _wait_for_screen_match(target_dir, raw_event_id, win_x, win_y, win_w, win_h, workflow_id, status_callback)
 
             elif method == "click":
                 x = args.get("x", 0)
@@ -423,30 +431,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         if placeholder in text:
                             text = text.replace(placeholder, str(val))
                             
-                    # 半角/全角の自動制御 (Windows)
-                    if platform.system() == "Windows":
-                        import unicodedata
-                        def contains_zenkaku(s: str) -> bool:
-                            for c in s:
-                                # 'F' (Fullwidth), 'W' (Wide) のみを全角と判定
-                                # 'A' (Ambiguous) は環境依存のため除外（誤判定防止）
-                                if unicodedata.east_asian_width(c) in ('F', 'W'):
-                                    return True
-                            return False
-                        
-                        try:
-                            hwnd = ctypes.windll.user32.GetForegroundWindow()
-                            # 別プロセスのIMEを制御するためには DefaultIMEWnd にメッセージを送る必要がある
-                            default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
-                            if default_ime_wnd:
-                                is_zenkaku = contains_zenkaku(text)
-                                WM_IME_CONTROL = 0x0283
-                                IMC_SETOPENSTATUS = 0x0006
-                                ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
-                                time.sleep(0.05) # IMEの状態が反映されるまで少し待つ
-                        except Exception as e:
-                            logger.warning(f"Failed to set IME state: {e}")
-
+                    _set_ime_state(text)
                     keyboard.type(text)
                     
             elif method == "press_key":
