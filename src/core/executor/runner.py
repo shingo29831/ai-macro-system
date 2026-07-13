@@ -178,7 +178,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
         
         waiting_logged = False
-        frame_buffer = [] # 直近のフレームを保持するバッファ
+        frame_buffer = [] 
         
         while not _stop_requested:
             curr_img_pil, curr_monitor = take_screenshot()
@@ -201,52 +201,67 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
                 curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
                 
-                # フレームバッファの更新（直近5フレームを保持）
                 frame_buffer.append(curr_crop_small)
                 if len(frame_buffer) > 5:
                     frame_buffer.pop(0)
                 
                 dynamic_mask = np.zeros((128, 128), dtype=np.uint8)
                 
-                # 3フレーム以上蓄積されたら、動画領域（動的マスク）を計算
                 if len(frame_buffer) >= 3:
-                    # ピクセルごとの標準偏差（変化の激しさ）を計算
                     std_dev = np.std(frame_buffer, axis=0)
-                    # 標準偏差が一定以上（変化し続けている）箇所を動画領域としてマスク
                     dynamic_mask = (std_dev > 10).astype(np.uint8) * 255
-                    
-                    # マスクを少し膨張させて、動画の境界の揺らぎをカバーする
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
-                # 記録時画像と現在画像の差分を計算
-                diff = cv2.absdiff(pre_crop_small, curr_crop_small)
+                # ★動画領域を黒塗りにして完全に無視した静的画像を生成
+                static_mask = cv2.bitwise_not(dynamic_mask)
+                pre_crop_static = cv2.bitwise_and(pre_crop_small, pre_crop_small, mask=static_mask)
+                curr_crop_static = cv2.bitwise_and(curr_crop_small, curr_crop_small, mask=static_mask)
+                
+                # 1. ピクセル差分 (静的領域のみ)
+                diff = cv2.absdiff(pre_crop_static, curr_crop_static)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
-                # ★動画領域（動的マスク）を差分から除外（無視）する
-                static_thresh = cv2.bitwise_and(thresh, cv2.bitwise_not(dynamic_mask))
-                
-                # 静的領域（比較対象となるUI部分）のピクセル数
-                static_area_size = (128 * 128) - np.count_nonzero(dynamic_mask)
-                
-                # 静的領域が極端に少ない（画面のほぼ全体が動画）場合を除き、静的領域のみで変化率を計算
-                if static_area_size > 1000: 
-                    diff_ratio = np.count_nonzero(static_thresh) / static_area_size
+                static_area_size = np.count_nonzero(static_mask)
+                if static_area_size > 500: # 静的領域が少しでもあれば
+                    diff_ratio = np.count_nonzero(thresh) / static_area_size
                 else:
-                    diff_ratio = np.count_nonzero(thresh) / (128 * 128)
+                    # 画面全体が動画の場合は、全体の差分でフォールバック
+                    diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
+                    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
+                    diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
-                # 静的領域の変化率が10%以下なら「同じ画面」と判定
-                if diff_ratio <= 0.10:
+                is_pixel_match = diff_ratio <= 0.10
+                
+                # 2. 構造的類似度 (静的領域のみ)
+                res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(res)
+                is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
+                
+                # 3. エッジ類似度 (静的領域のみ)
+                pre_edges = cv2.Canny(pre_crop_static, 50, 150)
+                curr_edges = cv2.Canny(curr_crop_static, 50, 150)
+                pre_edge_count = np.count_nonzero(pre_edges)
+                
+                is_edge_match = False
+                max_val_edges = 0.0
+                if pre_edge_count > 50:
+                    res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
+                    _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
+                    if max_val_edges >= 0.60 and diff_ratio <= 0.50:
+                        is_edge_match = True
+
+                if is_pixel_match or is_struct_match or is_edge_match:
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
-                        logger.info(f"[{workflow_id}] Screen matched (static diff: {diff_ratio:.1%}). Resuming macro.")
+                        logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
                         time.sleep(1.5)
                         update_ui("実行中...", False)
                     break
                 else:
                     if not waiting_logged:
                         update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (static diff: {diff_ratio:.1%})")
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f})")
                         waiting_logged = True
             else:
                 if not waiting_logged:
