@@ -100,14 +100,26 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
             
     if windows:
         win = windows[0]
+        
+        # 最小化されている場合は元に戻す
         if win.is_minimized():
             win.restore()
+            
         win.set_focus()
         
         if win_w > 0 and win_h > 0:
             try:
                 hwnd = win.handle
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+                # ★修正: Windowsの最大化状態の典型的な座標（-8, -8）を検知して最大化コマンドを送る
+                # これを行わないと、枠線（ボーダー）の分だけUIのY座標が絶妙にずれる
+                if win_x <= -8 and win_y <= -8 and win_w >= 1900:
+                    if not win.is_maximized():
+                        win.maximize()
+                else:
+                    if win.is_maximized():
+                        win.restore()
+                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
+                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
             except Exception as e:
                 logger.warning(f"Failed to resize window: {e}")
                 
@@ -213,32 +225,27 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
-                # ★動画領域を黒塗りにして完全に無視した静的画像を生成
                 static_mask = cv2.bitwise_not(dynamic_mask)
                 pre_crop_static = cv2.bitwise_and(pre_crop_small, pre_crop_small, mask=static_mask)
                 curr_crop_static = cv2.bitwise_and(curr_crop_small, curr_crop_small, mask=static_mask)
                 
-                # 1. ピクセル差分 (静的領域のみ)
                 diff = cv2.absdiff(pre_crop_static, curr_crop_static)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
                 static_area_size = np.count_nonzero(static_mask)
-                if static_area_size > 500: # 静的領域が少しでもあれば
+                if static_area_size > 500: 
                     diff_ratio = np.count_nonzero(thresh) / static_area_size
                 else:
-                    # 画面全体が動画の場合は、全体の差分でフォールバック
                     diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
                 is_pixel_match = diff_ratio <= 0.10
                 
-                # 2. 構造的類似度 (静的領域のみ)
                 res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
                 is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
                 
-                # 3. エッジ類似度 (静的領域のみ)
                 pre_edges = cv2.Canny(pre_crop_static, 50, 150)
                 curr_edges = cv2.Canny(curr_crop_static, 50, 150)
                 pre_edge_count = np.count_nonzero(pre_edges)
@@ -283,7 +290,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     mouse = MouseController()
     keyboard = KeyboardController()
 
-    # --- 緊急停止用ホットキー監視 (Ctrl + \) ---
     _pressed_keys_for_stop = set()
 
     def on_press(key):
@@ -320,7 +326,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
     listener = KeyboardListener(on_press=on_press, on_release=on_release)
     listener.start()
-    # ---------------------------------------------
     
     try:
         from core.recorder.screen_capturer import get_macros_root
@@ -357,7 +362,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
             logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
             
-            # === Stage 1: UI部品(Crop)の局所的なテンプレートマッチングによる高精度なズレ検知 ===
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
             
@@ -402,7 +406,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         logger.warning(f"[{workflow_id}] No crop image available. Initiating Healer...")
                         needs_recovery = True
 
-                    # 一時的に自己修復機能をバイパスし、元の座標で続行する
                     if needs_recovery:
                         logger.warning(f"[{workflow_id}] Healer is disabled temporarily. Bypassing recovery and continuing.")
                         needs_recovery = False
@@ -435,7 +438,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         status_callback("実行中...", False)
                     if "安全のため" in str(e):
                         raise e
-            # =======================================
             
             if method == "wait":
                 duration = args.get("duration", 0.0)
@@ -466,7 +468,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
                 btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                 
-                mouse.position = (x, y)
+                # ★修正: pynputのmouse.positionではなく、Windows APIを使用して正確なピクセルへ移動する
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                else:
+                    mouse.position = (x, y)
+                    
                 time.sleep(0.05)
                 mouse.click(btn, clicks)
 
@@ -474,7 +481,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 x = args.get("x", 0)
                 y = args.get("y", 0)
                 
-                mouse.position = (x, y)
+                # ★修正: pynputのmouse.positionではなく、Windows APIを使用して正確なピクセルへ移動する
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                else:
+                    mouse.position = (x, y)
+                    
                 time.sleep(0.5)
                 
             elif method == "scroll":
@@ -484,7 +496,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 y = args.get("y")
                 
                 if x is not None and y is not None and (x != 0 or y != 0):
-                    mouse.position = (x, y)
+                    if platform.system() == "Windows":
+                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                    else:
+                        mouse.position = (x, y)
                     time.sleep(0.01)
                 
                 if platform.system() == "Windows":
