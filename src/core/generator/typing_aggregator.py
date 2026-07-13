@@ -1,6 +1,7 @@
 # Role: 連続するキー入力ログをセッションとして集約し、UIA確定テキストを優先適用して精度の高い文字列マクロアクションを生成するモジュール
 from typing import List, Dict, Any, Optional
 import logging
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,27 @@ class TypingSessionAggregator:
             
             # ウィンドウの切り替わりを検知してセッションを区切る
             current_window = event.get("window_info", {}).get("title", "")
+            app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
+            current_ctrl_type = str(app_ctx.get("control_type", "")).lower()
+            
             if current_session:
-                last_window = current_session[-1].get("window_info", {}).get("title", "")
+                last_event = current_session[-1]
+                last_window = last_event.get("window_info", {}).get("title", "")
+                last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
+                last_ctrl_type = str(last_app_ctx.get("control_type", "")).lower()
+                
+                # 1. ウィンドウ名が変わった場合
                 if current_window and last_window and current_window != last_window:
                     self._flush_session(current_session, aggregated_events)
+                
+                # 2. コントロールの種類が大きく変わった場合（例: 検索バー(ComboBox) -> ページ(Document) -> 入力欄(Edit)）
+                # これにより、マウスクリックを挟まずに連続入力した場合でも別の入力欄として分離できる
+                elif current_ctrl_type and last_ctrl_type and current_ctrl_type != last_ctrl_type:
+                    # ComboBox と Edit は同じ入力欄のバリエーションとして許容する
+                    is_both_input = ("edit" in current_ctrl_type or "combo" in current_ctrl_type) and \
+                                    ("edit" in last_ctrl_type or "combo" in last_ctrl_type)
+                    if not is_both_input:
+                        self._flush_session(current_session, aggregated_events)
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -121,7 +139,6 @@ class TypingSessionAggregator:
         # -------------------------------------------------------------------------
         # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
         # -------------------------------------------------------------------------
-        import urllib.parse
         def _extract_search_query(url_or_text: str) -> Optional[str]:
             if not url_or_text.startswith("http"):
                 return url_or_text
@@ -152,7 +169,6 @@ class TypingSessionAggregator:
                         break
 
             # パターンB: app_context からの抽出（Enter確定時の文字など）
-            # ログのキー名揺れに対応 (app_context, AppSpecificContext, appSpecificContext)
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
                 ctrl_type = str(app_ctx.get("control_type", "")).lower()
@@ -207,6 +223,12 @@ class TypingSessionAggregator:
         final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
         if final_text:
+            # 直前のイベントが TYPE_TEXT で全く同じ文字列なら、ページ遷移時の重複抽出とみなしてスキップ
+            if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
+                logger.info(f"[TypingAggregator] 重複する TYPE_TEXT ('{final_text}') をスキップします。")
+                session.clear()
+                return
+
             # 集約された1つの代表イベントを生成
             representative_event = session[0].copy()
             representative_event["raw_action"] = "type_text"
