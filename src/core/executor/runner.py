@@ -37,24 +37,20 @@ def _set_dpi_awareness():
 _set_dpi_awareness()
 
 def _set_ime_state(text: str):
-    """テキストに全角文字が含まれるか判定し、WindowsのIMEを自動でオン/オフする"""
+    """テキスト入力前にWindowsのIMEを確実にオフにする。
+    pynputのkeyboard.typeはUnicodeで直接文字を送信するため、
+    IMEがオンだと逆にキー入力が横取りされて文字化け（「ごおｇぇ」等）の原因となる。"""
     if platform.system() != "Windows":
         return
-    import unicodedata
-    def contains_zenkaku(s: str) -> bool:
-        for c in s:
-            if unicodedata.east_asian_width(c) in ('F', 'W'):
-                return True
-        return False
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
         if default_ime_wnd:
-            is_zenkaku = contains_zenkaku(text)
             WM_IME_CONTROL = 0x0283
             IMC_SETOPENSTATUS = 0x0006
-            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
-            time.sleep(0.05)
+            # 常にIMEをオフ(0)にする
+            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
+            time.sleep(0.15)
     except Exception as e:
         logger.warning(f"Failed to set IME state: {e}")
 
@@ -527,17 +523,29 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 key_str = args.get("key", "")
                 if key_str:
                     try:
-                        key_name = key_str.lower()
-                        if key_name in ["win", "windows"]:
-                            key_name = "cmd"
-                            
-                        if hasattr(Key, key_name):
-                            special_key = getattr(Key, key_name)
-                            keyboard.press(special_key)
-                            keyboard.release(special_key)
+                        if "+" in key_str:
+                            keys = key_str.split("+")
+                            pressed = []
+                            for k in keys:
+                                k_name = k.lower().replace("key.", "")
+                                if k_name in ["win", "windows"]: k_name = "cmd"
+                                key_obj = getattr(Key, k_name, k_name)
+                                keyboard.press(key_obj)
+                                pressed.append(key_obj)
+                            for key_obj in reversed(pressed):
+                                keyboard.release(key_obj)
                         else:
-                            keyboard.press(key_str)
-                            keyboard.release(key_str)
+                            key_name = key_str.lower()
+                            if key_name in ["win", "windows"]:
+                                key_name = "cmd"
+                                
+                            if hasattr(Key, key_name):
+                                special_key = getattr(Key, key_name)
+                                keyboard.press(special_key)
+                                keyboard.release(special_key)
+                            else:
+                                keyboard.press(key_str)
+                                keyboard.release(key_str)
                     except Exception as e:
                         logger.warning(f"Failed to press key {key_str}: {e}")
             else:

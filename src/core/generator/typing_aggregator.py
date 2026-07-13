@@ -10,7 +10,7 @@ class TypingSessionAggregator:
     分断されたキーボード入力イベントを分析・集約し、最良のコンテキスト（UIA > OCR > Raw Key）
     を選択して1つのまとまった type_text アクションに最適化するクラス。
     """
-    def __init__(self, session_timeout_ms: int = 600):
+    def __init__(self, session_timeout_ms: int = 2000):
         self.session_timeout_ms = session_timeout_ms
 
     def aggregate_events(self, raw_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -26,35 +26,43 @@ class TypingSessionAggregator:
         for i, event in enumerate(raw_events):
             action = event.get("raw_action", "")
             
-            # ウィンドウの切り替わりを検知してセッションを区切る
-            current_window = event.get("window_info", {}).get("title", "")
+            # 正しいフィールドパスからウィンドウ名を取得
+            current_window = event.get("window_name", "")
             app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
             current_ctrl_type = str(app_ctx.get("control_type", "")).lower()
+            current_ts = event.get("timestamp", 0)
             
             if current_session:
                 last_event = current_session[-1]
-                last_window = last_event.get("window_info", {}).get("title", "")
+                last_window = last_event.get("window_name", "")
                 last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
                 last_ctrl_type = str(last_app_ctx.get("control_type", "")).lower()
+                last_ts = last_event.get("timestamp", 0)
                 
                 # 1. ウィンドウ名が変わった場合
                 if current_window and last_window and current_window != last_window:
                     self._flush_session(current_session, aggregated_events)
                 
-                # 2. コントロールの種類が大きく変わった場合（例: 検索バー(ComboBox) -> ページ(Document) -> 入力欄(Edit)）
-                # これにより、マウスクリックを挟まずに連続入力した場合でも別の入力欄として分離できる
+                # 2. タイムアウト（時間差）によるセッション分割の導入
+                elif current_ts > 0 and last_ts > 0 and (current_ts - last_ts) > self.session_timeout_ms:
+                    self._flush_session(current_session, aggregated_events)
+
+                # 3. コントロールの種類が大きく変わった場合
                 elif current_ctrl_type and last_ctrl_type and current_ctrl_type != last_ctrl_type:
-                    # ComboBox と Edit は同じ入力欄のバリエーションとして許容する
-                    is_both_input = ("edit" in current_ctrl_type or "combo" in current_ctrl_type) and \
-                                    ("edit" in last_ctrl_type or "combo" in last_ctrl_type)
-                    if not is_both_input:
+                    # 入力関連のコントロールタイプを広く定義して許容し、サジェスト等のポップアップによる不当な分断を防止
+                    input_keywords = {"edit", "combo", "document", "pane", "text", "custom", "list", "group"}
+                    is_current_input = any(kw in current_ctrl_type for kw in input_keywords)
+                    is_last_input = any(kw in last_ctrl_type for kw in input_keywords)
+                    
+                    if not (is_current_input and is_last_input):
                         self._flush_session(current_session, aggregated_events)
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
             is_special_key = action in ["key_down", "key_press"] and (
                 role_lower.startswith("key.") or 
-                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"]
+                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"] or
+                "+" in role_lower
             )
             is_text_input = action in ["type_text", "key_down", "key_press"] and not is_special_key
             is_uia_scan = action == "uia_scan"
@@ -223,11 +231,35 @@ class TypingSessionAggregator:
         final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
         if final_text:
-            # 直前のイベントが TYPE_TEXT で全く同じ文字列なら、ページ遷移時の重複抽出とみなしてスキップ
+            # 1. 完全一致の重複スキップ
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
                 logger.info(f"[TypingAggregator] 重複する TYPE_TEXT ('{final_text}') をスキップします。")
                 session.clear()
                 return
+
+            # 2. UIAレスキュー残骸（遅延による末尾の物理キー入力漏れ）の自動間引き・スキップ処理
+            # 例: prev="hello world" に対して、不必要な細切れセッションから curr="rld" が生じた場合、スキップする
+            if output_list and output_list[-1].get("raw_action") == "type_text":
+                prev_text = str(output_list[-1].get("semantic_role", ""))
+                prev_text_lower = prev_text.lower()
+                final_text_lower = final_text.lower()
+                
+                is_suffix_or_sub = False
+                if len(final_text_lower) < len(prev_text_lower):
+                    if prev_text_lower.endswith(final_text_lower) or final_text_lower in prev_text_lower:
+                        is_suffix_or_sub = True
+                
+                # 日本語変換確定後のキーストローク残骸（例: "google翻訳" に対する "h" 等）をスキップ
+                if not is_suffix_or_sub and any_ime_active:
+                    # 確定テキストがひらがな・漢字交じりで、現在文字列が短いアルファベット・部分キーの場合
+                    if len(final_text_lower) <= 3 and final_text_lower.isalnum():
+                        # ローマ字配列や変換確定時の遅延キーストローク残骸とみなす
+                        is_suffix_or_sub = True
+                        
+                if is_suffix_or_sub:
+                    logger.info(f"[TypingAggregator] UIAレスキューの残骸キー入力 '{final_text}' (直前: '{prev_text}') を自動スキップします。")
+                    session.clear()
+                    return
 
             # 集約された1つの代表イベントを生成
             representative_event = session[0].copy()
