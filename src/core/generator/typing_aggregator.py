@@ -28,15 +28,11 @@ class TypingSessionAggregator:
             
             # 正しいフィールドパスからウィンドウ名を取得
             current_window = event.get("window_name", "")
-            app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
-            current_ctrl_type = str(app_ctx.get("control_type", "")).lower()
             current_ts = event.get("timestamp", 0)
             
             if current_session:
                 last_event = current_session[-1]
                 last_window = last_event.get("window_name", "")
-                last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
-                last_ctrl_type = str(last_app_ctx.get("control_type", "")).lower()
                 last_ts = last_event.get("timestamp", 0)
                 
                 # 1. ウィンドウ名が変わった場合
@@ -48,14 +44,8 @@ class TypingSessionAggregator:
                     self._flush_session(current_session, aggregated_events)
 
                 # 3. コントロールの種類が大きく変わった場合
-                elif current_ctrl_type and last_ctrl_type and current_ctrl_type != last_ctrl_type:
-                    # 入力関連のコントロールタイプを広く定義して許容し、サジェスト等のポップアップによる不当な分断を防止
-                    input_keywords = {"edit", "combo", "document", "pane", "text", "custom", "list", "group"}
-                    is_current_input = any(kw in current_ctrl_type for kw in input_keywords)
-                    is_last_input = any(kw in last_ctrl_type for kw in input_keywords)
-                    
-                    if not (is_current_input and is_last_input):
-                        self._flush_session(current_session, aggregated_events)
+                # タイピング中はUIAのフォーカスがサジェスト等に飛ぶことが多いため、
+                # ウィンドウが同じでタイムアウトしていなければ、コントロールタイプの変更だけでは分断しない。
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -70,6 +60,9 @@ class TypingSessionAggregator:
             ime_active = event.get("ime_active", False)
 
             is_mouse_move = action in ["mouse_move", "mouse_hover"]
+            
+            # コンボキー（shift+space等）はIME切り替えやショートカットとみなし、セッションを継続させる
+            is_typing_combo = action == "key_combo"
 
             # IMEオフのEnterは送信/実行を意味するため、ここでセッションを区切る
             if role_lower == "enter" and not ime_active:
@@ -77,8 +70,8 @@ class TypingSessionAggregator:
                 self._flush_session(current_session, aggregated_events)
                 continue
 
-            # セッションの継続条件: 文字入力、UIAスキャン、または確定キー(Enter/Tab)
-            if is_text_input or is_uia_scan or is_confirm_key:
+            # セッションの継続条件: 文字入力、UIAスキャン、確定キー(Enter/Tab)、または入力中のコンボキー
+            if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
                 current_session.append(event)
                 continue
             elif is_mouse_move:
@@ -102,6 +95,8 @@ class TypingSessionAggregator:
         """
         蓄積されたセッション内のイベントを評価し、単一の最適な文字列入力イベントに置換して出力リストへ追加する。
         """
+        import difflib
+
         if not session:
             return
 
@@ -145,55 +140,8 @@ class TypingSessionAggregator:
             return
 
         # -------------------------------------------------------------------------
-        # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
-        # -------------------------------------------------------------------------
-        def _extract_search_query(url_or_text: str) -> Optional[str]:
-            if not url_or_text.startswith("http"):
-                return url_or_text
-            try:
-                parsed = urllib.parse.urlparse(url_or_text)
-                qs = urllib.parse.parse_qs(parsed.query)
-                if 'q' in qs: return qs['q'][0]
-                elif 'p' in qs: return qs['p'][0]
-                elif 'text' in qs: return qs['text'][0]
-            except Exception:
-                pass
-            # 検索クエリが含まれない純粋なURLの場合は、サジェストの誤検知とみなして採用しない
-            return None
-
-        uia_rescued_text = ""
-        # 抽出対象は session 本体と、分離した trailing_events (Enter, Tab, uia_scan) の両方
-        all_events_in_session = session + trailing_events
-        for item in reversed(all_events_in_session):
-            # パターンA: uia_scan イベントからの抽出（タブ補完後の文字など）
-            if item.get("raw_action") == "uia_scan":
-                uia_info = item.get("content", {}).get("uia_info", {})
-                val = uia_info.get("value") or uia_info.get("name")
-                if val and len(str(val).strip()) > 0:
-                    extracted = _extract_search_query(str(val).strip())
-                    if extracted:
-                        uia_rescued_text = extracted
-                        logger.info(f"[TypingAggregator] UIAレスキュー成功(uia_scan): 確定文字列 '{uia_rescued_text}' を採用")
-                        break
-
-            # パターンB: app_context からの抽出（Enter確定時の文字など）
-            app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
-            if isinstance(app_ctx, dict):
-                ctrl_type = str(app_ctx.get("control_type", "")).lower()
-                # ButtonControl や WindowControl などのテキストは無視する（「キャンセル」等の誤検知防止）
-                if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
-                    continue
-                    
-                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
-                if val and len(str(val).strip()) > 0:
-                    extracted = _extract_search_query(str(val).strip())
-                    if extracted:
-                        uia_rescued_text = extracted
-                        logger.info(f"[TypingAggregator] UIAレスキュー成功(app_context): 確定文字列 '{uia_rescued_text}' を採用")
-                        break
-
-        # -------------------------------------------------------------------------
-        # 優先順位 2: UIAが取れなかった場合の生キーログ結合 ＋ ローマ字/かな変換
+        # 優先順位 2 (事前計算): 生キーログ結合 ＋ ローマ字/かな変換 (Fallback Text)
+        # UIAレスキューの候補選択時の類似度スコアリングにも使用する
         # -------------------------------------------------------------------------
         fallback_text = ""
         any_ime_active = any(item.get("ime_active", False) for item in session)
@@ -203,9 +151,14 @@ class TypingSessionAggregator:
         ignore_modifiers = ["shift", "ctrl", "alt", "win", "cmd"]
         
         for item in session:
+            action = item.get("raw_action", "")
             role = str(item.get("semantic_role", ""))
             r_lower = role.lower()
             
+            if action == "key_combo":
+                # コンボキーはIME切り替えやショートカットとみなし、文字としては結合しない
+                continue
+                
             if r_lower == "backspace":
                 fallback_text = fallback_text[:-1]
             elif r_lower == "space":
@@ -227,8 +180,112 @@ class TypingSessionAggregator:
             except ImportError:
                 logger.warning("[TypingAggregator] romaji_converter が見つからないため変換をスキップしました")
 
+        # -------------------------------------------------------------------------
+        # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
+        # -------------------------------------------------------------------------
+        def _extract_search_query(url_or_text: str) -> tuple[Optional[str], bool]:
+            """テキストと、それがURLからの抽出（確定クエリ）かどうかのフラグを返す"""
+            if not url_or_text.startswith("http"):
+                # URLっぽい文字列（.com/ などを含む）はサジェストとみなして弾く
+                if ".com" in url_or_text or ".co.jp" in url_or_text or ".net" in url_or_text or ".org" in url_or_text:
+                    return None, False
+                return url_or_text, False
+            try:
+                parsed = urllib.parse.urlparse(url_or_text)
+                qs = urllib.parse.parse_qs(parsed.query)
+                if 'q' in qs: return qs['q'][0], True
+                elif 'p' in qs: return qs['p'][0], True
+                elif 'text' in qs: return qs['text'][0], True
+            except Exception:
+                pass
+            # 検索クエリが含まれない純粋なURLの場合は、サジェストの誤検知とみなして採用しない
+            return None, False
+
+        uia_candidates = []
+        confirmed_queries = []
+        
+        # 抽出対象は session 本体と、分離した trailing_events (Enter, Tab, uia_scan) の両方
+        all_events_in_session = session + trailing_events
+        for item in reversed(all_events_in_session):
+            # パターンA: uia_scan イベントからの抽出（タブ補完後の文字など）
+            if item.get("raw_action") == "uia_scan":
+                uia_info = item.get("content", {}).get("uia_info", {})
+                val = uia_info.get("value") or uia_info.get("name")
+                if val and len(str(val).strip()) > 0:
+                    extracted, is_url_query = _extract_search_query(str(val).strip())
+                    if extracted:
+                        if is_url_query and extracted not in confirmed_queries:
+                            confirmed_queries.append(extracted)
+                        elif not is_url_query and extracted not in uia_candidates:
+                            uia_candidates.append(extracted)
+
+            # パターンB: app_context からの抽出（Enter確定時の文字など）
+            app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
+            if isinstance(app_ctx, dict):
+                ctrl_type = str(app_ctx.get("control_type", "")).lower()
+                # ButtonControl や WindowControl などのテキストは無視する（「キャンセル」等の誤検知防止）
+                if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
+                    continue
+                    
+                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
+                if val and len(str(val).strip()) > 0:
+                    extracted, is_url_query = _extract_search_query(str(val).strip())
+                    if extracted:
+                        if is_url_query and extracted not in confirmed_queries:
+                            confirmed_queries.append(extracted)
+                        elif not is_url_query and extracted not in uia_candidates:
+                            uia_candidates.append(extracted)
+
+        uia_rescued_text = ""
+        if confirmed_queries:
+            # URLから抽出された検索クエリは確定済みとみなし、類似度比較をスキップして最優先で採用する
+            uia_rescued_text = confirmed_queries[0]
+            logger.info(f"[TypingAggregator] URLから確定済みの検索クエリ '{uia_rescued_text}' を抽出・最優先で採用しました")
+        elif uia_candidates:
+            if fallback_text:
+                best_candidate = None
+                best_ratio = -1.0
+                fb_lower = fallback_text.lower()
+                
+                for cand in uia_candidates:
+                    cand_lower = cand.lower()
+                    # フォールバックテキストが候補に完全に含まれる場合は最高スコア
+                    if fb_lower in cand_lower:
+                        ratio = 1.0
+                    else:
+                        ratio = difflib.SequenceMatcher(None, fb_lower, cand_lower).ratio()
+                        # 漢字変換を考慮し、候補の先頭部分が一致していればスコアを底上げ
+                        if cand_lower and fb_lower.startswith(cand_lower[:3]):
+                            ratio += 0.2
+                        
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_candidate = cand
+                
+                # 類似度が極端に低い場合（例: 0.15未満）は、全く無関係なテキスト（プレースホルダー等）とみなして採用しない
+                if best_ratio >= 0.15:
+                    uia_rescued_text = best_candidate
+                    logger.info(f"[TypingAggregator] UIAレスキュー成功: 候補の中から類似度最大({best_ratio:.2f})の '{uia_rescued_text}' を採用")
+                else:
+                    logger.info(f"[TypingAggregator] UIAレスキュー候補はありましたが、入力キーとの類似度が低すぎるため破棄します (best_ratio: {best_ratio:.2f}, cand: '{best_candidate}')")
+            else:
+                # fallback_text が空（特殊キーのみなど）の場合は、最初に見つかった候補（最新）を採用
+                uia_rescued_text = uia_candidates[0]
+                logger.info(f"[TypingAggregator] UIAレスキュー成功(fallbackなし): '{uia_rescued_text}' を採用")
+
         # 最終採用テキストの決定 (UIA > Fallback Key Log)
-        final_text = uia_rescued_text if uia_rescued_text else fallback_text
+        has_suggest_selection = any(
+            item.get("raw_action") in ["key_down", "key_press"] and 
+            str(item.get("semantic_role", "")).lower() in ["tab", "down", "up"]
+            for item in session + trailing_events
+        )
+
+        if not any_ime_active and fallback_text and not has_suggest_selection:
+            # IMEオフでサジェスト選択操作もない場合はユーザーの生入力を最優先（サジェストの自動誤採用を防止）
+            final_text = fallback_text
+            logger.info(f"[TypingAggregator] IMEオフかつサジェスト選択なしのため、生入力 '{final_text}' を優先採用します")
+        else:
+            final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
         if final_text:
             # 1. 完全一致の重複スキップ
@@ -252,7 +309,7 @@ class TypingSessionAggregator:
                 # 日本語変換確定後のキーストローク残骸（例: "google翻訳" に対する "h" 等）をスキップ
                 if not is_suffix_or_sub and any_ime_active:
                     # 確定テキストがひらがな・漢字交じりで、現在文字列が短いアルファベット・部分キーの場合
-                    if len(final_text_lower) <= 3 and final_text_lower.isalnum():
+                    if len(final_text_lower) <= 3 and final_text_lower.isascii() and final_text_lower.isalpha():
                         # ローマ字配列や変換確定時の遅延キーストローク残骸とみなす
                         is_suffix_or_sub = True
                         
