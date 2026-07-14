@@ -276,6 +276,72 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
     except Exception as e:
         logger.warning(f"Error during screen match waiting: {e}")
 
+def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> bool:
+    import cv2
+    import numpy as np
+
+    if not pre_image_path.exists():
+        return False
+
+    pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
+    if pre_img_cv is None:
+        return False
+
+    img_h, img_w = pre_img_cv.shape
+    
+    x1 = max(0, win_x - offset_x)
+    y1 = max(0, win_y - offset_y)
+    x2 = min(img_w, win_x - offset_x + win_w)
+    y2 = min(img_h, win_y - offset_y + win_h)
+    
+    if x2 <= x1 or y2 <= y1:
+        x1, y1 = max(0, win_x), max(0, win_y)
+        x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+        if x2 <= x1 or y2 <= y1:
+            return False
+            
+    pre_crop = pre_img_cv[y1:y2, x1:x2]
+    pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
+
+    curr_h, curr_w = curr_img_cv.shape
+    cx1 = max(0, win_x - offset_x)
+    cy1 = max(0, win_y - offset_y)
+    cx2 = min(curr_w, win_x - offset_x + win_w)
+    cy2 = min(curr_h, win_y - offset_y + win_h)
+    
+    if cx2 <= cx1 or cy2 <= cy1:
+        cx1, cy1 = max(0, win_x), max(0, win_y)
+        cx2, cy2 = min(curr_w, win_x + win_w), min(curr_h, win_y + win_h)
+        if cx2 <= cx1 or cy2 <= cy1:
+            return False
+            
+    curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+    curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
+
+    diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
+    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
+    diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
+    
+    is_pixel_match = diff_ratio <= 0.10
+    
+    res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(res)
+    is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
+    
+    pre_edges = cv2.Canny(pre_crop_small, 50, 150)
+    curr_edges = cv2.Canny(curr_crop_small, 50, 150)
+    pre_edge_count = np.count_nonzero(pre_edges)
+    
+    is_edge_match = False
+    max_val_edges = 0.0
+    if pre_edge_count > 50:
+        res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
+        _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
+        if max_val_edges >= 0.60 and diff_ratio <= 0.50:
+            is_edge_match = True
+
+    return is_pixel_match or is_struct_match or is_edge_match
+
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
     _is_running = True
@@ -348,7 +414,77 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         commands = macro_data.get("commands", [])
         macro_needs_save = False
         
-        for i, cmd in enumerate(commands):
+        # --- スマートレジューム（途中からの実行）の判定 ---
+        start_index = 0
+        try:
+            first_activate_cmd = next((cmd for cmd in commands if cmd.get("method") == "activate_window"), None)
+            if first_activate_cmd:
+                args = first_activate_cmd.get("args", {})
+                _activate_and_restore_window(
+                    args.get("window_title", ""),
+                    args.get("x", 0),
+                    args.get("y", 0),
+                    args.get("width", 0),
+                    args.get("height", 0),
+                    keyboard,
+                    workflow_id
+                )
+                time.sleep(1.0)
+                
+                import cv2
+                import numpy as np
+                from core.recorder.screen_capturer import take_screenshot
+                
+                curr_img_pil, curr_monitor = take_screenshot()
+                curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+                offset_x = curr_monitor.get("left", 0) if isinstance(curr_monitor, dict) else 0
+                offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
+
+                last_win_args = args
+                for i, cmd in enumerate(commands):
+                    if cmd.get("method") == "activate_window":
+                        last_win_args = cmd.get("args", {})
+                    
+                    raw_event_id = cmd.get("args", {}).get("raw_event_id")
+                    if raw_event_id and last_win_args:
+                        pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+                        if pre_image_path.exists():
+                            win_x = last_win_args.get("x", 0)
+                            win_y = last_win_args.get("y", 0)
+                            win_w = last_win_args.get("width", 0)
+                            win_h = last_win_args.get("height", 0)
+                            
+                            is_match = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
+                            if is_match:
+                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here.")
+                                start_index = i
+                                break
+                                
+            if start_index > 0:
+                # 実行開始位置より前にある最後の activate_window を適用しておく
+                last_activation = None
+                for j in range(start_index):
+                    if commands[j].get("method") == "activate_window":
+                        last_activation = commands[j]
+                
+                if last_activation:
+                    args = last_activation.get("args", {})
+                    _activate_and_restore_window(
+                        args.get("window_title", ""),
+                        args.get("x", 0),
+                        args.get("y", 0),
+                        args.get("width", 0),
+                        args.get("height", 0),
+                        keyboard,
+                        workflow_id
+                    )
+                    time.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
+        # --------------------------------------------------
+        
+        for i in range(start_index, len(commands)):
+            cmd = commands[i]
             if _stop_requested:
                 logger.warning(f"[{workflow_id}] Execution aborted by user emergency stop.")
                 break
@@ -464,7 +600,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
                 btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                 
-                # ★修正: pynputのmouse.positionではなく、Windows APIを使用して正確なピクセルへ移動する
                 if platform.system() == "Windows":
                     ctypes.windll.user32.SetCursorPos(int(x), int(y))
                 else:
@@ -477,7 +612,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 x = args.get("x", 0)
                 y = args.get("y", 0)
                 
-                # ★修正: pynputのmouse.positionではなく、Windows APIを使用して正確なピクセルへ移動する
                 if platform.system() == "Windows":
                     ctypes.windll.user32.SetCursorPos(int(x), int(y))
                 else:
