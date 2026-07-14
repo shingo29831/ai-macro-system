@@ -155,7 +155,7 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0) -> dict:
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 30.0) -> dict:
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
     result_info = {"matched": False, "time_taken": 0.0, "scores": {}}
@@ -214,6 +214,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         waiting_logged = False
         frame_buffer = [] 
         start_time = time.time()
+        last_frame_crop = None
         
         while not _stop_requested:
             if time.time() - start_time > timeout:
@@ -242,6 +243,15 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
                 curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
                 
+                is_screen_changing = False
+                if last_frame_crop is not None:
+                    diff_with_last = cv2.absdiff(last_frame_crop, curr_crop_small)
+                    _, thresh_last = cv2.threshold(diff_with_last, 30, 255, cv2.THRESH_BINARY)
+                    change_ratio = np.count_nonzero(thresh_last) / (128 * 128)
+                    if change_ratio > 0.02:
+                        is_screen_changing = True
+                last_frame_crop = curr_crop_small.copy()
+
                 frame_buffer.append(curr_crop_small)
                 if len(frame_buffer) > 5:
                     frame_buffer.pop(0)
@@ -317,15 +327,24 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     result_info["matched"] = True
                     break
                 else:
-                    if not waiting_logged:
-                        update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
-                        waiting_logged = True
+                    if is_screen_changing:
+                        update_ui("画面遷移を待機しています...", False)
+                        waiting_logged = False
+                    elif not waiting_logged:
+                        if time.time() - start_time > 3.0:
+                            update_ui("記録時と同じ画面にしてください。", True)
+                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
+                            waiting_logged = True
+                        else:
+                            update_ui("画面の応答を待機しています...", False)
             else:
                 if not waiting_logged:
-                    update_ui("記録時と同じ画面にしてください。", True)
-                    logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
-                    waiting_logged = True
+                    if time.time() - start_time > 3.0:
+                        update_ui("記録時と同じ画面にしてください。", True)
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                        waiting_logged = True
+                    else:
+                        update_ui("画面の応答を待機しています...", False)
             
             time.sleep(0.5)
             
