@@ -66,6 +66,8 @@ class TypingSessionAggregator:
                 elif diff_val > 15.0:
                     if time_diff > 500:
                         self._flush_session(current_session, aggregated_events)
+                elif time_diff > 3000:
+                    self._flush_session(current_session, aggregated_events)
                 elif last_element and curr_element and last_element != curr_element:
                     # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
                     if diff_val > 5.0 or time_diff > 2000:
@@ -140,7 +142,11 @@ class TypingSessionAggregator:
                             last_valid_text = next_event.get("semantic_role", "")
                         else:
                             break
-                    elif action in ["mouse_move", "mouse_hover"]:
+                    elif action in ["mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:
+                        next_ctx = next_event.get("app_context") or next_event.get("AppSpecificContext") or next_event.get("appSpecificContext") or {}
+                        next_elem = next_ctx.get("element_name", "")
+                        if action == "mouse_click" and next_elem != curr_elem:
+                            break
                         intervening_events.append(next_event)
                     else:
                         break
@@ -202,7 +208,11 @@ class TypingSessionAggregator:
 
             is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
             is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+            is_garbage_combo = action == "key_combo" and not is_shortcut and len(role_lower.split("+")) >= 3
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
+            
+            if is_garbage_combo or is_ime_toggle:
+                continue
             
             is_valid = False
             
@@ -215,7 +225,7 @@ class TypingSessionAggregator:
             elif diff_val >= 0.1:
                 is_valid = True
             # 3. IME切り替えやコピーなどの特殊操作の場合
-            elif is_essential_key or is_shortcut or is_ime_toggle:
+            elif is_essential_key or is_shortcut:
                 is_valid = True
             # 4. 通常の文字入力で差分が0.0%になるケースを救済するため、
             #    actionがkey_press等で、role_lowerが1文字の場合は有効とする
@@ -259,11 +269,6 @@ class TypingSessionAggregator:
 
             is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
             is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
-            is_garbage_combo = action == "key_combo" and not is_shortcut and len(role_lower.split("+")) >= 3
-            
-            if is_garbage_combo:
-                session.clear()
-                return
 
             if diff_val < 0.1 and not is_essential_key and not is_shortcut:
                 session.clear()
