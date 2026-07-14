@@ -79,7 +79,7 @@ class TypingSessionAggregator:
             
             is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.") or 
-                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"] or
+                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right", "left_click", "right_click", "middle_click"] or
                 ("+" in role_lower and not is_shift_char)
             )
             is_text_input = action in ["type_text", "key_down", "key_press", "key_combo"] and not is_special_key
@@ -318,7 +318,7 @@ class TypingSessionAggregator:
         current_chunk = ""
         current_ime_state = None
         
-        ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd"}
+        ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd", "left_click", "right_click", "middle_click"}
         ignore_modifiers = ["shift", "ctrl", "alt", "win", "cmd"]
         
         for item in session:

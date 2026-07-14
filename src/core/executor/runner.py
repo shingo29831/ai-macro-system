@@ -155,7 +155,7 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 30.0) -> dict:
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, step_index: int, timeout: float = 30.0) -> dict:
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
     result_info = {"matched": False, "time_taken": 0.0, "scores": {}}
@@ -164,10 +164,18 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
 
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
-        return
+        return result_info
         
     exec_logs_dir = target_dir / "execution_logs"
     exec_logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        import shutil
+        target_copy_path = exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_target.png"
+        if not target_copy_path.exists():
+            shutil.copy2(pre_image_path, target_copy_path)
+    except Exception as e:
+        logger.warning(f"Failed to copy target image: {e}")
 
     def update_ui(text, is_warning):
         if status_callback:
@@ -315,8 +323,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
                     try:
-                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_curr.png"), curr_crop)
-                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_pre.png"), pre_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_match_curr.png"), curr_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_match_pre.png"), pre_crop)
                     except Exception:
                         pass
                         
@@ -673,7 +681,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 else:
-                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback, i)
                     step_log["match_info"] = match_info
                     update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
