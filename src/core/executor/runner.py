@@ -418,6 +418,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         start_index = 0
         screen_matched = False
         is_browser_target = False
+        current_win_x, current_win_y, current_win_w, current_win_h = 0, 0, 0, 0
+        last_win_args = None
         
         try:
             first_activate_cmd = next((cmd for cmd in commands if cmd.get("method") == "activate_window"), None)
@@ -498,6 +500,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
         except Exception as e:
             logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
+            
+        if last_win_args:
+            current_win_x = last_win_args.get("x", 0)
+            current_win_y = last_win_args.get("y", 0)
+            current_win_w = last_win_args.get("width", 0)
+            current_win_h = last_win_args.get("height", 0)
         # --------------------------------------------------
         
         for i in range(start_index, len(commands)):
@@ -513,6 +521,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
+
+            if method == "activate_window":
+                current_win_x = args.get("x", 0)
+                current_win_y = args.get("y", 0)
+                current_win_w = args.get("width", 0)
+                current_win_h = args.get("height", 0)
+
+            # 次のアクション時の画面との一致率で待機する
+            if method != "wait" and raw_event_id:
+                _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
             
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
@@ -589,6 +607,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         raise e
             
             if method == "wait":
+                # 画面マッチングによる待機を優先するため、次に画像判定可能なアクションが控えている場合は固定待機をスキップ
+                next_has_event = False
+                for j in range(i + 1, len(commands)):
+                    if commands[j].get("method") != "wait":
+                        if commands[j].get("args", {}).get("raw_event_id"):
+                            next_has_event = True
+                        break
+                
+                if next_has_event:
+                    logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
+                    continue
+
                 duration = args.get("duration", 0.0)
                 sleep_intervals = int(duration * 10)
                 for _ in range(sleep_intervals):
@@ -607,7 +637,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 win_h = args.get("height", 0)
                 
                 _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id)
-                _wait_for_screen_match(target_dir, raw_event_id, win_x, win_y, win_w, win_h, workflow_id, status_callback)
 
             elif method == "click":
                 x = args.get("x", 0)
