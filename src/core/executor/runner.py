@@ -288,8 +288,6 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
             return False
             
     pre_crop = pre_img_cv[y1:y2, x1:x2]
-    pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
-
     curr_h, curr_w = curr_img_cv.shape
     cx1 = max(0, win_x - offset_x)
     cy1 = max(0, win_y - offset_y)
@@ -303,31 +301,46 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
             return False
             
     curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
-    curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
+    
+    if pre_crop.shape != curr_crop.shape:
+        curr_crop = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
 
-    diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
+    # 1. ピクセル差分の計算（リサイズなしの元解像度で計算し、細かい違いを逃さない）
+    diff_full = cv2.absdiff(pre_crop, curr_crop)
     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-    diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
+    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop.shape[0] * pre_crop.shape[1])
     
-    is_pixel_match = diff_ratio <= 0.10
+    # 2. エッジの比較（UIの構造や文字の違いを比較）
+    pre_edges = cv2.Canny(pre_crop, 50, 150)
+    curr_edges = cv2.Canny(curr_crop, 50, 150)
     
+    edge_diff = cv2.absdiff(pre_edges, curr_edges)
+    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop.shape[0] * pre_crop.shape[1])
+    
+    # 3. テンプレートマッチング（全体的な構造の類似度）
+    # 計算量削減のため、適度なサイズ（最大幅512程度）に縮小してマッチング
+    scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
+    if scale < 1.0:
+        pre_crop_small = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        curr_crop_small = cv2.resize(curr_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        pre_crop_small = pre_crop
+        curr_crop_small = curr_crop
+        
     res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
-    is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
-    
-    pre_edges = cv2.Canny(pre_crop_small, 50, 150)
-    curr_edges = cv2.Canny(curr_crop_small, 50, 150)
-    pre_edge_count = np.count_nonzero(pre_edges)
-    
-    is_edge_match = False
-    max_val_edges = 0.0
-    if pre_edge_count > 50:
-        res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
-        _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
-        if max_val_edges >= 0.60 and diff_ratio <= 0.50:
-            is_edge_match = True
 
-    return is_pixel_match or is_struct_match or is_edge_match
+    # 判定ロジックの厳格化
+    # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
+    # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
+    
+    # 完全に同じ画面（非常に厳しい条件）
+    is_exact_match = (diff_ratio <= 0.03) and (edge_diff_ratio <= 0.02) and (max_val >= 0.95)
+    
+    # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
+    is_high_match = (diff_ratio <= 0.08) and (edge_diff_ratio <= 0.05) and (max_val >= 0.88)
+    
+    return is_exact_match or is_high_match
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
