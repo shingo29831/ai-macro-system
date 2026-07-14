@@ -22,12 +22,18 @@ class TypingSessionAggregator:
         if not raw_events:
             return []
 
-
+        def _parse_diff(val: Any) -> float:
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                try:
+                    return float(val.replace("%", "").strip())
+                except ValueError:
+                    return 0.0
+            return 0.0
 
         aggregated_events: List[Dict[str, Any]] = []
         current_session: List[Dict[str, Any]] = []
-
-
 
         for i, event in enumerate(raw_events):
             action = event.get("raw_action", "")
@@ -49,13 +55,25 @@ class TypingSessionAggregator:
                 elif current_ts > 0 and last_ts > 0 and (current_ts - last_ts) > self.session_timeout_ms:
                     self._flush_session(current_session, aggregated_events)
 
+                # 3. 画面の大きな変化（ページ遷移など）によるセッション分割
+                elif _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff")) > 10.0:
+                    self._flush_session(current_session, aggregated_events)
 
-
-                # 3. コントロールの種類が大きく変わった場合
-                # タイピング中はUIAのフォーカスがサジェスト等に飛ぶことが多いため、
-                # ウィンドウが同じでタイムアウトしていなければ、コントロールタイプの変更だけでは分断しない。
-
-
+                # 4. UIAのフォーカス要素（element_name, control_type）が変わった場合
+                else:
+                    curr_app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
+                    last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
+                    
+                    curr_elem = curr_app_ctx.get("element_name", "")
+                    last_elem = last_app_ctx.get("element_name", "")
+                    curr_ctrl = curr_app_ctx.get("control_type", "")
+                    last_ctrl = last_app_ctx.get("control_type", "")
+                    
+                    if curr_elem and last_elem and curr_elem != last_elem:
+                        # サジェスト等のポップアップを無視するため、主要な入力コントロール間の移動のみをセッション分割とみなす
+                        valid_ctrls = ["editcontrol", "comboboxcontrol", "documentcontrol"]
+                        if curr_ctrl.lower() in valid_ctrls and last_ctrl.lower() in valid_ctrls:
+                            self._flush_session(current_session, aggregated_events)
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -69,23 +87,17 @@ class TypingSessionAggregator:
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             ime_active = event.get("ime_active", False)
 
-
-
             is_mouse_move = action in ["mouse_move", "mouse_hover"]
             
             # コンボキー（shift+space等）はIME切り替えやショートカットとみなし、セッションを継続させる
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             is_typing_combo = action == "key_combo" or is_ime_toggle
 
-
-
             # IMEオフのEnterは送信/実行を意味するため、ここでセッションを区切る
             if role_lower == "enter" and not ime_active:
                 current_session.append(event)
                 self._flush_session(current_session, aggregated_events)
                 continue
-
-
 
             # セッションの継続条件: 文字入力、UIAスキャン、確定キー(Enter/Tab)、または入力中のコンボキー
             if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
@@ -96,23 +108,15 @@ class TypingSessionAggregator:
                 aggregated_events.append(event)
                 continue
 
-
-
             # クリックやTab以外の特殊キーなどが来た場合、セッションをフラッシュ
             if current_session:
                 self._flush_session(current_session, aggregated_events)
 
-
-
             aggregated_events.append(event)
-
-
 
         # ループ終了時に残っているセッションをフラッシュ
         if current_session:
             self._flush_session(current_session, aggregated_events)
-
-
 
         return aggregated_events
 
