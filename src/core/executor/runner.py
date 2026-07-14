@@ -35,7 +35,7 @@ def _set_dpi_awareness():
 
 _set_dpi_awareness()
 
-def _calculate_ssim(img1, img2):
+def _calculate_ssim(img1, img2, mask=None):
     """OpenCVを用いてSSIM (Structural Similarity Index) を計算する"""
     import cv2
     import numpy as np
@@ -52,14 +52,20 @@ def _calculate_ssim(img1, img2):
     sigma2_sq = cv2.GaussianBlur(i2 ** 2, (11, 11), 1.5) - mu2_sq
     sigma12 = cv2.GaussianBlur(i1 * i2, (11, 11), 1.5) - mu1_mu2
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    
+    if mask is not None:
+        valid_pixels = mask > 0
+        if not np.any(valid_pixels):
+            return 0.0
+        return float(ssim_map[valid_pixels].mean())
     return float(ssim_map.mean())
 
-def _calculate_orb_match(img1, img2):
+def _calculate_orb_match(img1, img2, mask=None):
     """ORB特徴点マッチングにより、画像間の特徴一致率を計算する"""
     import cv2
     orb = cv2.ORB_create(nfeatures=500)
-    kp1, des1 = orb.detectAndCompute(img1, None)
-    kp2, des2 = orb.detectAndCompute(img2, None)
+    kp1, des1 = orb.detectAndCompute(img1, mask)
+    kp2, des2 = orb.detectAndCompute(img2, mask)
     if des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
         return 0.0
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
@@ -217,8 +223,13 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 return result_info
             
         pre_crop = pre_img_cv[y1:y2, x1:x2]
-        pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
         
+        scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
+        if scale < 1.0:
+            pre_crop_eval = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            pre_crop_eval = pre_crop.copy()
+            
         waiting_logged = False
         frame_buffer = [] 
         start_time = time.time()
@@ -249,23 +260,16 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 
             if cx2 > cx1 and cy2 > cy1:
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
-                curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
+                if scale < 1.0:
+                    curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
+                else:
+                    curr_crop_eval = curr_crop.copy()
                 
-                is_screen_changing = False
-                if last_frame_crop is not None:
-                    diff_with_last = cv2.absdiff(last_frame_crop, curr_crop_small)
-                    _, thresh_last = cv2.threshold(diff_with_last, 30, 255, cv2.THRESH_BINARY)
-                    change_ratio = np.count_nonzero(thresh_last) / (128 * 128)
-                    if change_ratio > 0.02:
-                        is_screen_changing = True
-                last_frame_crop = curr_crop_small.copy()
-
-                frame_buffer.append(curr_crop_small)
+                frame_buffer.append(curr_crop_eval)
                 if len(frame_buffer) > 5:
                     frame_buffer.pop(0)
                 
-                dynamic_mask = np.zeros((128, 128), dtype=np.uint8)
-                
+                dynamic_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
                     dynamic_mask = (std_dev > 10).astype(np.uint8) * 255
@@ -273,19 +277,34 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
                 static_mask = cv2.bitwise_not(dynamic_mask)
-                pre_crop_static = cv2.bitwise_and(pre_crop_small, pre_crop_small, mask=static_mask)
-                curr_crop_static = cv2.bitwise_and(curr_crop_small, curr_crop_small, mask=static_mask)
+                valid_area = np.count_nonzero(static_mask)
+
+                is_screen_changing = False
+                if last_frame_crop is not None:
+                    diff_with_last = cv2.absdiff(last_frame_crop, curr_crop_eval)
+                    _, thresh_last = cv2.threshold(diff_with_last, 30, 255, cv2.THRESH_BINARY)
+                    
+                    # 動的マスク（動画など）を除外して画面遷移を判定
+                    thresh_last = cv2.bitwise_and(thresh_last, thresh_last, mask=static_mask)
+                    
+                    if valid_area > 500:
+                        change_ratio = np.count_nonzero(thresh_last) / valid_area
+                        if change_ratio > 0.02:
+                            is_screen_changing = True
+                last_frame_crop = curr_crop_eval.copy()
+                
+                pre_crop_static = cv2.bitwise_and(pre_crop_eval, pre_crop_eval, mask=static_mask)
+                curr_crop_static = cv2.bitwise_and(curr_crop_eval, curr_crop_eval, mask=static_mask)
                 
                 diff = cv2.absdiff(pre_crop_static, curr_crop_static)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
-                static_area_size = np.count_nonzero(static_mask)
-                if static_area_size > 500: 
-                    diff_ratio = np.count_nonzero(thresh) / static_area_size
+                if valid_area > 500: 
+                    diff_ratio = np.count_nonzero(thresh) / valid_area
                 else:
-                    diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
+                    diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-                    diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
+                    diff_ratio = np.count_nonzero(thresh_full) / (curr_crop_eval.shape[0] * curr_crop_eval.shape[1])
                 
                 # 閾値を再調整（厳格すぎると開始時にマッチしないため、少し緩和）
                 is_pixel_match = diff_ratio <= 0.05
@@ -306,8 +325,9 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
-                ssim_val = _calculate_ssim(pre_crop_small, curr_crop_small)
-                orb_score = _calculate_orb_match(pre_crop_small, curr_crop_small)
+                # 動画などの動的領域を除外してSSIMとORBを計算
+                ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval, mask=static_mask)
+                orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval, mask=static_mask)
 
                 result_info["scores"] = {
                     "diff_ratio": float(diff_ratio),
@@ -317,8 +337,9 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     "orb": orb_score
                 }
 
-                is_ssim_match = ssim_val >= 0.85
-                is_orb_match = orb_score >= 0.40
+                # 検索結果画面などの変動を考慮し、閾値を緩和
+                is_ssim_match = ssim_val >= 0.80
+                is_orb_match = orb_score >= 0.25
 
                 if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
@@ -404,36 +425,35 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
             
     curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
     
-    if pre_crop.shape != curr_crop.shape:
-        curr_crop = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
-
-    # 1. ピクセル差分の計算（リサイズなしの元解像度で計算し、細かい違いを逃さない）
-    diff_full = cv2.absdiff(pre_crop, curr_crop)
-    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop.shape[0] * pre_crop.shape[1])
-    
-    # 2. エッジの比較（UIの構造や文字の違いを比較）
-    pre_edges = cv2.Canny(pre_crop, 50, 150)
-    curr_edges = cv2.Canny(curr_crop, 50, 150)
-    
-    edge_diff = cv2.absdiff(pre_edges, curr_edges)
-    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop.shape[0] * pre_crop.shape[1])
-    
-    # 3. テンプレートマッチング（全体的な構造の類似度）
-    # 計算量削減のため、適度なサイズ（最大幅512程度）に縮小してマッチング
     scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
     if scale < 1.0:
-        pre_crop_small = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        curr_crop_small = cv2.resize(curr_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        pre_crop_eval = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
     else:
-        pre_crop_small = pre_crop
-        curr_crop_small = curr_crop
-        
-    res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
+        pre_crop_eval = pre_crop
+        if pre_crop.shape != curr_crop.shape:
+            curr_crop_eval = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
+        else:
+            curr_crop_eval = curr_crop
+
+    # 1. ピクセル差分の計算
+    diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
+    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
+    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    
+    # 2. エッジの比較
+    pre_edges = cv2.Canny(pre_crop_eval, 50, 150)
+    curr_edges = cv2.Canny(curr_crop_eval, 50, 150)
+    
+    edge_diff = cv2.absdiff(pre_edges, curr_edges)
+    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    
+    # 3. テンプレートマッチング
+    res = cv2.matchTemplate(curr_crop_eval, pre_crop_eval, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    ssim_val = _calculate_ssim(pre_crop_small, curr_crop_small)
-    orb_score = _calculate_orb_match(pre_crop_small, curr_crop_small)
+    ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval)
+    orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval)
 
     scores = {
         "diff_ratio": float(diff_ratio),
@@ -450,7 +470,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.85)
 
     # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
-    is_structural_match = (ssim_val >= 0.85) or (orb_score >= 0.40)
+    is_structural_match = (ssim_val >= 0.80) or (orb_score >= 0.25)
     
     return (is_exact_match or is_high_match or is_structural_match), scores
 
