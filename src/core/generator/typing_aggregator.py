@@ -78,12 +78,16 @@ class TypingSessionAggregator:
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
-            is_special_key = action in ["key_down", "key_press"] and (
+            
+            # shift+文字 などの大文字入力コンボは特殊キー（分断対象）ではなく文字入力の一部とみなす
+            is_shift_char = "+" in role_lower and "shift" in role_lower and len(role_lower.split("+")[-1]) == 1
+            
+            is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.") or 
                 role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"] or
-                "+" in role_lower
+                ("+" in role_lower and not is_shift_char)
             )
-            is_text_input = action in ["type_text", "key_down", "key_press"] and not is_special_key
+            is_text_input = action in ["type_text", "key_down", "key_press", "key_combo"] and not is_special_key
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             ime_active = event.get("ime_active", False)
@@ -92,7 +96,7 @@ class TypingSessionAggregator:
             
             # コンボキー（shift+space等）はIME切り替えやショートカットとみなし、セッションを継続させる
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
-            is_typing_combo = action == "key_combo" or is_ime_toggle
+            is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
 
             # IMEオフのEnterは送信/実行を意味するため、ここでセッションを区切る
             if role_lower == "enter" and not ime_active:
@@ -254,6 +258,13 @@ class TypingSessionAggregator:
             ime_active = item.get("ime_active", False)
             
             is_combo = action == "key_combo" or "+" in r_lower
+            char = ""
+            
+            # shift+文字 の場合は大文字として抽出する
+            if is_combo and "shift" in r_lower and len(r_lower.split("+")[-1]) == 1:
+                char = r_lower.split("+")[-1].upper()
+                is_combo = False
+                
             if is_combo:
                 # コンボキーはIME切り替えやショートカットとみなし、文字としては結合しない
                 # ただし、IME状態の切り替えフラグとしては機能させるため、ここでチャンクを区切る
@@ -271,20 +282,43 @@ class TypingSessionAggregator:
                 continue
                 
             char = ""
-            if r_lower == "backspace":
-                if current_chunk:
-                    current_chunk = current_chunk[:-1]
-                elif fallback_text:
-                    fallback_text = fallback_text[:-1]
+            
+            # shift+文字 の場合は大文字として抽出する
+            if is_combo and "shift" in r_lower and len(r_lower.split("+")[-1]) == 1:
+                char = r_lower.split("+")[-1].upper()
+                is_combo = False
+                
+            if is_combo:
+                # コンボキーはIME切り替えやショートカットとみなし、文字としては結合しない
+                # ただし、IME状態の切り替えフラグとしては機能させるため、ここでチャンクを区切る
+                if current_ime_state is not None:
+                    if current_ime_state and current_chunk:
+                        try:
+                            from core.recorder.romaji_converter import to_hiragana
+                            current_chunk = to_hiragana(current_chunk)
+                        except ImportError:
+                            pass
+                    fallback_text += current_chunk
+                    current_chunk = ""
+                    # コンボキー自体の ime_active はあてにならないことがあるため、次の文字入力で更新させる
+                    current_ime_state = None
                 continue
-            elif r_lower == "space":
-                char = " "
-            elif r_lower in ignore_exact_keys or r_lower.startswith("key."):
-                continue
-            elif len(r_lower) > 1 and any(mod in r_lower for mod in ignore_modifiers):
-                continue
-            else:
-                char = role
+                
+            if not char:
+                if r_lower == "backspace":
+                    if current_chunk:
+                        current_chunk = current_chunk[:-1]
+                    elif fallback_text:
+                        fallback_text = fallback_text[:-1]
+                    continue
+                elif r_lower == "space":
+                    char = " "
+                elif r_lower in ignore_exact_keys or r_lower.startswith("key."):
+                    continue
+                elif len(r_lower) > 1 and any(mod in r_lower for mod in ignore_modifiers):
+                    continue
+                else:
+                    char = role
 
             if current_ime_state is None:
                 current_ime_state = ime_active
