@@ -122,7 +122,7 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback):
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0):
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
     if not raw_event_id or win_w <= 0 or win_h <= 0:
@@ -158,14 +158,16 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         offset_x = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
         offset_y = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
         
-        x1 = max(0, win_x - offset_x)
-        y1 = max(0, win_y - offset_y)
-        x2 = min(img_w, win_x - offset_x + win_w)
-        y2 = min(img_h, win_y - offset_y + win_h)
+        # ウィンドウの枠線や影をノイズとしないよう、内側にマージンを設ける
+        margin = 8
+        x1 = max(0, win_x - offset_x + margin)
+        y1 = max(0, win_y - offset_y + margin)
+        x2 = min(img_w, win_x - offset_x + win_w - margin)
+        y2 = min(img_h, win_y - offset_y + win_h - margin)
         
         if x2 <= x1 or y2 <= y1:
-            x1, y1 = max(0, win_x), max(0, win_y)
-            x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+            x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
+            x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
             if x2 <= x1 or y2 <= y1:
                 return
             
@@ -174,8 +176,15 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         
         waiting_logged = False
         frame_buffer = [] 
+        start_time = time.time()
         
         while not _stop_requested:
+            if time.time() - start_time > timeout:
+                logger.warning(f"[{workflow_id}] Screen match timeout ({timeout}s). Proceeding to next action.")
+                if waiting_logged:
+                    update_ui("タイムアウトしました。マクロを再開します。", False)
+                break
+
             curr_img_pil, curr_monitor = take_screenshot()
             curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
             
@@ -183,10 +192,10 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
             c_offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
             
             curr_h, curr_w = curr_img_cv.shape
-            cx1 = max(0, win_x - c_offset_x)
-            cy1 = max(0, win_y - c_offset_y)
-            cx2 = min(curr_w, win_x - c_offset_x + win_w)
-            cy2 = min(curr_h, win_y - c_offset_y + win_h)
+            cx1 = max(0, win_x - c_offset_x + margin)
+            cy1 = max(0, win_y - c_offset_y + margin)
+            cx2 = min(curr_w, win_x - c_offset_x + win_w - margin)
+            cy2 = min(curr_h, win_y - c_offset_y + win_h - margin)
             
             if cx2 <= cx1 or cy2 <= cy1:
                 cx1, cy1 = max(0, win_x), max(0, win_y)
@@ -223,11 +232,12 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
-                is_pixel_match = diff_ratio <= 0.10
+                # 閾値を大幅に緩和
+                is_pixel_match = diff_ratio <= 0.20
                 
                 res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
-                is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
+                is_struct_match = (max_val >= 0.75) and (diff_ratio <= 0.40)
                 
                 pre_edges = cv2.Canny(pre_crop_static, 50, 150)
                 curr_edges = cv2.Canny(curr_crop_static, 50, 150)
@@ -238,7 +248,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if pre_edge_count > 50:
                     res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
                     _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
-                    if max_val_edges >= 0.60 and diff_ratio <= 0.50:
+                    if max_val_edges >= 0.50 and diff_ratio <= 0.50:
                         is_edge_match = True
 
                 if is_pixel_match or is_struct_match or is_edge_match:
@@ -275,28 +285,29 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         return False
 
     img_h, img_w = pre_img_cv.shape
+    margin = 8
     
-    x1 = max(0, win_x - offset_x)
-    y1 = max(0, win_y - offset_y)
-    x2 = min(img_w, win_x - offset_x + win_w)
-    y2 = min(img_h, win_y - offset_y + win_h)
+    x1 = max(0, win_x - offset_x + margin)
+    y1 = max(0, win_y - offset_y + margin)
+    x2 = min(img_w, win_x - offset_x + win_w - margin)
+    y2 = min(img_h, win_y - offset_y + win_h - margin)
     
     if x2 <= x1 or y2 <= y1:
-        x1, y1 = max(0, win_x), max(0, win_y)
-        x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+        x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
+        x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
         if x2 <= x1 or y2 <= y1:
             return False
             
     pre_crop = pre_img_cv[y1:y2, x1:x2]
     curr_h, curr_w = curr_img_cv.shape
-    cx1 = max(0, win_x - offset_x)
-    cy1 = max(0, win_y - offset_y)
-    cx2 = min(curr_w, win_x - offset_x + win_w)
-    cy2 = min(curr_h, win_y - offset_y + win_h)
+    cx1 = max(0, win_x - offset_x + margin)
+    cy1 = max(0, win_y - offset_y + margin)
+    cx2 = min(curr_w, win_x - offset_x + win_w - margin)
+    cy2 = min(curr_h, win_y - offset_y + win_h - margin)
     
     if cx2 <= cx1 or cy2 <= cy1:
-        cx1, cy1 = max(0, win_x), max(0, win_y)
-        cx2, cy2 = min(curr_w, win_x + win_w), min(curr_h, win_y + win_h)
+        cx1, cy1 = max(0, win_x + margin), max(0, win_y + margin)
+        cx2, cy2 = min(curr_w, win_x + win_w - margin), min(curr_h, win_y + win_h - margin)
         if cx2 <= cx1 or cy2 <= cy1:
             return False
             
@@ -330,15 +341,15 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    # 判定ロジックの厳格化
+    # 判定ロジックの緩和
     # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
     # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
     
-    # 完全に同じ画面（非常に厳しい条件）
-    is_exact_match = (diff_ratio <= 0.03) and (edge_diff_ratio <= 0.02) and (max_val >= 0.95)
+    # 完全に同じ画面
+    is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.04) and (max_val >= 0.90)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
-    is_high_match = (diff_ratio <= 0.08) and (edge_diff_ratio <= 0.05) and (max_val >= 0.88)
+    is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.80)
     
     return is_exact_match or is_high_match
 
