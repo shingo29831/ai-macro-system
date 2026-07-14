@@ -234,7 +234,7 @@ class TypingSessionAggregator:
             session.clear()
             return
             
-        session = filtered_session
+        session[:] = filtered_session
         # ----------------------------------
 
         if len(session) == 1:
