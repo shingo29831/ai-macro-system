@@ -436,9 +436,12 @@ class TypingSessionAggregator:
                 # 類似度が極端に低い場合（例: 0.25未満）は、全く無関係なテキスト（プレースホルダー等）とみなして採用しない
                 # 短い文字列でのスペース一致等による誤爆を防ぐため閾値を高めに設定
                 if best_ratio >= 0.25:
+                    # キー入力とUIAの類似度が高い場合、UIA側の大文字小文字（Shift/CapsLockの状態が反映された正確なテキスト）を採用する
                     uia_rescued_text = best_candidate
                     logger.info(f"[TypingAggregator] UIAレスキュー成功: 候補の中から類似度最大({best_ratio:.2f})の '{uia_rescued_text}' を採用")
                 else:
+                    # キー入力（例: honnyaku）と画面テキスト（例: Hello , world）が全く異なる場合は、
+                    # 画面テキストは前回の入力の残骸（ゴミ）とみなして破棄し、実際のキー入力を優先する
                     logger.info(f"[TypingAggregator] UIAレスキュー候補はありましたが、入力キーとの類似度が低すぎるため破棄します (best_ratio: {best_ratio:.2f}, cand: '{best_candidate}')")
             else:
                 # fallback_text が空（特殊キーのみなど）の場合は、最初に見つかった候補（最新）を採用

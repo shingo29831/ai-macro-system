@@ -131,6 +131,9 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
         return
+        
+    exec_logs_dir = target_dir / "execution_logs"
+    exec_logs_dir.mkdir(parents=True, exist_ok=True)
 
     def update_ui(text, is_warning):
         if status_callback:
@@ -232,12 +235,12 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
-                # 閾値を大幅に緩和
-                is_pixel_match = diff_ratio <= 0.20
+                # 閾値をさらに厳格化（ダークテーマの似た画面を区別するため）
+                is_pixel_match = diff_ratio <= 0.02
                 
                 res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
-                is_struct_match = (max_val >= 0.75) and (diff_ratio <= 0.40)
+                is_struct_match = (max_val >= 0.92) and (diff_ratio <= 0.08)
                 
                 pre_edges = cv2.Canny(pre_crop_static, 50, 150)
                 curr_edges = cv2.Canny(curr_crop_static, 50, 150)
@@ -248,15 +251,21 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if pre_edge_count > 50:
                     res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
                     _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
-                    if max_val_edges >= 0.50 and diff_ratio <= 0.50:
+                    if max_val_edges >= 0.80 and diff_ratio <= 0.10:
                         is_edge_match = True
 
                 if is_pixel_match or is_struct_match or is_edge_match:
+                    # マッチ成功時の画像を保存
+                    try:
+                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_curr.png"), curr_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_pre.png"), pre_crop)
+                    except Exception:
+                        pass
+                        
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
                         logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
                         time.sleep(1.5)
-                        update_ui("実行中...", False)
                     break
                 else:
                     if not waiting_logged:
@@ -341,15 +350,15 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    # 判定ロジックの緩和
+    # 判定ロジックの再調整（ダークテーマの別画面を誤検知しないようにさらに厳格化）
     # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
     # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
     
     # 完全に同じ画面
-    is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.04) and (max_val >= 0.90)
+    is_exact_match = (diff_ratio <= 0.02) and (edge_diff_ratio <= 0.02) and (max_val >= 0.95)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
-    is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.80)
+    is_high_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.04) and (max_val >= 0.90)
     
     return is_exact_match or is_high_match
 
@@ -400,6 +409,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     listener = KeyboardListener(on_press=on_press, on_release=on_release)
     listener.start()
     
+    def update_ui(text, is_warning=False):
+        if status_callback:
+            status_callback(text, is_warning)
+        else:
+            try:
+                from ui.views.running_dialog import RunningDialog
+                RunningDialog.set_status(text, is_warning)
+            except Exception:
+                pass
+
     try:
         from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
@@ -528,7 +547,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             method = cmd.get("method")
             args = cmd.get("args", {})
             
-            logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
+            step_msg = f"Step {i+1}/{len(commands)}: {method}"
+            logger.info(f"[{workflow_id}] {step_msg}")
+            update_ui(step_msg, False)
             
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
@@ -542,6 +563,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             # 次のアクション時の画面との一致率で待機する
             if method != "wait" and raw_event_id:
                 _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
