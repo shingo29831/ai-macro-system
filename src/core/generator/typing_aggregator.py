@@ -416,14 +416,18 @@ class TypingSessionAggregator:
                 
                 for cand in uia_candidates:
                     cand_lower = cand.lower()
-                    # フォールバックテキストが候補に完全に含まれる場合は最高スコア
-                    if fb_lower in cand_lower:
+                    
+                    if fb_lower == cand_lower:
+                        ratio = 1.2
+                    elif fb_lower in cand_lower:
                         ratio = 1.0
                     else:
                         ratio = difflib.SequenceMatcher(None, fb_lower, cand_lower).ratio()
                         # 漢字変換を考慮し、候補の先頭部分が一致していればスコアを底上げ
                         if cand_lower and fb_lower.startswith(cand_lower[:3]):
                             ratio += 0.2
+                        # 部分一致のスコアが完全包含(1.0)を上回らないように上限を設定
+                        ratio = min(0.99, ratio)
                         
                     if ratio > best_ratio:
                         best_ratio = ratio
