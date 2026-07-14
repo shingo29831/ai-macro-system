@@ -122,11 +122,12 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0):
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0) -> dict:
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
+    result_info = {"matched": False, "time_taken": 0.0, "scores": {}}
     if not raw_event_id or win_w <= 0 or win_h <= 0:
-        return
+        return result_info
 
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
@@ -152,7 +153,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         
         pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
         if pre_img_cv is None:
-            return
+            return result_info
             
         img_h, img_w = pre_img_cv.shape
         
@@ -172,7 +173,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
             x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
             x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
             if x2 <= x1 or y2 <= y1:
-                return
+                return result_info
             
         pre_crop = pre_img_cv[y1:y2, x1:x2]
         pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
@@ -254,6 +255,12 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
+                result_info["scores"] = {
+                    "diff_ratio": float(diff_ratio),
+                    "sim": float(max_val),
+                    "edge_sim": float(max_val_edges)
+                }
+
                 if is_pixel_match or is_struct_match or is_edge_match:
                     # マッチ成功時の画像を保存
                     try:
@@ -266,6 +273,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                         update_ui("マクロを再開します。", False)
                         logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
                         time.sleep(1.5)
+                    result_info["matched"] = True
                     break
                 else:
                     if not waiting_logged:
@@ -279,19 +287,25 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     waiting_logged = True
             
             time.sleep(0.5)
+            
+        result_info["time_taken"] = time.time() - start_time
     except Exception as e:
         logger.warning(f"Error during screen match waiting: {e}")
+        
+    return result_info
 
-def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> bool:
+def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> tuple[bool, dict]:
     import cv2
     import numpy as np
+    
+    scores = {"diff_ratio": 1.0, "sim": 0.0, "edge_sim": 1.0}
 
     if not pre_image_path.exists():
-        return False
+        return False, scores
 
     pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
     if pre_img_cv is None:
-        return False
+        return False, scores
 
     img_h, img_w = pre_img_cv.shape
     margin = 8
@@ -305,7 +319,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
         x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
         if x2 <= x1 or y2 <= y1:
-            return False
+            return False, scores
             
     pre_crop = pre_img_cv[y1:y2, x1:x2]
     curr_h, curr_w = curr_img_cv.shape
@@ -318,7 +332,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         cx1, cy1 = max(0, win_x + margin), max(0, win_y + margin)
         cx2, cy2 = min(curr_w, win_x + win_w - margin), min(curr_h, win_y + win_h - margin)
         if cx2 <= cx1 or cy2 <= cy1:
-            return False
+            return False, scores
             
     curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
     
@@ -354,13 +368,19 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
     # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
     
+    scores = {
+        "diff_ratio": float(diff_ratio),
+        "sim": float(max_val),
+        "edge_sim": float(edge_diff_ratio)
+    }
+
     # 完全に同じ画面
     is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.03) and (max_val >= 0.92)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
     is_high_match = (diff_ratio <= 0.10) and (edge_diff_ratio <= 0.06) and (max_val >= 0.88)
     
-    return is_exact_match or is_high_match
+    return (is_exact_match or is_high_match), scores
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
@@ -421,8 +441,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
     try:
         from core.recorder.screen_capturer import get_macros_root
+        from datetime import datetime
         macros_root = get_macros_root()
         target_dir = macros_root / workflow_id
+        
+        execution_log = {
+            "workflow_id": workflow_id,
+            "start_time": datetime.now().isoformat(),
+            "start_step": 0,
+            "steps": [],
+            "status": "running"
+        }
         
         executable_macro_path = target_dir / "executable_macro.json"
         variables_path = target_dir / "variables.json"
@@ -494,11 +523,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             win_w = last_win_args.get("width", 0)
                             win_h = last_win_args.get("height", 0)
                             
-                            is_match = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
+                            is_match, scores = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
                             if is_match:
-                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here.")
+                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
                                 start_index = i
                                 screen_matched = True
+                                execution_log["start_step"] = start_index
+                                execution_log["initial_match_scores"] = scores
                                 break
                                 
             if screen_matched and start_index > 0:
@@ -549,6 +580,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             method = cmd.get("method")
             args = cmd.get("args", {})
             
+            step_log = {
+                "step_index": i,
+                "method": method,
+                "args": args,
+                "match_info": None,
+                "recovery_info": None,
+                "timestamp": datetime.now().isoformat()
+            }
+            
             step_msg = f"Step {i+1}/{len(commands)}: {method}"
             logger.info(f"[{workflow_id}] {step_msg}")
             update_ui(step_msg, False)
@@ -569,7 +609,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 else:
-                    _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    step_log["match_info"] = match_info
                     update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
             if raw_event_id and target_id and method in ["click", "move"]:
@@ -623,6 +664,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             
                         recovery_result = attempt_recovery(workflow_id, target_id)
                         
+                        step_log["recovery_info"] = recovery_result
                         if recovery_result.get("success"):
                             new_coords = recovery_result.get("new_coordinates")
                             if new_coords:
@@ -634,6 +676,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'. Aborting execution.")
                             if status_callback:
                                 status_callback("実行中...", False)
+                            execution_log["status"] = "failed"
+                            execution_log["error"] = "Healer failed to recover target"
                             raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
                         
                         if status_callback:
@@ -776,6 +820,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             else:
                 logger.warning(f"Unknown method: {method}")
                 
+            execution_log["steps"].append(step_log)
+                
         if not _stop_requested:
             if macro_needs_save:
                 try:
@@ -785,12 +831,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
 
+            execution_log["status"] = "success"
             logger.info(f"[{workflow_id}] Macro execution finished successfully.")
+        else:
+            execution_log["status"] = "stopped"
         
     except Exception as e:
+        execution_log["status"] = "failed"
+        execution_log["error"] = str(e)
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
+        try:
+            execution_log["end_time"] = datetime.now().isoformat()
+            log_dir = target_dir / "execution_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"run_log_{int(time.time())}.json"
+            with open(log_path, 'w', encoding='utf-8') as f:
+                json.dump(execution_log, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to save execution log: {e}")
+            
         listener.stop()
         _is_running = False
         _stop_requested = False
