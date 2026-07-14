@@ -13,6 +13,8 @@ class TypingSessionAggregator:
     def __init__(self, session_timeout_ms: int = 2000):
         self.session_timeout_ms = session_timeout_ms
 
+
+
     def aggregate_events(self, raw_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         イベントリスト全体を走査し、キー入力をセッションとしてまとめた新しいイベントリストを返す。
@@ -20,8 +22,12 @@ class TypingSessionAggregator:
         if not raw_events:
             return []
 
+
+
         aggregated_events: List[Dict[str, Any]] = []
         current_session: List[Dict[str, Any]] = []
+
+
 
         for i, event in enumerate(raw_events):
             action = event.get("raw_action", "")
@@ -43,9 +49,13 @@ class TypingSessionAggregator:
                 elif current_ts > 0 and last_ts > 0 and (current_ts - last_ts) > self.session_timeout_ms:
                     self._flush_session(current_session, aggregated_events)
 
+
+
                 # 3. コントロールの種類が大きく変わった場合
                 # タイピング中はUIAのフォーカスがサジェスト等に飛ぶことが多いため、
                 # ウィンドウが同じでタイムアウトしていなければ、コントロールタイプの変更だけでは分断しない。
+
+
 
             # 特殊キーの判定（確定や移動、削除など）
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -59,16 +69,23 @@ class TypingSessionAggregator:
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             ime_active = event.get("ime_active", False)
 
+
+
             is_mouse_move = action in ["mouse_move", "mouse_hover"]
             
             # コンボキー（shift+space等）はIME切り替えやショートカットとみなし、セッションを継続させる
-            is_typing_combo = action == "key_combo"
+            is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
+            is_typing_combo = action == "key_combo" or is_ime_toggle
+
+
 
             # IMEオフのEnterは送信/実行を意味するため、ここでセッションを区切る
             if role_lower == "enter" and not ime_active:
                 current_session.append(event)
                 self._flush_session(current_session, aggregated_events)
                 continue
+
+
 
             # セッションの継続条件: 文字入力、UIAスキャン、確定キー(Enter/Tab)、または入力中のコンボキー
             if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
@@ -79,17 +96,27 @@ class TypingSessionAggregator:
                 aggregated_events.append(event)
                 continue
 
+
+
             # クリックやTab以外の特殊キーなどが来た場合、セッションをフラッシュ
             if current_session:
                 self._flush_session(current_session, aggregated_events)
 
+
+
             aggregated_events.append(event)
+
+
 
         # ループ終了時に残っているセッションをフラッシュ
         if current_session:
             self._flush_session(current_session, aggregated_events)
 
+
+
         return aggregated_events
+
+
 
     def _flush_session(self, session: List[Dict[str, Any]], output_list: List[Dict[str, Any]]) -> None:
         """
@@ -97,8 +124,12 @@ class TypingSessionAggregator:
         """
         import difflib
 
+
+
         if not session:
             return
+
+
 
         # uia_scanのみのセッションなど、実質的なキー入力がない場合はそのまま出力して終了
         has_key_input = any(e.get("raw_action") in ["key_down", "key_press", "type_text"] for e in session)
@@ -107,14 +138,20 @@ class TypingSessionAggregator:
             session.clear()
             return
 
+
+
         # 単一のイベントで、かつ特殊な削除キーなどの場合はそのまま出力して終了
         if len(session) == 1 and str(session[0].get("semantic_role", "")).lower() not in ["space", "backspace", "delete"] and session[0].get("raw_action") != "uia_scan":
             output_list.append(session[0])
             session.clear()
             return
 
+
+
         target_event_id = session[0].get("event_id", "unknown")
         logger.info(f"[TypingAggregator] セッション集約を開始 (イベント数: {len(session)}, 開始ID: {target_event_id})")
+
+
 
         # セッションの末尾にある特殊キー（Enter, Tabなど）や uia_scan を抽出して分離する
         # これらは type_text の後に独立したキーイベントとして実行させるため
@@ -134,17 +171,22 @@ class TypingSessionAggregator:
             else:
                 break
 
+
+
         if not session:
             # すべて特殊キーやuia_scanだった場合はそのまま出力して終了
             output_list.extend(trailing_events)
             return
+
+
 
         # -------------------------------------------------------------------------
         # 優先順位 2 (事前計算): 生キーログ結合 ＋ ローマ字/かな変換 (Fallback Text)
         # UIAレスキューの候補選択時の類似度スコアリングにも使用する
         # -------------------------------------------------------------------------
         fallback_text = ""
-        any_ime_active = any(item.get("ime_active", False) for item in session)
+        current_chunk = ""
+        current_ime_state = None
         
         # 制御キーや修飾キーの除外リスト
         ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd"}
@@ -154,31 +196,75 @@ class TypingSessionAggregator:
             action = item.get("raw_action", "")
             role = str(item.get("semantic_role", ""))
             r_lower = role.lower()
+            ime_active = item.get("ime_active", False)
             
-            if action == "key_combo":
+            is_combo = action == "key_combo" or "+" in r_lower
+            if is_combo:
                 # コンボキーはIME切り替えやショートカットとみなし、文字としては結合しない
+                # ただし、IME状態の切り替えフラグとしては機能させるため、ここでチャンクを区切る
+                if current_ime_state is not None:
+                    if current_ime_state and current_chunk:
+                        try:
+                            from core.recorder.romaji_converter import to_hiragana
+                            current_chunk = to_hiragana(current_chunk)
+                        except ImportError:
+                            pass
+                    fallback_text += current_chunk
+                    current_chunk = ""
+                    # コンボキー自体の ime_active はあてにならないことがあるため、次の文字入力で更新させる
+                    current_ime_state = None
                 continue
                 
+            char = ""
             if r_lower == "backspace":
-                fallback_text = fallback_text[:-1]
+                if current_chunk:
+                    current_chunk = current_chunk[:-1]
+                elif fallback_text:
+                    fallback_text = fallback_text[:-1]
+                continue
             elif r_lower == "space":
-                fallback_text += " "
+                char = " "
             elif r_lower in ignore_exact_keys or r_lower.startswith("key."):
-                # 特殊キー単体はテキストとして結合しない
                 continue
             elif len(r_lower) > 1 and any(mod in r_lower for mod in ignore_modifiers):
-                # shift+space などのコンボキー文字列はテキストとして結合しない
                 continue
             else:
-                fallback_text += role
+                char = role
 
-        if any_ime_active and fallback_text:
-            try:
-                from core.recorder.romaji_converter import to_hiragana
-                fallback_text = to_hiragana(fallback_text)
-                logger.debug(f"[TypingAggregator] IMEアクティブ検知: ローマ字かな変換を適用 -> '{fallback_text}'")
-            except ImportError:
-                logger.warning("[TypingAggregator] romaji_converter が見つからないため変換をスキップしました")
+
+
+            if current_ime_state is None:
+                current_ime_state = ime_active
+
+
+
+            if ime_active != current_ime_state:
+                # IME状態が変わったら、これまでのチャンクを処理して fallback_text に追加
+                if current_ime_state and current_chunk:
+                    try:
+                        from core.recorder.romaji_converter import to_hiragana
+                        current_chunk = to_hiragana(current_chunk)
+                    except ImportError:
+                        pass
+                fallback_text += current_chunk
+                current_chunk = char
+                current_ime_state = ime_active
+            else:
+                current_chunk += char
+
+
+
+        # 最後のチャンクを処理
+        if current_chunk:
+            if current_ime_state:
+                try:
+                    from core.recorder.romaji_converter import to_hiragana
+                    current_chunk = to_hiragana(current_chunk)
+                except ImportError:
+                    pass
+            fallback_text += current_chunk
+
+
 
         # -------------------------------------------------------------------------
         # 優先順位 1: UIA（アプリ固有コンテキスト）からの確定文字の一括レスキュー
@@ -201,6 +287,8 @@ class TypingSessionAggregator:
             # 検索クエリが含まれない純粋なURLの場合は、サジェストの誤検知とみなして採用しない
             return None, False
 
+
+
         uia_candidates = []
         confirmed_queries = []
         
@@ -219,6 +307,8 @@ class TypingSessionAggregator:
                         elif not is_url_query and extracted not in uia_candidates:
                             uia_candidates.append(extracted)
 
+
+
             # パターンB: app_context からの抽出（Enter確定時の文字など）
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
@@ -235,6 +325,8 @@ class TypingSessionAggregator:
                             confirmed_queries.append(extracted)
                         elif not is_url_query and extracted not in uia_candidates:
                             uia_candidates.append(extracted)
+
+
 
         uia_rescued_text = ""
         if confirmed_queries:
@@ -273,6 +365,8 @@ class TypingSessionAggregator:
                 uia_rescued_text = uia_candidates[0]
                 logger.info(f"[TypingAggregator] UIAレスキュー成功(fallbackなし): '{uia_rescued_text}' を採用")
 
+
+
         # 最終採用テキストの決定 (UIA > Fallback Key Log)
         has_suggest_selection = any(
             item.get("raw_action") in ["key_down", "key_press"] and 
@@ -280,12 +374,23 @@ class TypingSessionAggregator:
             for item in session + trailing_events
         )
 
-        if not any_ime_active and fallback_text and not has_suggest_selection:
+
+
+        any_ime_active = any(item.get("ime_active", False) for item in session)
+
+
+
+        if confirmed_queries:
+            final_text = uia_rescued_text
+            logger.info(f"[TypingAggregator] 確定クエリ '{final_text}' を最優先で採用します")
+        elif not any_ime_active and fallback_text and not has_suggest_selection:
             # IMEオフでサジェスト選択操作もない場合はユーザーの生入力を最優先（サジェストの自動誤採用を防止）
             final_text = fallback_text
             logger.info(f"[TypingAggregator] IMEオフかつサジェスト選択なしのため、生入力 '{final_text}' を優先採用します")
         else:
             final_text = uia_rescued_text if uia_rescued_text else fallback_text
+
+
 
         if final_text:
             # 1. 完全一致の重複スキップ
@@ -293,6 +398,8 @@ class TypingSessionAggregator:
                 logger.info(f"[TypingAggregator] 重複する TYPE_TEXT ('{final_text}') をスキップします。")
                 session.clear()
                 return
+
+
 
             # 2. UIAレスキュー残骸（遅延による末尾の物理キー入力漏れ）の自動間引き・スキップ処理
             # 例: prev="hello world" に対して、不必要な細切れセッションから curr="rld" が生じた場合、スキップする
@@ -318,6 +425,8 @@ class TypingSessionAggregator:
                     session.clear()
                     return
 
+
+
             # 集約された1つの代表イベントを生成
             representative_event = session[0].copy()
             representative_event["raw_action"] = "type_text"
@@ -335,6 +444,8 @@ class TypingSessionAggregator:
         else:
             logger.warning(f"[TypingAggregator] セッション ({target_event_id}) から有効なテキストを抽出できませんでした。生イベントを復元します。")
             output_list.extend(session)
+
+
 
         # 分離しておいた末尾の特殊キーイベントを復元して追加（uia_scanは実行アクションではないため除外）
         trailing_special_keys = []
@@ -356,7 +467,11 @@ class TypingSessionAggregator:
                     enter_skipped = True
                     continue
 
+
+
             trailing_special_keys.append(e)
+
+
 
         output_list.extend(trailing_special_keys)
         
