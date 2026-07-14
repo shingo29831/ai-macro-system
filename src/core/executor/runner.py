@@ -235,12 +235,12 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
-                # 閾値をさらに厳格化（ダークテーマの似た画面を区別するため）
-                is_pixel_match = diff_ratio <= 0.02
+                # 閾値を再調整（厳格すぎると開始時にマッチしないため、少し緩和）
+                is_pixel_match = diff_ratio <= 0.05
                 
                 res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
-                is_struct_match = (max_val >= 0.92) and (diff_ratio <= 0.08)
+                is_struct_match = (max_val >= 0.88) and (diff_ratio <= 0.10)
                 
                 pre_edges = cv2.Canny(pre_crop_static, 50, 150)
                 curr_edges = cv2.Canny(curr_crop_static, 50, 150)
@@ -251,7 +251,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if pre_edge_count > 50:
                     res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
                     _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
-                    if max_val_edges >= 0.80 and diff_ratio <= 0.10:
+                    if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
                 if is_pixel_match or is_struct_match or is_edge_match:
@@ -350,15 +350,15 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    # 判定ロジックの再調整（ダークテーマの別画面を誤検知しないようにさらに厳格化）
+    # 判定ロジックの再調整（開始時のレジューム判定が厳格すぎると毎回新規タブが開くため緩和）
     # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
     # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
     
     # 完全に同じ画面
-    is_exact_match = (diff_ratio <= 0.02) and (edge_diff_ratio <= 0.02) and (max_val >= 0.95)
+    is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.03) and (max_val >= 0.92)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
-    is_high_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.04) and (max_val >= 0.90)
+    is_high_match = (diff_ratio <= 0.10) and (edge_diff_ratio <= 0.06) and (max_val >= 0.88)
     
     return is_exact_match or is_high_match
 

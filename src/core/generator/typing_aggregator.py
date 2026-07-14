@@ -214,15 +214,55 @@ class TypingSessionAggregator:
             return
 
         # uia_scanのみのセッションなど、実質的なキー入力がない場合はそのまま出力して終了
-        has_key_input = any(e.get("raw_action") in ["key_down", "key_press", "type_text"] for e in session)
+        has_key_input = any(e.get("raw_action") in ["key_down", "key_press", "type_text", "key_combo"] for e in session)
         if not has_key_input:
             output_list.extend(session)
             session.clear()
             return
 
-        # 単一のイベントで、かつ特殊な削除キーなどの場合はそのまま出力して終了
-        if len(session) == 1 and str(session[0].get("semantic_role", "")).lower() not in ["space", "backspace", "delete"] and session[0].get("raw_action") != "uia_scan":
-            output_list.append(session[0])
+        # 単一のイベントの場合のフィルタリング処理
+        if len(session) == 1:
+            single_event = session[0]
+            action = single_event.get("raw_action")
+            role_lower = str(single_event.get("semantic_role", "")).lower()
+            
+            if action == "uia_scan":
+                output_list.append(single_event)
+                session.clear()
+                return
+
+            # 画面変化率（Diff）を取得
+            diff_val = 0.0
+            diff_str = single_event.get("diff_val") or single_event.get("diffRatio") or single_event.get("Diff") or single_event.get("diff")
+            if isinstance(diff_str, (int, float)):
+                diff_val = float(diff_str)
+            elif isinstance(diff_str, str):
+                try:
+                    diff_val = float(diff_str.replace("%", "").strip())
+                except ValueError:
+                    pass
+
+            # 削除キーや確定キーはDiffが小さくても保持する
+            is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
+            
+            # ショートカットキーの判定（ctrl, alt, win, cmdを含む）
+            is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+            
+            # ゴミコンボキーの判定（shiftのみで3キー以上同時押しなど、例: shift+h+k+space）
+            is_garbage_combo = action == "key_combo" and not is_shortcut and len(role_lower.split("+")) >= 3
+            
+            if is_garbage_combo:
+                logger.info(f"[TypingAggregator] 無効なタイピングコンボキーを破棄します: {role_lower}")
+                session.clear()
+                return
+
+            # Diffが極端に小さい（0.1%未満）場合、必須キーやショートカットでなければ誤入力として破棄
+            if diff_val < 0.1 and not is_essential_key and not is_shortcut:
+                logger.info(f"[TypingAggregator] 画面変化がない({diff_val}%)ため、不要なキー入力として破棄します: {role_lower}")
+                session.clear()
+                return
+                
+            output_list.append(single_event)
             session.clear()
             return
 
@@ -293,13 +333,6 @@ class TypingSessionAggregator:
                     # コンボキー自体の ime_active はあてにならないことがあるため、次の文字入力で更新させる
                     current_ime_state = None
                 continue
-                
-            char = ""
-            
-            # shift+文字 の場合は大文字として抽出する
-            if is_combo and "shift" in r_lower and len(r_lower.split("+")[-1]) == 1:
-                char = r_lower.split("+")[-1].upper()
-                is_combo = False
                 
             if is_combo:
                 # コンボキーはIME切り替えやショートカットとみなし、文字としては結合しない
