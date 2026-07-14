@@ -189,9 +189,12 @@ class TypingSessionAggregator:
         # --- 不要なログのフィルタリング ---
         filtered_session = []
         last_text = None
+        last_ime_active = None
+        
         for item in session:
             action = item.get("raw_action", "")
             role_lower = str(item.get("semantic_role", "")).lower()
+            ime_active = item.get("ime_active", False)
             
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext") or {}
             current_text = app_ctx.get("value") or app_ctx.get("text") or ""
@@ -207,38 +210,51 @@ class TypingSessionAggregator:
                     pass
 
             is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
-            is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
-            is_garbage_combo = action == "key_combo" and not is_shortcut and len(role_lower.split("+")) >= 3
+            is_combo = action == "key_combo"
+            is_shortcut = is_combo and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             
-            if is_garbage_combo or is_ime_toggle:
+            # IMEトグルキー自体はマクロコマンドとして不要なので除外
+            if is_ime_toggle:
+                last_ime_active = ime_active
                 continue
             
             is_valid = False
             
-            # 1. テキストエリアに変更がある場合
-            if last_text is None:
-                is_valid = True
-            elif current_text != last_text and current_text != "":
-                is_valid = True
-            # 2. 画面に差分がある場合
-            elif diff_val >= 0.1:
-                is_valid = True
-            # 3. IME切り替えやコピーなどの特殊操作の場合
-            elif is_essential_key or is_shortcut:
-                is_valid = True
-            # 4. 通常の文字入力で差分が0.0%になるケースを救済するため、
-            #    actionがkey_press等で、role_lowerが1文字の場合は有効とする
-            elif action in ["key_press", "key_down"] and len(role_lower) == 1:
-                is_valid = True
-            elif action == "key_combo" and "+" in role_lower:
-                # shift+w などのコンボキーも有効とする
-                is_valid = True
-                
+            has_text_change = last_text is not None and current_text != last_text and current_text != ""
+            has_screen_diff = diff_val >= 0.1
+            has_ime_change = last_ime_active is not None and ime_active != last_ime_active
+            
+            if is_combo:
+                if has_text_change or has_ime_change:
+                    is_valid = True
+                elif has_screen_diff:
+                    # 画面差分がある場合でも、修飾キーを含まない3キー以上のコンボはノイズとみなす
+                    if not is_shortcut and len(role_lower.split("+")) >= 3:
+                        is_valid = False
+                    else:
+                        is_valid = True
+                elif is_shortcut:
+                    # ctrl+c などのショートカットは画面変化がなくても有効とする
+                    is_valid = True
+            else:
+                if last_text is None:
+                    is_valid = True
+                elif has_text_change:
+                    is_valid = True
+                elif has_screen_diff:
+                    is_valid = True
+                elif is_essential_key:
+                    is_valid = True
+                elif action in ["key_press", "key_down"] and len(role_lower) == 1:
+                    is_valid = True
+
             if is_valid:
                 filtered_session.append(item)
                 if current_text != "":
                     last_text = current_text
+                    
+            last_ime_active = ime_active
 
         if not filtered_session:
             session.clear()
