@@ -52,7 +52,15 @@ class TypingSessionAggregator:
                 last_window = last_event.get("window_name", "")
                 last_ts = last_event.get("timestamp", 0)
                 
+                last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
+                curr_app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
+                
+                last_element = last_app_ctx.get("element_name", "")
+                curr_element = curr_app_ctx.get("element_name", "")
+                
                 if current_window and last_window and current_window != last_window:
+                    self._flush_session(current_session, aggregated_events)
+                elif last_element and curr_element and last_element != curr_element:
                     self._flush_session(current_session, aggregated_events)
                 elif _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff")) > 15.0:
                     if current_ts == 0 or last_ts == 0 or (current_ts - last_ts) > 500:
@@ -76,7 +84,7 @@ class TypingSessionAggregator:
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
 
-            if role_lower == "enter" and not ime_active:
+            if role_lower == "enter":
                 current_session.append(event)
                 self._flush_session(current_session, aggregated_events)
                 continue
