@@ -22,7 +22,6 @@ WHEEL_DELTA = 120
 
 _is_running = False
 _stop_requested = False
-_browser_activated_once = False
 
 def _set_dpi_awareness():
     if platform.system() == "Windows":
@@ -56,7 +55,6 @@ def _set_ime_state(text: str):
 
 def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str):
     """対象のウィンドウをアクティブにし、必要に応じてアプリを起動・サイズ復元を行う"""
-    global _browser_activated_once
     if not window_title or platform.system() != "Windows":
         return
 
@@ -120,17 +118,6 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
                 logger.warning(f"Failed to resize window: {e}")
                 
         time.sleep(0.5)
-        
-        lower_app_name = app_name.lower()
-        is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
-        if is_browser and not _browser_activated_once:
-            _browser_activated_once = True
-            logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
-            keyboard.press(Key.ctrl)
-            keyboard.press('t')
-            keyboard.release('t')
-            keyboard.release(Key.ctrl)
-            time.sleep(0.5)
     else:
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
@@ -416,12 +403,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         
         # --- スマートレジューム（途中からの実行）の判定 ---
         start_index = 0
+        screen_matched = False
+        is_browser_target = False
+        
         try:
             first_activate_cmd = next((cmd for cmd in commands if cmd.get("method") == "activate_window"), None)
             if first_activate_cmd:
                 args = first_activate_cmd.get("args", {})
+                window_title = args.get("window_title", "")
+                app_name = window_title.split("—")[-1].split("-")[-1].strip().lower()
+                is_browser_target = any(b in app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                
                 _activate_and_restore_window(
-                    args.get("window_title", ""),
+                    window_title,
                     args.get("x", 0),
                     args.get("y", 0),
                     args.get("width", 0),
@@ -458,9 +452,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             if is_match:
                                 logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here.")
                                 start_index = i
+                                screen_matched = True
                                 break
                                 
-            if start_index > 0:
+            if screen_matched and start_index > 0:
                 # 実行開始位置より前にある最後の activate_window を適用しておく
                 last_activation = None
                 for j in range(start_index):
@@ -479,6 +474,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         workflow_id
                     )
                     time.sleep(0.5)
+            elif not screen_matched and is_browser_target:
+                # どのスクリーンショットとも一致せず、かつブラウザが対象の場合のみ新規タブを開く
+                logger.info(f"[{workflow_id}] Screen did not match any recorded steps. Opening new tab for fresh browser search.")
+                keyboard.press(Key.ctrl)
+                keyboard.press('t')
+                keyboard.release('t')
+                keyboard.release(Key.ctrl)
+                time.sleep(0.5)
+                
         except Exception as e:
             logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
         # --------------------------------------------------
