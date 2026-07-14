@@ -178,9 +178,9 @@ class MainScreen(QWidget):
 
     def _setup_table(self):
         self.table_macros.setShowGrid(False)
-        self.table_macros.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
+        # self.table_macros.setEditTriggers(
+        #     QAbstractItemView.EditTrigger.NoEditTriggers
+        # )
         self.table_macros.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )

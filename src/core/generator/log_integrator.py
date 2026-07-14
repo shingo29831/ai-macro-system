@@ -640,6 +640,7 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         "win_h": win_size_data.get("height", 0),
         "ime_active": ime_active,
         "app_context": app_context,
+        "window_name": window_name,
         "integrated_event": integrated_event
     }
     
@@ -705,7 +706,7 @@ def generate_macro_workflow(
 
             try:
                 from core.generator.typing_aggregator import TypingSessionAggregator
-                aggregator = TypingSessionAggregator(session_timeout_ms=600)
+                aggregator = TypingSessionAggregator(session_timeout_ms=2000)
                 
                 temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
                 
@@ -826,7 +827,7 @@ def generate_macro_workflow(
                 if role_lower.startswith("key."):
                     is_special_key = True
                     parsed_key = role_lower.replace("key.", "")
-                elif role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"]:
+                elif role_lower in ["enter", "space", "tab", "esc", "backspace", "delete", "shift", "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right"] or "+" in role_lower:
                     is_special_key = True
 
                 if is_special_key:

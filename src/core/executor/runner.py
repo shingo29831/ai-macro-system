@@ -22,7 +22,6 @@ WHEEL_DELTA = 120
 
 _is_running = False
 _stop_requested = False
-_browser_activated_once = False
 
 def _set_dpi_awareness():
     if platform.system() == "Windows":
@@ -37,30 +36,25 @@ def _set_dpi_awareness():
 _set_dpi_awareness()
 
 def _set_ime_state(text: str):
-    """テキストに全角文字が含まれるか判定し、WindowsのIMEを自動でオン/オフする"""
+    """テキスト入力前にWindowsのIMEを確実にオフにする。
+    pynputのkeyboard.typeはUnicodeで直接文字を送信するため、
+    IMEがオンだと逆にキー入力が横取りされて文字化け（「ごおｇぇ」等）の原因となる。"""
     if platform.system() != "Windows":
         return
-    import unicodedata
-    def contains_zenkaku(s: str) -> bool:
-        for c in s:
-            if unicodedata.east_asian_width(c) in ('F', 'W'):
-                return True
-        return False
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
         if default_ime_wnd:
-            is_zenkaku = contains_zenkaku(text)
             WM_IME_CONTROL = 0x0283
             IMC_SETOPENSTATUS = 0x0006
-            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if is_zenkaku else 0)
-            time.sleep(0.05)
+            # 常にIMEをオフ(0)にする
+            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
+            time.sleep(0.15)
     except Exception as e:
         logger.warning(f"Failed to set IME state: {e}")
 
 def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str):
     """対象のウィンドウをアクティブにし、必要に応じてアプリを起動・サイズ復元を行う"""
-    global _browser_activated_once
     if not window_title or platform.system() != "Windows":
         return
 
@@ -100,34 +94,35 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
             
     if windows:
         win = windows[0]
+        
+        # 最小化されている場合は元に戻す
         if win.is_minimized():
             win.restore()
+            
         win.set_focus()
         
         if win_w > 0 and win_h > 0:
             try:
                 hwnd = win.handle
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+                # ★修正: Windowsの最大化状態の典型的な座標（-8, -8）を検知して最大化コマンドを送る
+                # これを行わないと、枠線（ボーダー）の分だけUIのY座標が絶妙にずれる
+                if win_x <= -8 and win_y <= -8 and win_w >= 1900:
+                    if not win.is_maximized():
+                        win.maximize()
+                else:
+                    if win.is_maximized():
+                        win.restore()
+                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
+                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
             except Exception as e:
                 logger.warning(f"Failed to resize window: {e}")
                 
         time.sleep(0.5)
-        
-        lower_app_name = app_name.lower()
-        is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
-        if is_browser and not _browser_activated_once:
-            _browser_activated_once = True
-            logger.info(f"[{workflow_id}] Opening new tab for fresh browser search.")
-            keyboard.press(Key.ctrl)
-            keyboard.press('t')
-            keyboard.release('t')
-            keyboard.release(Key.ctrl)
-            time.sleep(0.5)
     else:
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback):
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0):
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
     if not raw_event_id or win_w <= 0 or win_h <= 0:
@@ -136,6 +131,9 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
         return
+        
+    exec_logs_dir = target_dir / "execution_logs"
+    exec_logs_dir.mkdir(parents=True, exist_ok=True)
 
     def update_ui(text, is_warning):
         if status_callback:
@@ -163,14 +161,16 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         offset_x = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
         offset_y = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
         
-        x1 = max(0, win_x - offset_x)
-        y1 = max(0, win_y - offset_y)
-        x2 = min(img_w, win_x - offset_x + win_w)
-        y2 = min(img_h, win_y - offset_y + win_h)
+        # ウィンドウの枠線や影をノイズとしないよう、内側にマージンを設ける
+        margin = 8
+        x1 = max(0, win_x - offset_x + margin)
+        y1 = max(0, win_y - offset_y + margin)
+        x2 = min(img_w, win_x - offset_x + win_w - margin)
+        y2 = min(img_h, win_y - offset_y + win_h - margin)
         
         if x2 <= x1 or y2 <= y1:
-            x1, y1 = max(0, win_x), max(0, win_y)
-            x2, y2 = min(img_w, win_x + win_w), min(img_h, win_y + win_h)
+            x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
+            x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
             if x2 <= x1 or y2 <= y1:
                 return
             
@@ -179,8 +179,15 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         
         waiting_logged = False
         frame_buffer = [] 
+        start_time = time.time()
         
         while not _stop_requested:
+            if time.time() - start_time > timeout:
+                logger.warning(f"[{workflow_id}] Screen match timeout ({timeout}s). Proceeding to next action.")
+                if waiting_logged:
+                    update_ui("タイムアウトしました。マクロを再開します。", False)
+                break
+
             curr_img_pil, curr_monitor = take_screenshot()
             curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
             
@@ -188,10 +195,10 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
             c_offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
             
             curr_h, curr_w = curr_img_cv.shape
-            cx1 = max(0, win_x - c_offset_x)
-            cy1 = max(0, win_y - c_offset_y)
-            cx2 = min(curr_w, win_x - c_offset_x + win_w)
-            cy2 = min(curr_h, win_y - c_offset_y + win_h)
+            cx1 = max(0, win_x - c_offset_x + margin)
+            cy1 = max(0, win_y - c_offset_y + margin)
+            cx2 = min(curr_w, win_x - c_offset_x + win_w - margin)
+            cy2 = min(curr_h, win_y - c_offset_y + win_h - margin)
             
             if cx2 <= cx1 or cy2 <= cy1:
                 cx1, cy1 = max(0, win_x), max(0, win_y)
@@ -213,32 +220,28 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
-                # ★動画領域を黒塗りにして完全に無視した静的画像を生成
                 static_mask = cv2.bitwise_not(dynamic_mask)
                 pre_crop_static = cv2.bitwise_and(pre_crop_small, pre_crop_small, mask=static_mask)
                 curr_crop_static = cv2.bitwise_and(curr_crop_small, curr_crop_small, mask=static_mask)
                 
-                # 1. ピクセル差分 (静的領域のみ)
                 diff = cv2.absdiff(pre_crop_static, curr_crop_static)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
                 static_area_size = np.count_nonzero(static_mask)
-                if static_area_size > 500: # 静的領域が少しでもあれば
+                if static_area_size > 500: 
                     diff_ratio = np.count_nonzero(thresh) / static_area_size
                 else:
-                    # 画面全体が動画の場合は、全体の差分でフォールバック
                     diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
                     diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
                 
-                is_pixel_match = diff_ratio <= 0.10
+                # 閾値を再調整（厳格すぎると開始時にマッチしないため、少し緩和）
+                is_pixel_match = diff_ratio <= 0.05
                 
-                # 2. 構造的類似度 (静的領域のみ)
                 res = cv2.matchTemplate(curr_crop_static, pre_crop_static, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, _ = cv2.minMaxLoc(res)
-                is_struct_match = (max_val >= 0.85) and (diff_ratio <= 0.30)
+                is_struct_match = (max_val >= 0.88) and (diff_ratio <= 0.10)
                 
-                # 3. エッジ類似度 (静的領域のみ)
                 pre_edges = cv2.Canny(pre_crop_static, 50, 150)
                 curr_edges = cv2.Canny(curr_crop_static, 50, 150)
                 pre_edge_count = np.count_nonzero(pre_edges)
@@ -248,15 +251,21 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if pre_edge_count > 50:
                     res_edges = cv2.matchTemplate(curr_edges, pre_edges, cv2.TM_CCOEFF_NORMED)
                     _, max_val_edges, _, _ = cv2.minMaxLoc(res_edges)
-                    if max_val_edges >= 0.60 and diff_ratio <= 0.50:
+                    if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
                 if is_pixel_match or is_struct_match or is_edge_match:
+                    # マッチ成功時の画像を保存
+                    try:
+                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_curr.png"), curr_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_pre.png"), pre_crop)
+                    except Exception:
+                        pass
+                        
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
                         logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
                         time.sleep(1.5)
-                        update_ui("実行中...", False)
                     break
                 else:
                     if not waiting_logged:
@@ -273,6 +282,86 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
     except Exception as e:
         logger.warning(f"Error during screen match waiting: {e}")
 
+def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> bool:
+    import cv2
+    import numpy as np
+
+    if not pre_image_path.exists():
+        return False
+
+    pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
+    if pre_img_cv is None:
+        return False
+
+    img_h, img_w = pre_img_cv.shape
+    margin = 8
+    
+    x1 = max(0, win_x - offset_x + margin)
+    y1 = max(0, win_y - offset_y + margin)
+    x2 = min(img_w, win_x - offset_x + win_w - margin)
+    y2 = min(img_h, win_y - offset_y + win_h - margin)
+    
+    if x2 <= x1 or y2 <= y1:
+        x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
+        x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
+        if x2 <= x1 or y2 <= y1:
+            return False
+            
+    pre_crop = pre_img_cv[y1:y2, x1:x2]
+    curr_h, curr_w = curr_img_cv.shape
+    cx1 = max(0, win_x - offset_x + margin)
+    cy1 = max(0, win_y - offset_y + margin)
+    cx2 = min(curr_w, win_x - offset_x + win_w - margin)
+    cy2 = min(curr_h, win_y - offset_y + win_h - margin)
+    
+    if cx2 <= cx1 or cy2 <= cy1:
+        cx1, cy1 = max(0, win_x + margin), max(0, win_y + margin)
+        cx2, cy2 = min(curr_w, win_x + win_w - margin), min(curr_h, win_y + win_h - margin)
+        if cx2 <= cx1 or cy2 <= cy1:
+            return False
+            
+    curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+    
+    if pre_crop.shape != curr_crop.shape:
+        curr_crop = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
+
+    # 1. ピクセル差分の計算（リサイズなしの元解像度で計算し、細かい違いを逃さない）
+    diff_full = cv2.absdiff(pre_crop, curr_crop)
+    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
+    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop.shape[0] * pre_crop.shape[1])
+    
+    # 2. エッジの比較（UIの構造や文字の違いを比較）
+    pre_edges = cv2.Canny(pre_crop, 50, 150)
+    curr_edges = cv2.Canny(curr_crop, 50, 150)
+    
+    edge_diff = cv2.absdiff(pre_edges, curr_edges)
+    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop.shape[0] * pre_crop.shape[1])
+    
+    # 3. テンプレートマッチング（全体的な構造の類似度）
+    # 計算量削減のため、適度なサイズ（最大幅512程度）に縮小してマッチング
+    scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
+    if scale < 1.0:
+        pre_crop_small = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        curr_crop_small = cv2.resize(curr_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        pre_crop_small = pre_crop
+        curr_crop_small = curr_crop
+        
+    res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(res)
+
+    # 判定ロジックの再調整（開始時のレジューム判定が厳格すぎると毎回新規タブが開くため緩和）
+    # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
+    # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
+    
+    # 完全に同じ画面
+    is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.03) and (max_val >= 0.92)
+    
+    # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
+    is_high_match = (diff_ratio <= 0.10) and (edge_diff_ratio <= 0.06) and (max_val >= 0.88)
+    
+    return is_exact_match or is_high_match
+
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
     _is_running = True
@@ -283,7 +372,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     mouse = MouseController()
     keyboard = KeyboardController()
 
-    # --- 緊急停止用ホットキー監視 (Ctrl + \) ---
     _pressed_keys_for_stop = set()
 
     def on_press(key):
@@ -320,8 +408,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
     listener = KeyboardListener(on_press=on_press, on_release=on_release)
     listener.start()
-    # ---------------------------------------------
     
+    def update_ui(text, is_warning=False):
+        if status_callback:
+            status_callback(text, is_warning)
+        else:
+            try:
+                from ui.views.running_dialog import RunningDialog
+                RunningDialog.set_status(text, is_warning)
+            except Exception:
+                pass
+
     try:
         from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
@@ -347,7 +444,104 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         commands = macro_data.get("commands", [])
         macro_needs_save = False
         
-        for i, cmd in enumerate(commands):
+        # --- スマートレジューム（途中からの実行）の判定 ---
+        start_index = 0
+        screen_matched = False
+        is_browser_target = False
+        force_skip_match_until_enter = False
+        current_win_x, current_win_y, current_win_w, current_win_h = 0, 0, 0, 0
+        last_win_args = None
+        
+        try:
+            first_activate_cmd = next((cmd for cmd in commands if cmd.get("method") == "activate_window"), None)
+            if first_activate_cmd:
+                args = first_activate_cmd.get("args", {})
+                window_title = args.get("window_title", "")
+                app_name = window_title.split("—")[-1].split("-")[-1].strip().lower()
+                is_browser_target = any(b in app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                
+                _activate_and_restore_window(
+                    window_title,
+                    args.get("x", 0),
+                    args.get("y", 0),
+                    args.get("width", 0),
+                    args.get("height", 0),
+                    keyboard,
+                    workflow_id
+                )
+                time.sleep(1.0)
+                
+                import cv2
+                import numpy as np
+                from core.recorder.screen_capturer import take_screenshot
+                
+                curr_img_pil, curr_monitor = take_screenshot()
+                curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+                offset_x = curr_monitor.get("left", 0) if isinstance(curr_monitor, dict) else 0
+                offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
+
+                last_win_args = args
+                for i, cmd in enumerate(commands):
+                    if cmd.get("method") == "activate_window":
+                        last_win_args = cmd.get("args", {})
+                    
+                    raw_event_id = cmd.get("args", {}).get("raw_event_id")
+                    if raw_event_id and last_win_args:
+                        pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+                        if pre_image_path.exists():
+                            win_x = last_win_args.get("x", 0)
+                            win_y = last_win_args.get("y", 0)
+                            win_w = last_win_args.get("width", 0)
+                            win_h = last_win_args.get("height", 0)
+                            
+                            is_match = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
+                            if is_match:
+                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here.")
+                                start_index = i
+                                screen_matched = True
+                                break
+                                
+            if screen_matched and start_index > 0:
+                # 実行開始位置より前にある最後の activate_window を適用しておく
+                last_activation = None
+                for j in range(start_index):
+                    if commands[j].get("method") == "activate_window":
+                        last_activation = commands[j]
+                
+                if last_activation:
+                    args = last_activation.get("args", {})
+                    _activate_and_restore_window(
+                        args.get("window_title", ""),
+                        args.get("x", 0),
+                        args.get("y", 0),
+                        args.get("width", 0),
+                        args.get("height", 0),
+                        keyboard,
+                        workflow_id
+                    )
+                    time.sleep(0.5)
+            elif not screen_matched and is_browser_target:
+                # どのスクリーンショットとも一致せず、かつブラウザが対象の場合のみ新規タブを開く
+                logger.info(f"[{workflow_id}] Screen did not match any recorded steps. Opening new tab for fresh browser search.")
+                keyboard.press(Key.ctrl)
+                keyboard.press('t')
+                keyboard.release('t')
+                keyboard.release(Key.ctrl)
+                time.sleep(0.5)
+                force_skip_match_until_enter = True
+                
+        except Exception as e:
+            logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
+            
+        if last_win_args:
+            current_win_x = last_win_args.get("x", 0)
+            current_win_y = last_win_args.get("y", 0)
+            current_win_w = last_win_args.get("width", 0)
+            current_win_h = last_win_args.get("height", 0)
+        # --------------------------------------------------
+        
+        for i in range(start_index, len(commands)):
+            cmd = commands[i]
             if _stop_requested:
                 logger.warning(f"[{workflow_id}] Execution aborted by user emergency stop.")
                 break
@@ -355,11 +549,28 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             method = cmd.get("method")
             args = cmd.get("args", {})
             
-            logger.info(f"[{workflow_id}] Executing command {i+1}/{len(commands)}: {method}")
+            step_msg = f"Step {i+1}/{len(commands)}: {method}"
+            logger.info(f"[{workflow_id}] {step_msg}")
+            update_ui(step_msg, False)
             
-            # === Stage 1: UI部品(Crop)の局所的なテンプレートマッチングによる高精度なズレ検知 ===
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
+
+            if method == "activate_window":
+                current_win_x = args.get("x", 0)
+                current_win_y = args.get("y", 0)
+                current_win_w = args.get("width", 0)
+                current_win_h = args.get("height", 0)
+
+            # 次のアクション時の画面との一致率で待機する
+            if method != "wait" and raw_event_id:
+                if force_skip_match_until_enter:
+                    logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
+                    if method == "press_key" and args.get("key") == "enter":
+                        force_skip_match_until_enter = False
+                else:
+                    _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
@@ -402,7 +613,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         logger.warning(f"[{workflow_id}] No crop image available. Initiating Healer...")
                         needs_recovery = True
 
-                    # 一時的に自己修復機能をバイパスし、元の座標で続行する
                     if needs_recovery:
                         logger.warning(f"[{workflow_id}] Healer is disabled temporarily. Bypassing recovery and continuing.")
                         needs_recovery = False
@@ -435,9 +645,20 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         status_callback("実行中...", False)
                     if "安全のため" in str(e):
                         raise e
-            # =======================================
             
             if method == "wait":
+                # 画面マッチングによる待機を優先するため、次に画像判定可能なアクションが控えている場合は固定待機をスキップ
+                next_has_event = False
+                for j in range(i + 1, len(commands)):
+                    if commands[j].get("method") != "wait":
+                        if commands[j].get("args", {}).get("raw_event_id"):
+                            next_has_event = True
+                        break
+                
+                if next_has_event:
+                    logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
+                    continue
+
                 duration = args.get("duration", 0.0)
                 sleep_intervals = int(duration * 10)
                 for _ in range(sleep_intervals):
@@ -456,7 +677,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 win_h = args.get("height", 0)
                 
                 _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id)
-                _wait_for_screen_match(target_dir, raw_event_id, win_x, win_y, win_w, win_h, workflow_id, status_callback)
 
             elif method == "click":
                 x = args.get("x", 0)
@@ -466,7 +686,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
                 btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                 
-                mouse.position = (x, y)
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                else:
+                    mouse.position = (x, y)
+                    
                 time.sleep(0.05)
                 mouse.click(btn, clicks)
 
@@ -474,7 +698,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 x = args.get("x", 0)
                 y = args.get("y", 0)
                 
-                mouse.position = (x, y)
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                else:
+                    mouse.position = (x, y)
+                    
                 time.sleep(0.5)
                 
             elif method == "scroll":
@@ -484,7 +712,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 y = args.get("y")
                 
                 if x is not None and y is not None and (x != 0 or y != 0):
-                    mouse.position = (x, y)
+                    if platform.system() == "Windows":
+                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                    else:
+                        mouse.position = (x, y)
                     time.sleep(0.01)
                 
                 if platform.system() == "Windows":
@@ -512,17 +743,29 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 key_str = args.get("key", "")
                 if key_str:
                     try:
-                        key_name = key_str.lower()
-                        if key_name in ["win", "windows"]:
-                            key_name = "cmd"
-                            
-                        if hasattr(Key, key_name):
-                            special_key = getattr(Key, key_name)
-                            keyboard.press(special_key)
-                            keyboard.release(special_key)
+                        if "+" in key_str:
+                            keys = key_str.split("+")
+                            pressed = []
+                            for k in keys:
+                                k_name = k.lower().replace("key.", "")
+                                if k_name in ["win", "windows"]: k_name = "cmd"
+                                key_obj = getattr(Key, k_name, k_name)
+                                keyboard.press(key_obj)
+                                pressed.append(key_obj)
+                            for key_obj in reversed(pressed):
+                                keyboard.release(key_obj)
                         else:
-                            keyboard.press(key_str)
-                            keyboard.release(key_str)
+                            key_name = key_str.lower()
+                            if key_name in ["win", "windows"]:
+                                key_name = "cmd"
+                                
+                            if hasattr(Key, key_name):
+                                special_key = getattr(Key, key_name)
+                                keyboard.press(special_key)
+                                keyboard.release(special_key)
+                            else:
+                                keyboard.press(key_str)
+                                keyboard.release(key_str)
                     except Exception as e:
                         logger.warning(f"Failed to press key {key_str}: {e}")
             else:
