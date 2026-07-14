@@ -58,12 +58,17 @@ class TypingSessionAggregator:
                 last_element = last_app_ctx.get("element_name", "")
                 curr_element = curr_app_ctx.get("element_name", "")
                 
+                diff_val = _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff"))
+                time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
+                
                 if current_window and last_window and current_window != last_window:
                     self._flush_session(current_session, aggregated_events)
+                elif diff_val > 15.0:
+                    if time_diff > 500:
+                        self._flush_session(current_session, aggregated_events)
                 elif last_element and curr_element and last_element != curr_element:
-                    self._flush_session(current_session, aggregated_events)
-                elif _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff")) > 15.0:
-                    if current_ts == 0 or last_ts == 0 or (current_ts - last_ts) > 500:
+                    # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
+                    if diff_val > 5.0 or time_diff > 2000:
                         self._flush_session(current_session, aggregated_events)
 
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -401,7 +406,12 @@ class TypingSessionAggregator:
                 if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
                     continue
                     
-                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
+                val = app_ctx.get("value")
+                if not val or str(val).strip() == "":
+                    val = app_ctx.get("text")
+                if not val or str(val).strip() == "":
+                    val = app_ctx.get("url")
+                    
                 if val and len(str(val).strip()) > 0:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
@@ -459,7 +469,7 @@ class TypingSessionAggregator:
                 similarity = difflib.SequenceMatcher(None, fb_lower, uia_lower).ratio()
 
         if confirmed_queries:
-            final_text = uia_rescued_text
+            final_text = confirmed_queries[0]
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
