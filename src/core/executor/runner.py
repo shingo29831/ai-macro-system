@@ -737,7 +737,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             text = text.replace(placeholder, str(val))
                             
                     _set_ime_state(text)
-                    keyboard.type(text)
+                    for char in text:
+                        if _stop_requested:
+                            break
+                        keyboard.type(char)
+                        time.sleep(0.03)
+                    time.sleep(0.2)
                     
             elif method == "press_key":
                 key_str = args.get("key", "")

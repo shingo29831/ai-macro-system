@@ -67,9 +67,12 @@ def _get_app_context(window_info: dict, x: int | None = None, y: int | None = No
     return context
 
 def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = None, capture_now: bool = False, ime_active: bool = False):
+    window_info = process_monitor.get_foreground_window_info()
+    if process_monitor.should_ignore_window(window_info.get("title")):
+        return
+
     event_no = state.get_next_event_no()
     dt = now_datetime()
-    window_info = process_monitor.get_foreground_window_info()
     
     pre_img, pre_monitor = None, None
     if capture_now:
@@ -83,6 +86,9 @@ def enqueue_key_event(input_type: str, key_text: str, keys: list[str] | None = N
     })
 
 def process_key_event(event: dict):
+    if process_monitor.should_ignore_window(event["window_info"].get("title")):
+        return
+
     input_type = event["input_type"]
 
     # 修正: text_field_search 等のメタイベントもログの集約に必須なため return で無視せず記録する
@@ -129,9 +135,12 @@ def process_uia_event(info: dict):
             print(f"UIA Error: {info['error']}")
             return
 
+        window_info = process_monitor.get_foreground_window_info()
+        if process_monitor.should_ignore_window(window_info.get("title")):
+            return
+
         event_no = state.get_next_event_no()
         dt = now_datetime()
-        window_info = process_monitor.get_foreground_window_info()
         
         content = {
             "uia_info": info,
@@ -154,9 +163,12 @@ def process_uia_event(info: dict):
 def process_office_event(info: dict):
     """Excel等からCOM経由で受け取ったイベント情報をログに記録する"""
     try:
+        window_info = process_monitor.get_foreground_window_info()
+        if process_monitor.should_ignore_window(window_info.get("title")):
+            return
+
         event_no = state.get_next_event_no()
         dt = now_datetime()
-        window_info = process_monitor.get_foreground_window_info()
         
         content = {
             "office_info": info,
@@ -178,11 +190,14 @@ def process_office_event(info: dict):
 
 def process_move_event(event: dict):
     try:
+        window_info = process_monitor.get_foreground_window_info()
+        if process_monitor.should_ignore_window(window_info.get("title")):
+            return
+
         event_no = state.get_next_event_no()
         dt = now_datetime()
         x, y = int(event["x"]), int(event["y"])
         
-        window_info = process_monitor.get_foreground_window_info()
         pre_full_img, pre_monitor = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
         
@@ -228,6 +243,9 @@ def process_move_event(event: dict):
 
 def process_click_event(event: dict, input_type: str, click_count: int):
     try:
+        if process_monitor.should_ignore_window(event["window_info"].get("title")):
+            return
+
         event_no, dt = event["event_no"], event["datetime"]
         x, y, button = int(event["x"]), int(event["y"]), event["button"]
         pre_img, pre_monitor, pre_ref = event["pre_full_img"], event["pre_monitor"], event["pre_ref"]
@@ -262,6 +280,9 @@ def run_click_process_thread(event: dict, input_type: str, click_count: int):
 
 def process_drag_event(event: dict):
     try:
+        if process_monitor.should_ignore_window(event["window_info"].get("title")):
+            return
+
         event_no = event["event_no"]
         dt = event["datetime"]
         start_x = int(event["x"])
@@ -346,8 +367,12 @@ def process_scroll_event(event: dict):
         dy = event["dy"]
         source = event.get("source", "unknown")
         
+        point_window = process_monitor.get_window_title_at_point(x, y)
+        if process_monitor.should_ignore_window(point_window.get("title")):
+            return
+        
         event_no = state.get_next_event_no()
-        log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy))
+        log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy), point_window=point_window)
         state.append_log(log)
         print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
     except Exception:
@@ -367,8 +392,11 @@ def _handle_mouse_event(evt: dict):
 
     if pressed:
         try:
-            event_no, dt = state.get_next_event_no(), now_datetime()
             window_info = process_monitor.get_foreground_window_info()
+            if process_monitor.should_ignore_window(window_info.get("title")):
+                return
+
+            event_no, dt = state.get_next_event_no(), now_datetime()
             pre_full_img, pre_monitor = screen_capturer.take_screenshot()
             pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
 

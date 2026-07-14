@@ -52,10 +52,23 @@ class TypingSessionAggregator:
                 last_window = last_event.get("window_name", "")
                 last_ts = last_event.get("timestamp", 0)
                 
+                last_app_ctx = last_event.get("app_context") or last_event.get("AppSpecificContext") or last_event.get("appSpecificContext") or {}
+                curr_app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
+                
+                last_element = last_app_ctx.get("element_name", "")
+                curr_element = curr_app_ctx.get("element_name", "")
+                
+                diff_val = _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff"))
+                time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
+                
                 if current_window and last_window and current_window != last_window:
                     self._flush_session(current_session, aggregated_events)
-                elif _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff")) > 15.0:
-                    if current_ts == 0 or last_ts == 0 or (current_ts - last_ts) > 500:
+                elif diff_val > 15.0:
+                    if time_diff > 500:
+                        self._flush_session(current_session, aggregated_events)
+                elif last_element and curr_element and last_element != curr_element:
+                    # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
+                    if diff_val > 5.0 or time_diff > 2000:
                         self._flush_session(current_session, aggregated_events)
 
             role_lower = str(event.get("semantic_role", "")).lower()
@@ -76,7 +89,7 @@ class TypingSessionAggregator:
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
 
-            if role_lower == "enter" and not ime_active:
+            if role_lower == "enter":
                 current_session.append(event)
                 self._flush_session(current_session, aggregated_events)
                 continue
@@ -102,14 +115,9 @@ class TypingSessionAggregator:
             event = aggregated_events[i]
             
             if event.get("raw_action") == "type_text":
-                best_match_idx = -1
-                best_combined_text = ""
-                best_intervening = []
-                best_events_to_merge = []
-                
-                text_parts = [event.get("semantic_role", "")]
                 events_to_merge = [event]
                 intervening_events = []
+                last_valid_text = event.get("semantic_role", "")
                 
                 j = i + 1
                 while j < len(aggregated_events):
@@ -117,33 +125,38 @@ class TypingSessionAggregator:
                     action = next_event.get("raw_action")
                     
                     if action == "type_text":
-                        text_parts.append(next_event.get("semantic_role", ""))
-                        events_to_merge.append(next_event)
-                        combined_text = "".join(text_parts)
-                        combined_lower = combined_text.lower()
+                        curr_win = event.get("window_name", "")
+                        next_win = next_event.get("window_name", "")
                         
-                        if combined_lower in global_uia_texts_map:
-                            best_match_idx = j
-                            best_combined_text = global_uia_texts_map[combined_lower]
-                            best_intervening = list(intervening_events)
-                            best_events_to_merge = list(events_to_merge)
-                    elif action in ["mouse_click", "mouse_move", "mouse_hover", "wait"]:
+                        curr_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext") or {}
+                        next_ctx = next_event.get("app_context") or next_event.get("AppSpecificContext") or next_event.get("appSpecificContext") or {}
+                        
+                        curr_elem = curr_ctx.get("element_name", "")
+                        next_elem = next_ctx.get("element_name", "")
+                        
+                        # 同じウィンドウ・同じ要素に対する連続した入力は、最後のテキストで上書きマージする
+                        if curr_win == next_win and curr_elem == next_elem:
+                            events_to_merge.append(next_event)
+                            last_valid_text = next_event.get("semantic_role", "")
+                        else:
+                            break
+                    elif action in ["mouse_move", "mouse_hover"]:
                         intervening_events.append(next_event)
                     else:
                         break
                     
                     j += 1
                 
-                if best_match_idx != -1:
-                    final_events.extend(best_intervening)
-                    merged_event = best_events_to_merge[0].copy()
-                    merged_event["semantic_role"] = best_combined_text
+                if len(events_to_merge) > 1:
+                    final_events.extend(intervening_events)
+                    merged_event = events_to_merge[0].copy()
+                    merged_event["semantic_role"] = last_valid_text
                     fallback_events = []
-                    for e in best_events_to_merge:
+                    for e in events_to_merge:
                         fallback_events.extend(e.get("fallback_events", []))
                     merged_event["fallback_events"] = fallback_events
                     final_events.append(merged_event)
-                    i = best_match_idx
+                    i = j - 1
                 else:
                     single_text = event.get("semantic_role", "")
                     single_lower = single_text.lower()
@@ -166,6 +179,63 @@ class TypingSessionAggregator:
             output_list.extend(session)
             session.clear()
             return
+
+        # --- 不要なログのフィルタリング ---
+        filtered_session = []
+        last_text = None
+        for item in session:
+            action = item.get("raw_action", "")
+            role_lower = str(item.get("semantic_role", "")).lower()
+            
+            app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext") or {}
+            current_text = app_ctx.get("value") or app_ctx.get("text") or ""
+            
+            diff_val = 0.0
+            diff_str = item.get("diff_val") or item.get("diffRatio") or item.get("Diff") or item.get("diff")
+            if isinstance(diff_str, (int, float)):
+                diff_val = float(diff_str)
+            elif isinstance(diff_str, str):
+                try:
+                    diff_val = float(diff_str.replace("%", "").strip())
+                except ValueError:
+                    pass
+
+            is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
+            is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+            is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
+            
+            is_valid = False
+            
+            # 1. テキストエリアに変更がある場合
+            if last_text is None:
+                is_valid = True
+            elif current_text != last_text and current_text != "":
+                is_valid = True
+            # 2. 画面に差分がある場合
+            elif diff_val >= 0.1:
+                is_valid = True
+            # 3. IME切り替えやコピーなどの特殊操作の場合
+            elif is_essential_key or is_shortcut or is_ime_toggle:
+                is_valid = True
+            # 4. 通常の文字入力で差分が0.0%になるケースを救済するため、
+            #    actionがkey_press等で、role_lowerが1文字の場合は有効とする
+            elif action in ["key_press", "key_down"] and len(role_lower) == 1:
+                is_valid = True
+            elif action == "key_combo" and "+" in role_lower:
+                # shift+w などのコンボキーも有効とする
+                is_valid = True
+                
+            if is_valid:
+                filtered_session.append(item)
+                if current_text != "":
+                    last_text = current_text
+
+        if not filtered_session:
+            session.clear()
+            return
+            
+        session[:] = filtered_session
+        # ----------------------------------
 
         if len(session) == 1:
             single_event = session[0]
@@ -336,7 +406,12 @@ class TypingSessionAggregator:
                 if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
                     continue
                     
-                val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
+                val = app_ctx.get("value")
+                if not val or str(val).strip() == "":
+                    val = app_ctx.get("text")
+                if not val or str(val).strip() == "":
+                    val = app_ctx.get("url")
+                    
                 if val and len(str(val).strip()) > 0:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
@@ -384,12 +459,25 @@ class TypingSessionAggregator:
 
         any_ime_active = any(item.get("ime_active", False) for item in session)
 
+        similarity = 0.0
+        if fallback_text and uia_rescued_text:
+            fb_lower = fallback_text.lower()
+            uia_lower = uia_rescued_text.lower()
+            if fb_lower in uia_lower or uia_lower in fb_lower:
+                similarity = 1.0
+            else:
+                similarity = difflib.SequenceMatcher(None, fb_lower, uia_lower).ratio()
+
         if confirmed_queries:
-            final_text = uia_rescued_text
+            final_text = confirmed_queries[0]
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
-            final_text = uia_rescued_text if uia_rescued_text else fallback_text
+            # UIAのテキストが実際のキー入力と全く異なる（類似度が低い）場合は、UIAの誤取得とみなしてキー入力を優先する
+            if fallback_text and uia_rescued_text and similarity < 0.2:
+                final_text = fallback_text
+            else:
+                final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
         if final_text:
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:

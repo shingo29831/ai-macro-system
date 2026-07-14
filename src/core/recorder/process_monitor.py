@@ -51,6 +51,25 @@ IGNORED_LAUNCH_PROCESS_NAMES = {
     "vmmem.exe",
 }
 
+IGNORED_WINDOW_TITLES = [
+    "記録中",
+    "停止中",
+    "AI Macro System",
+    "設定",
+    "AIマクロ生成中..."
+]
+
+def should_ignore_window(title: str | None) -> bool:
+    """
+    システム自身のウィンドウ（記録中、AI Macro Systemなど）かどうかを判定する。
+    """
+    if not title:
+        return False
+    for ignored in IGNORED_WINDOW_TITLES:
+        if ignored in title:
+            return True
+    return False
+
 
 # =========================
 # 状態

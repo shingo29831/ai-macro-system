@@ -20,8 +20,10 @@ def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict |
         "Images": {"Pre": None, "Crop": None, "Diff": None},
     }
 
-def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy: float) -> dict:
-    point_window = process_monitor.get_window_title_at_point(x, y)
+def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy: float, point_window: dict | None = None) -> dict:
+    if point_window is None:
+        point_window = process_monitor.get_window_title_at_point(x, y)
+        
     direction = "none"
     if dy > 0: direction = "up"
     elif dy < 0: direction = "down"
