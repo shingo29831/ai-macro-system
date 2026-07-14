@@ -35,6 +35,39 @@ def _set_dpi_awareness():
 
 _set_dpi_awareness()
 
+def _calculate_ssim(img1, img2):
+    """OpenCVを用いてSSIM (Structural Similarity Index) を計算する"""
+    import cv2
+    import numpy as np
+    C1 = 6.5025
+    C2 = 58.5225
+    i1 = img1.astype(np.float32)
+    i2 = img2.astype(np.float32)
+    mu1 = cv2.GaussianBlur(i1, (11, 11), 1.5)
+    mu2 = cv2.GaussianBlur(i2, (11, 11), 1.5)
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = cv2.GaussianBlur(i1 ** 2, (11, 11), 1.5) - mu1_sq
+    sigma2_sq = cv2.GaussianBlur(i2 ** 2, (11, 11), 1.5) - mu2_sq
+    sigma12 = cv2.GaussianBlur(i1 * i2, (11, 11), 1.5) - mu1_mu2
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    return float(ssim_map.mean())
+
+def _calculate_orb_match(img1, img2):
+    """ORB特徴点マッチングにより、画像間の特徴一致率を計算する"""
+    import cv2
+    orb = cv2.ORB_create(nfeatures=500)
+    kp1, des1 = orb.detectAndCompute(img1, None)
+    kp2, des2 = orb.detectAndCompute(img2, None)
+    if des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
+        return 0.0
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+    # 距離が近い（似ている）特徴点のみを抽出
+    good_matches = [m for m in matches if m.distance < 50]
+    return float(len(good_matches) / max(len(kp1), 1))
+
 def _set_ime_state(text: str):
     """テキスト入力前にWindowsのIMEを確実にオフにする。
     pynputのkeyboard.typeはUnicodeで直接文字を送信するため、
@@ -255,13 +288,21 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
+                ssim_val = _calculate_ssim(pre_crop_small, curr_crop_small)
+                orb_score = _calculate_orb_match(pre_crop_small, curr_crop_small)
+
                 result_info["scores"] = {
                     "diff_ratio": float(diff_ratio),
                     "sim": float(max_val),
-                    "edge_sim": float(max_val_edges)
+                    "edge_sim": float(max_val_edges),
+                    "ssim": ssim_val,
+                    "orb": orb_score
                 }
 
-                if is_pixel_match or is_struct_match or is_edge_match:
+                is_ssim_match = ssim_val >= 0.85
+                is_orb_match = orb_score >= 0.40
+
+                if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
                     try:
                         cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_curr.png"), curr_crop)
@@ -271,14 +312,14 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                         
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
-                        logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
+                        logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f}). Resuming.")
                         time.sleep(1.5)
                     result_info["matched"] = True
                     break
                 else:
                     if not waiting_logged:
                         update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f})")
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
                         waiting_logged = True
             else:
                 if not waiting_logged:
@@ -364,23 +405,27 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    # 判定ロジックの再調整（開始時のレジューム判定が厳格すぎると毎回新規タブが開くため緩和）
-    # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
-    # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
-    
+    ssim_val = _calculate_ssim(pre_crop_small, curr_crop_small)
+    orb_score = _calculate_orb_match(pre_crop_small, curr_crop_small)
+
     scores = {
         "diff_ratio": float(diff_ratio),
         "sim": float(max_val),
-        "edge_sim": float(edge_diff_ratio)
+        "edge_sim": float(edge_diff_ratio),
+        "ssim": ssim_val,
+        "orb": orb_score
     }
 
     # 完全に同じ画面
     is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.03) and (max_val >= 0.92)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
-    is_high_match = (diff_ratio <= 0.10) and (edge_diff_ratio <= 0.06) and (max_val >= 0.88)
+    is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.85)
+
+    # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
+    is_structural_match = (ssim_val >= 0.85) or (orb_score >= 0.40)
     
-    return (is_exact_match or is_high_match), scores
+    return (is_exact_match or is_high_match or is_structural_match), scores
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
