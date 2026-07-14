@@ -33,19 +33,22 @@ class TypingSessionAggregator:
             return 0.0
 
         # 全イベントからUIAテキストの履歴を収集（分断されたテキストの結合判定に使用）
-        global_uia_texts = set()
+        # 大文字小文字の違いを吸収するため、小文字をキーとする辞書を作成
+        global_uia_texts_map = {}
         for event in raw_events:
             app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext")
             if isinstance(app_ctx, dict):
                 val = app_ctx.get("value") or app_ctx.get("text")
                 if val and isinstance(val, str):
-                    global_uia_texts.add(val.strip())
+                    val_str = val.strip()
+                    global_uia_texts_map[val_str.lower()] = val_str
             
             uia_info = event.get("content", {}).get("uia_info", {})
             if isinstance(uia_info, dict):
                 val = uia_info.get("value") or uia_info.get("name")
                 if val and isinstance(val, str):
-                    global_uia_texts.add(val.strip())
+                    val_str = val.strip()
+                    global_uia_texts_map[val_str.lower()] = val_str
 
         aggregated_events: List[Dict[str, Any]] = []
         current_session: List[Dict[str, Any]] = []
@@ -68,7 +71,9 @@ class TypingSessionAggregator:
                 
                 # 2. タイムアウト（時間差）によるセッション分割の導入
                 elif current_ts > 0 and last_ts > 0 and (current_ts - last_ts) > self.session_timeout_ms:
-                    self._flush_session(current_session, aggregated_events)
+                    # ただし、バックスペースの場合は直前の入力を消す意図があるため分割しない
+                    if str(event.get("semantic_role", "")).lower() != "backspace":
+                        self._flush_session(current_session, aggregated_events)
 
                 # 3. 画面の大きな変化（ページ遷移など）によるセッション分割
                 # ただし、連続入力中（500ms未満）はサジェスト表示等の画面変化とみなして分割しない
@@ -151,13 +156,14 @@ class TypingSessionAggregator:
                         events_to_merge.append(next_event)
                         combined_text = "".join(text_parts)
                         
-                        # 結合したテキストが global_uia_texts に存在するかチェック
-                        if combined_text in global_uia_texts:
+                       # 結合したテキストが global_uia_texts_map に存在するかチェック（大文字小文字を区別しない）
+                        combined_lower = combined_text.lower()
+                        if combined_lower in global_uia_texts_map:
                             best_match_idx = j
-                            best_combined_text = combined_text
+                            best_combined_text = global_uia_texts_map[combined_lower]
                             best_intervening = list(intervening_events)
                             best_events_to_merge = list(events_to_merge)
-                    elif action in ["mouse_click", "mouse_move", "mouse_hover"]:
+                    elif action in ["mouse_click", "mouse_move", "mouse_hover", "wait"]:
                         intervening_events.append(next_event)
                     else:
                         # キー入力以外の操作（特殊キーなど）が挟まったら結合を諦める
@@ -181,6 +187,13 @@ class TypingSessionAggregator:
                     final_events.append(merged_event)
                     i = best_match_idx
                 else:
+                    # 結合しなかった場合でも、単一のテキストとしてUIA履歴に大文字小文字の正解があれば補正する
+                    single_text = event.get("semantic_role", "")
+                    single_lower = single_text.lower()
+                    if single_lower in global_uia_texts_map and single_text != global_uia_texts_map[single_lower]:
+                        corrected_text = global_uia_texts_map[single_lower]
+                        logger.info(f"[TypingAggregator] UIA履歴を利用して大文字小文字を補正します: '{single_text}' -> '{corrected_text}'")
+                        event["semantic_role"] = corrected_text
                     final_events.append(event)
             else:
                 final_events.append(event)
@@ -518,7 +531,6 @@ class TypingSessionAggregator:
 
         # 分離しておいた末尾の特殊キーイベントを復元して追加（uia_scanは実行アクションではないため除外）
         trailing_special_keys = []
-        enter_skipped = False
         
         for e in trailing_events:
             if e.get("raw_action") == "uia_scan":
@@ -527,13 +539,10 @@ class TypingSessionAggregator:
             role_lower = str(e.get("semantic_role", "")).lower()
             
             if final_text:
-                # 文字入力が確定した場合、それに付随する tab(補完) や 最初の enter(IME確定) は不要なため除外する
+                # 文字入力が確定した場合、それに付随する tab(補完) は不要なため除外する
+                # ※ enter は検索実行などのトリガーになるため除外せずに残す
                 if role_lower == "tab":
                     logger.info("[TypingAggregator] 文字入力に付随する 'tab' (補完操作) をマクロから除外します")
-                    continue
-                if role_lower == "enter" and e.get("ime_active", False) and not enter_skipped:
-                    logger.info("[TypingAggregator] 文字入力に付随する 'enter' (最初のIME確定操作) をマクロから除外します")
-                    enter_skipped = True
                     continue
 
             trailing_special_keys.append(e)

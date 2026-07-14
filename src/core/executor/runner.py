@@ -448,6 +448,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         start_index = 0
         screen_matched = False
         is_browser_target = False
+        force_skip_match_until_enter = False
         current_win_x, current_win_y, current_win_w, current_win_h = 0, 0, 0, 0
         last_win_args = None
         
@@ -527,6 +528,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 keyboard.release('t')
                 keyboard.release(Key.ctrl)
                 time.sleep(0.5)
+                force_skip_match_until_enter = True
                 
         except Exception as e:
             logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
@@ -562,8 +564,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
             # 次のアクション時の画面との一致率で待機する
             if method != "wait" and raw_event_id:
-                _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
-                update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
+                if force_skip_match_until_enter:
+                    logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
+                    if method == "press_key" and args.get("key") == "enter":
+                        force_skip_match_until_enter = False
+                else:
+                    _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
