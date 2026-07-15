@@ -35,6 +35,36 @@ def _set_dpi_awareness():
 
 _set_dpi_awareness()
 
+def _get_system_window_rects():
+    """AI Macro System 自身のウィンドウ矩形を取得し、画像比較から除外するためのリストを返す"""
+    rects = []
+    if platform.system() != "Windows":
+        return rects
+    
+    import ctypes
+    from ctypes import wintypes
+    
+    user32 = ctypes.windll.user32
+    
+    def enum_windows_proc(hwnd, lParam):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buff, length + 1)
+                title = buff.value
+                
+                ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中..."]
+                if any(ignored in title for ignored in ignored_titles):
+                    rect = wintypes.RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        rects.append((rect.left, rect.top, rect.right, rect.bottom))
+        return True
+
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+    user32.EnumWindows(EnumWindowsProc(enum_windows_proc), 0)
+    return rects
+
 def _calculate_ssim(img1, img2, mask=None):
     """OpenCVを用いてSSIM (Structural Similarity Index) を計算する"""
     import cv2
@@ -331,6 +361,19 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
+                # --- システムウィンドウのマスク処理 ---
+                system_rects = _get_system_window_rects()
+                for (sl, st, sr, sb) in system_rects:
+                    abs_cx1 = c_offset_x + cx1
+                    abs_cy1 = c_offset_y + cy1
+                    ml = max(0, int((sl - abs_cx1) * scale))
+                    mt = max(0, int((st - abs_cy1) * scale))
+                    mr = min(curr_crop_eval.shape[1], int((sr - abs_cx1) * scale))
+                    mb = min(curr_crop_eval.shape[0], int((sb - abs_cy1) * scale))
+                    if mr > ml and mb > mt:
+                        dynamic_mask[mt:mb, ml:mr] = 255
+                # ------------------------------------
+                
                 static_mask = cv2.bitwise_not(dynamic_mask)
                 valid_area = np.count_nonzero(static_mask)
 
@@ -485,11 +528,25 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         pre_crop_eval = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
     else:
-        pre_crop_eval = pre_crop
+        pre_crop_eval = pre_crop.copy()
         if pre_crop.shape != curr_crop.shape:
             curr_crop_eval = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
         else:
-            curr_crop_eval = curr_crop
+            curr_crop_eval = curr_crop.copy()
+
+    # --- システムウィンドウのマスク処理 ---
+    system_rects = _get_system_window_rects()
+    for (sl, st, sr, sb) in system_rects:
+        abs_cx1 = offset_x + cx1
+        abs_cy1 = offset_y + cy1
+        ml = max(0, int((sl - abs_cx1) * scale))
+        mt = max(0, int((st - abs_cy1) * scale))
+        mr = min(curr_crop_eval.shape[1], int((sr - abs_cx1) * scale))
+        mb = min(curr_crop_eval.shape[0], int((sb - abs_cy1) * scale))
+        if mr > ml and mb > mt:
+            curr_crop_eval[mt:mb, ml:mr] = 0
+            pre_crop_eval[mt:mb, ml:mr] = 0
+    # ------------------------------------
 
     # 1. ピクセル差分の計算
     diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
