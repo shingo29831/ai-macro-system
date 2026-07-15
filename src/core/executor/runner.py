@@ -35,6 +35,45 @@ def _set_dpi_awareness():
 
 _set_dpi_awareness()
 
+def _calculate_ssim(img1, img2, mask=None):
+    """OpenCVを用いてSSIM (Structural Similarity Index) を計算する"""
+    import cv2
+    import numpy as np
+    C1 = 6.5025
+    C2 = 58.5225
+    i1 = img1.astype(np.float32)
+    i2 = img2.astype(np.float32)
+    mu1 = cv2.GaussianBlur(i1, (11, 11), 1.5)
+    mu2 = cv2.GaussianBlur(i2, (11, 11), 1.5)
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = cv2.GaussianBlur(i1 ** 2, (11, 11), 1.5) - mu1_sq
+    sigma2_sq = cv2.GaussianBlur(i2 ** 2, (11, 11), 1.5) - mu2_sq
+    sigma12 = cv2.GaussianBlur(i1 * i2, (11, 11), 1.5) - mu1_mu2
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    
+    if mask is not None:
+        valid_pixels = mask > 0
+        if not np.any(valid_pixels):
+            return 0.0
+        return float(ssim_map[valid_pixels].mean())
+    return float(ssim_map.mean())
+
+def _calculate_orb_match(img1, img2, mask=None):
+    """ORB特徴点マッチングにより、画像間の特徴一致率を計算する"""
+    import cv2
+    orb = cv2.ORB_create(nfeatures=500)
+    kp1, des1 = orb.detectAndCompute(img1, mask)
+    kp2, des2 = orb.detectAndCompute(img2, mask)
+    if des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
+        return 0.0
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+    # 距離が近い（似ている）特徴点のみを抽出
+    good_matches = [m for m in matches if m.distance < 50]
+    return float(len(good_matches) / max(len(kp1), 1))
+
 def _set_ime_state(text: str):
     """テキスト入力前にWindowsのIMEを確実にオフにする。
     pynputのkeyboard.typeはUnicodeで直接文字を送信するため、
@@ -122,18 +161,27 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
 
-def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, timeout: float = 10.0):
+def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, status_callback, step_index: int, timeout: float = 30.0) -> dict:
     """記録時のスクリーンショットと現在の画面を比較し、変化率が閾値以下になるまで待機する"""
     global _stop_requested
+    result_info = {"matched": False, "time_taken": 0.0, "scores": {}}
     if not raw_event_id or win_w <= 0 or win_h <= 0:
-        return
+        return result_info
 
     pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
     if not pre_image_path.exists():
-        return
+        return result_info
         
     exec_logs_dir = target_dir / "execution_logs"
     exec_logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        import shutil
+        target_copy_path = exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_target.png"
+        if not target_copy_path.exists():
+            shutil.copy2(pre_image_path, target_copy_path)
+    except Exception as e:
+        logger.warning(f"Failed to copy target image: {e}")
 
     def update_ui(text, is_warning):
         if status_callback:
@@ -152,7 +200,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         
         pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
         if pre_img_cv is None:
-            return
+            return result_info
             
         img_h, img_w = pre_img_cv.shape
         
@@ -172,14 +220,20 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
             x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
             x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
             if x2 <= x1 or y2 <= y1:
-                return
+                return result_info
             
         pre_crop = pre_img_cv[y1:y2, x1:x2]
-        pre_crop_small = cv2.resize(pre_crop, (128, 128), interpolation=cv2.INTER_AREA)
         
+        scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
+        if scale < 1.0:
+            pre_crop_eval = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            pre_crop_eval = pre_crop.copy()
+            
         waiting_logged = False
         frame_buffer = [] 
         start_time = time.time()
+        last_frame_crop = None
         
         while not _stop_requested:
             if time.time() - start_time > timeout:
@@ -206,14 +260,16 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 
             if cx2 > cx1 and cy2 > cy1:
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
-                curr_crop_small = cv2.resize(curr_crop, (128, 128), interpolation=cv2.INTER_AREA)
+                if scale < 1.0:
+                    curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
+                else:
+                    curr_crop_eval = curr_crop.copy()
                 
-                frame_buffer.append(curr_crop_small)
+                frame_buffer.append(curr_crop_eval)
                 if len(frame_buffer) > 5:
                     frame_buffer.pop(0)
                 
-                dynamic_mask = np.zeros((128, 128), dtype=np.uint8)
-                
+                dynamic_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
                     dynamic_mask = (std_dev > 10).astype(np.uint8) * 255
@@ -221,19 +277,34 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
                 static_mask = cv2.bitwise_not(dynamic_mask)
-                pre_crop_static = cv2.bitwise_and(pre_crop_small, pre_crop_small, mask=static_mask)
-                curr_crop_static = cv2.bitwise_and(curr_crop_small, curr_crop_small, mask=static_mask)
+                valid_area = np.count_nonzero(static_mask)
+
+                is_screen_changing = False
+                if last_frame_crop is not None:
+                    diff_with_last = cv2.absdiff(last_frame_crop, curr_crop_eval)
+                    _, thresh_last = cv2.threshold(diff_with_last, 30, 255, cv2.THRESH_BINARY)
+                    
+                    # 動的マスク（動画など）を除外して画面遷移を判定
+                    thresh_last = cv2.bitwise_and(thresh_last, thresh_last, mask=static_mask)
+                    
+                    if valid_area > 500:
+                        change_ratio = np.count_nonzero(thresh_last) / valid_area
+                        if change_ratio > 0.02:
+                            is_screen_changing = True
+                last_frame_crop = curr_crop_eval.copy()
+                
+                pre_crop_static = cv2.bitwise_and(pre_crop_eval, pre_crop_eval, mask=static_mask)
+                curr_crop_static = cv2.bitwise_and(curr_crop_eval, curr_crop_eval, mask=static_mask)
                 
                 diff = cv2.absdiff(pre_crop_static, curr_crop_static)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
                 
-                static_area_size = np.count_nonzero(static_mask)
-                if static_area_size > 500: 
-                    diff_ratio = np.count_nonzero(thresh) / static_area_size
+                if valid_area > 500: 
+                    diff_ratio = np.count_nonzero(thresh) / valid_area
                 else:
-                    diff_full = cv2.absdiff(pre_crop_small, curr_crop_small)
+                    diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
                     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-                    diff_ratio = np.count_nonzero(thresh_full) / (128 * 128)
+                    diff_ratio = np.count_nonzero(thresh_full) / (curr_crop_eval.shape[0] * curr_crop_eval.shape[1])
                 
                 # 閾値を再調整（厳格すぎると開始時にマッチしないため、少し緩和）
                 is_pixel_match = diff_ratio <= 0.05
@@ -254,44 +325,76 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     if max_val_edges >= 0.75 and diff_ratio <= 0.15:
                         is_edge_match = True
 
-                if is_pixel_match or is_struct_match or is_edge_match:
+                # 動画などの動的領域を除外してSSIMとORBを計算
+                ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval, mask=static_mask)
+                orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval, mask=static_mask)
+
+                result_info["scores"] = {
+                    "diff_ratio": float(diff_ratio),
+                    "sim": float(max_val),
+                    "edge_sim": float(max_val_edges),
+                    "ssim": ssim_val,
+                    "orb": orb_score
+                }
+
+                # 検索結果画面などの変動を考慮し、閾値を緩和
+                is_ssim_match = ssim_val >= 0.80
+                is_orb_match = orb_score >= 0.25
+
+                if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
                     try:
-                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_curr.png"), curr_crop)
-                        cv2.imwrite(str(exec_logs_dir / f"{raw_event_id}_match_pre.png"), pre_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_match_curr.png"), curr_crop)
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_match_pre.png"), pre_crop)
                     except Exception:
                         pass
                         
                     if waiting_logged:
                         update_ui("マクロを再開します。", False)
-                        logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f}). Resuming.")
+                        logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f}). Resuming.")
                         time.sleep(1.5)
+                    result_info["matched"] = True
                     break
                 else:
-                    if not waiting_logged:
-                        update_ui("記録時と同じ画面にしてください。", True)
-                        logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, edge_sim: {max_val_edges:.2f})")
-                        waiting_logged = True
+                    if is_screen_changing:
+                        update_ui("画面遷移を待機しています...", False)
+                        waiting_logged = False
+                    elif not waiting_logged:
+                        if time.time() - start_time > 3.0:
+                            update_ui("記録時と同じ画面にしてください。", True)
+                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
+                            waiting_logged = True
+                        else:
+                            update_ui("画面の応答を待機しています...", False)
             else:
                 if not waiting_logged:
-                    update_ui("記録時と同じ画面にしてください。", True)
-                    logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
-                    waiting_logged = True
+                    if time.time() - start_time > 3.0:
+                        update_ui("記録時と同じ画面にしてください。", True)
+                        logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
+                        waiting_logged = True
+                    else:
+                        update_ui("画面の応答を待機しています...", False)
             
             time.sleep(0.5)
+            
+        result_info["time_taken"] = time.time() - start_time
     except Exception as e:
         logger.warning(f"Error during screen match waiting: {e}")
+        
+    return result_info
 
-def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> bool:
+def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> tuple[bool, dict]:
     import cv2
     import numpy as np
+    
+    scores = {"diff_ratio": 1.0, "sim": 0.0, "edge_sim": 1.0}
 
     if not pre_image_path.exists():
-        return False
+        return False, scores
 
     pre_img_cv = cv2.imread(str(pre_image_path), cv2.IMREAD_GRAYSCALE)
     if pre_img_cv is None:
-        return False
+        return False, scores
 
     img_h, img_w = pre_img_cv.shape
     margin = 8
@@ -305,7 +408,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         x1, y1 = max(0, win_x + margin), max(0, win_y + margin)
         x2, y2 = min(img_w, win_x + win_w - margin), min(img_h, win_y + win_h - margin)
         if x2 <= x1 or y2 <= y1:
-            return False
+            return False, scores
             
     pre_crop = pre_img_cv[y1:y2, x1:x2]
     curr_h, curr_w = curr_img_cv.shape
@@ -318,49 +421,58 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         cx1, cy1 = max(0, win_x + margin), max(0, win_y + margin)
         cx2, cy2 = min(curr_w, win_x + win_w - margin), min(curr_h, win_y + win_h - margin)
         if cx2 <= cx1 or cy2 <= cy1:
-            return False
+            return False, scores
             
     curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
     
-    if pre_crop.shape != curr_crop.shape:
-        curr_crop = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
-
-    # 1. ピクセル差分の計算（リサイズなしの元解像度で計算し、細かい違いを逃さない）
-    diff_full = cv2.absdiff(pre_crop, curr_crop)
-    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop.shape[0] * pre_crop.shape[1])
-    
-    # 2. エッジの比較（UIの構造や文字の違いを比較）
-    pre_edges = cv2.Canny(pre_crop, 50, 150)
-    curr_edges = cv2.Canny(curr_crop, 50, 150)
-    
-    edge_diff = cv2.absdiff(pre_edges, curr_edges)
-    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop.shape[0] * pre_crop.shape[1])
-    
-    # 3. テンプレートマッチング（全体的な構造の類似度）
-    # 計算量削減のため、適度なサイズ（最大幅512程度）に縮小してマッチング
     scale = min(1.0, 512.0 / max(pre_crop.shape[0], pre_crop.shape[1]))
     if scale < 1.0:
-        pre_crop_small = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        curr_crop_small = cv2.resize(curr_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        pre_crop_eval = cv2.resize(pre_crop, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
     else:
-        pre_crop_small = pre_crop
-        curr_crop_small = curr_crop
-        
-    res = cv2.matchTemplate(curr_crop_small, pre_crop_small, cv2.TM_CCOEFF_NORMED)
+        pre_crop_eval = pre_crop
+        if pre_crop.shape != curr_crop.shape:
+            curr_crop_eval = cv2.resize(curr_crop, (pre_crop.shape[1], pre_crop.shape[0]), interpolation=cv2.INTER_AREA)
+        else:
+            curr_crop_eval = curr_crop
+
+    # 1. ピクセル差分の計算
+    diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
+    _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
+    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    
+    # 2. エッジの比較
+    pre_edges = cv2.Canny(pre_crop_eval, 50, 150)
+    curr_edges = cv2.Canny(curr_crop_eval, 50, 150)
+    
+    edge_diff = cv2.absdiff(pre_edges, curr_edges)
+    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    
+    # 3. テンプレートマッチング
+    res = cv2.matchTemplate(curr_crop_eval, pre_crop_eval, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    # 判定ロジックの再調整（開始時のレジューム判定が厳格すぎると毎回新規タブが開くため緩和）
-    # ダークモード等で背景が同じ場合、ピクセル差分(diff_ratio)は小さくなるが、
-    # 検索窓やロゴの違いによりエッジ差分(edge_diff_ratio)やテンプレートマッチング(max_val)に差が出る。
-    
+    ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval)
+    orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval)
+
+    scores = {
+        "diff_ratio": float(diff_ratio),
+        "sim": float(max_val),
+        "edge_sim": float(edge_diff_ratio),
+        "ssim": ssim_val,
+        "orb": orb_score
+    }
+
     # 完全に同じ画面
     is_exact_match = (diff_ratio <= 0.05) and (edge_diff_ratio <= 0.03) and (max_val >= 0.92)
     
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
-    is_high_match = (diff_ratio <= 0.10) and (edge_diff_ratio <= 0.06) and (max_val >= 0.88)
+    is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.85)
+
+    # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
+    is_structural_match = (ssim_val >= 0.80) or (orb_score >= 0.25)
     
-    return is_exact_match or is_high_match
+    return (is_exact_match or is_high_match or is_structural_match), scores
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     global _is_running, _stop_requested, _browser_activated_once
@@ -421,8 +533,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
     try:
         from core.recorder.screen_capturer import get_macros_root
+        from datetime import datetime
         macros_root = get_macros_root()
         target_dir = macros_root / workflow_id
+        
+        execution_log = {
+            "workflow_id": workflow_id,
+            "start_time": datetime.now().isoformat(),
+            "start_step": 0,
+            "steps": [],
+            "status": "running"
+        }
         
         executable_macro_path = target_dir / "executable_macro.json"
         variables_path = target_dir / "variables.json"
@@ -494,11 +615,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             win_w = last_win_args.get("width", 0)
                             win_h = last_win_args.get("height", 0)
                             
-                            is_match = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
+                            is_match, scores = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
                             if is_match:
-                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here.")
+                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
                                 start_index = i
                                 screen_matched = True
+                                execution_log["start_step"] = start_index
+                                execution_log["initial_match_scores"] = scores
                                 break
                                 
             if screen_matched and start_index > 0:
@@ -549,6 +672,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             method = cmd.get("method")
             args = cmd.get("args", {})
             
+            step_log = {
+                "step_index": i,
+                "method": method,
+                "args": args,
+                "match_info": None,
+                "recovery_info": None,
+                "timestamp": datetime.now().isoformat()
+            }
+            
             step_msg = f"Step {i+1}/{len(commands)}: {method}"
             logger.info(f"[{workflow_id}] {step_msg}")
             update_ui(step_msg, False)
@@ -569,7 +701,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 else:
-                    _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback)
+                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback, i)
+                    step_log["match_info"] = match_info
                     update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             
             if raw_event_id and target_id and method in ["click", "move"]:
@@ -623,6 +756,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             
                         recovery_result = attempt_recovery(workflow_id, target_id)
                         
+                        step_log["recovery_info"] = recovery_result
                         if recovery_result.get("success"):
                             new_coords = recovery_result.get("new_coordinates")
                             if new_coords:
@@ -634,6 +768,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'. Aborting execution.")
                             if status_callback:
                                 status_callback("実行中...", False)
+                            execution_log["status"] = "failed"
+                            execution_log["error"] = "Healer failed to recover target"
                             raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
                         
                         if status_callback:
@@ -776,6 +912,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             else:
                 logger.warning(f"Unknown method: {method}")
                 
+            execution_log["steps"].append(step_log)
+                
         if not _stop_requested:
             if macro_needs_save:
                 try:
@@ -785,12 +923,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
 
+            execution_log["status"] = "success"
             logger.info(f"[{workflow_id}] Macro execution finished successfully.")
+        else:
+            execution_log["status"] = "stopped"
         
     except Exception as e:
+        execution_log["status"] = "failed"
+        execution_log["error"] = str(e)
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
+        try:
+            execution_log["end_time"] = datetime.now().isoformat()
+            log_dir = target_dir / "execution_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"run_log_{int(time.time())}.json"
+            with open(log_path, 'w', encoding='utf-8') as f:
+                json.dump(execution_log, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to save execution log: {e}")
+            
         listener.stop()
         _is_running = False
         _stop_requested = False

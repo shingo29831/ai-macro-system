@@ -66,6 +66,8 @@ class TypingSessionAggregator:
                 elif diff_val > 15.0:
                     if time_diff > 500:
                         self._flush_session(current_session, aggregated_events)
+                elif time_diff > 3000:
+                    self._flush_session(current_session, aggregated_events)
                 elif last_element and curr_element and last_element != curr_element:
                     # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
                     if diff_val > 5.0 or time_diff > 2000:
@@ -77,7 +79,7 @@ class TypingSessionAggregator:
             
             is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.") or 
-                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right"] or
+                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right", "left_click", "right_click", "middle_click"] or
                 ("+" in role_lower and not is_shift_char)
             )
             is_text_input = action in ["type_text", "key_down", "key_press", "key_combo"] and not is_special_key
@@ -140,7 +142,11 @@ class TypingSessionAggregator:
                             last_valid_text = next_event.get("semantic_role", "")
                         else:
                             break
-                    elif action in ["mouse_move", "mouse_hover"]:
+                    elif action in ["mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:
+                        next_ctx = next_event.get("app_context") or next_event.get("AppSpecificContext") or next_event.get("appSpecificContext") or {}
+                        next_elem = next_ctx.get("element_name", "")
+                        if action == "mouse_click" and next_elem != curr_elem:
+                            break
                         intervening_events.append(next_event)
                     else:
                         break
@@ -183,9 +189,12 @@ class TypingSessionAggregator:
         # --- 不要なログのフィルタリング ---
         filtered_session = []
         last_text = None
+        last_ime_active = None
+        
         for item in session:
             action = item.get("raw_action", "")
             role_lower = str(item.get("semantic_role", "")).lower()
+            ime_active = item.get("ime_active", False)
             
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext") or {}
             current_text = app_ctx.get("value") or app_ctx.get("text") or ""
@@ -201,34 +210,51 @@ class TypingSessionAggregator:
                     pass
 
             is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
-            is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+            is_combo = action == "key_combo"
+            is_shortcut = is_combo and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
+            
+            # IMEトグルキー自体はマクロコマンドとして不要なので除外
+            if is_ime_toggle:
+                last_ime_active = ime_active
+                continue
             
             is_valid = False
             
-            # 1. テキストエリアに変更がある場合
-            if last_text is None:
-                is_valid = True
-            elif current_text != last_text and current_text != "":
-                is_valid = True
-            # 2. 画面に差分がある場合
-            elif diff_val >= 0.1:
-                is_valid = True
-            # 3. IME切り替えやコピーなどの特殊操作の場合
-            elif is_essential_key or is_shortcut or is_ime_toggle:
-                is_valid = True
-            # 4. 通常の文字入力で差分が0.0%になるケースを救済するため、
-            #    actionがkey_press等で、role_lowerが1文字の場合は有効とする
-            elif action in ["key_press", "key_down"] and len(role_lower) == 1:
-                is_valid = True
-            elif action == "key_combo" and "+" in role_lower:
-                # shift+w などのコンボキーも有効とする
-                is_valid = True
-                
+            has_text_change = last_text is not None and current_text != last_text and current_text != ""
+            has_screen_diff = diff_val >= 0.1
+            has_ime_change = last_ime_active is not None and ime_active != last_ime_active
+            
+            if is_combo:
+                if has_text_change or has_ime_change:
+                    is_valid = True
+                elif has_screen_diff:
+                    # 画面差分がある場合でも、修飾キーを含まない3キー以上のコンボはノイズとみなす
+                    if not is_shortcut and len(role_lower.split("+")) >= 3:
+                        is_valid = False
+                    else:
+                        is_valid = True
+                elif is_shortcut:
+                    # ctrl+c などのショートカットは画面変化がなくても有効とする
+                    is_valid = True
+            else:
+                if last_text is None:
+                    is_valid = True
+                elif has_text_change:
+                    is_valid = True
+                elif has_screen_diff:
+                    is_valid = True
+                elif is_essential_key:
+                    is_valid = True
+                elif action in ["key_press", "key_down"] and len(role_lower) == 1:
+                    is_valid = True
+
             if is_valid:
                 filtered_session.append(item)
                 if current_text != "":
                     last_text = current_text
+                    
+            last_ime_active = ime_active
 
         if not filtered_session:
             session.clear()
@@ -259,11 +285,6 @@ class TypingSessionAggregator:
 
             is_essential_key = role_lower in ["space", "backspace", "delete", "enter", "tab", "esc"]
             is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
-            is_garbage_combo = action == "key_combo" and not is_shortcut and len(role_lower.split("+")) >= 3
-            
-            if is_garbage_combo:
-                session.clear()
-                return
 
             if diff_val < 0.1 and not is_essential_key and not is_shortcut:
                 session.clear()
@@ -297,7 +318,7 @@ class TypingSessionAggregator:
         current_chunk = ""
         current_ime_state = None
         
-        ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd"}
+        ignore_exact_keys = {"tab", "enter", "delete", "esc", "shift", "ctrl", "alt", "win", "cmd", "left_click", "right_click", "middle_click"}
         ignore_modifiers = ["shift", "ctrl", "alt", "win", "cmd"]
         
         for item in session:
