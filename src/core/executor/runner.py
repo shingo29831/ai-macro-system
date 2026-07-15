@@ -361,6 +361,25 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
+                # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
+                edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
+                edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
+                kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
+                dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
+                
+                text_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
+                for edges_dilated in [dilated_pre, dilated_curr]:
+                    contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for cnt in contours:
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        # 文字と推測されるサイズの矩形を透過領域として追加
+                        if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
+                            cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+                
+                dynamic_mask = cv2.bitwise_or(dynamic_mask, text_mask)
+                # ------------------------------------
+                
                 # --- システムウィンドウのマスク処理 ---
                 system_rects = _get_system_window_rects()
                 for (sl, st, sr, sb) in system_rects:
@@ -546,6 +565,25 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         if mr > ml and mb > mt:
             curr_crop_eval[mt:mb, ml:mr] = 0
             pre_crop_eval[mt:mb, ml:mr] = 0
+    # ------------------------------------
+
+    # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
+    edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
+    edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
+    kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
+    dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
+    
+    text_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
+    for edges_dilated in [dilated_pre, dilated_curr]:
+        contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
+                cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+                
+    curr_crop_eval[text_mask == 255] = 0
+    pre_crop_eval[text_mask == 255] = 0
     # ------------------------------------
 
     # 1. ピクセル差分の計算
@@ -853,6 +891,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
+                elif loop_stack:
+                    # ループ中は画面比較を一時的になしにする（ループ直前と最後のみ行う）
+                    logger.info(f"[{workflow_id}] Skipping screen match inside loop.")
+                    time.sleep(0.5)
                 else:
                     # タイムアウトを10秒に短縮し、画面が多少異なっても進行を妨げないようにする
                     match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback, i, timeout=10.0)
