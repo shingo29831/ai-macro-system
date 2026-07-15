@@ -848,7 +848,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 current_win_h = args.get("height", 0)
 
             # 次のアクション時の画面との一致率で待機する
-            if method != "wait" and raw_event_id:
+            if method not in ["wait", "activate_window", "loop_start", "loop_end"] and raw_event_id:
                 if force_skip_match_until_enter:
                     logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
                     if method == "press_key" and args.get("key") == "enter":
@@ -939,13 +939,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 # 画面マッチングによる待機を優先するため、次に画像判定可能なアクションが控えている場合は固定待機をスキップ
                 next_has_event = False
                 for j in range(i + 1, len(commands)):
-                    if commands[j].get("method") != "wait":
+                    if commands[j].get("method") not in ["wait", "activate_window", "loop_start", "loop_end"]:
                         if commands[j].get("args", {}).get("raw_event_id"):
                             next_has_event = True
                         break
                 
                 if next_has_event:
                     logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
+                    i += 1
                     continue
 
                 duration = args.get("duration", 0.0)
