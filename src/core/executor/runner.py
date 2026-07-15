@@ -436,8 +436,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 }
 
                 # 検索結果画面などの変動を考慮し、閾値を緩和
-                is_ssim_match = ssim_val >= 0.80
-                is_orb_match = orb_score >= 0.25
+                is_ssim_match = ssim_val >= 0.75
+                is_orb_match = orb_score >= 0.15
 
                 if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
@@ -582,7 +582,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.85)
 
     # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
-    is_structural_match = (ssim_val >= 0.80) or (orb_score >= 0.25)
+    is_structural_match = (ssim_val >= 0.75) or (orb_score >= 0.15)
     
     return (is_exact_match or is_high_match or is_structural_match), scores
 
@@ -854,7 +854,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 else:
-                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback, i)
+                    # タイムアウトを10秒に短縮し、画面が多少異なっても進行を妨げないようにする
+                    match_info = _wait_for_screen_match(target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, workflow_id, status_callback, i, timeout=10.0)
                     step_log["match_info"] = match_info
                     update_ui(step_msg, False) # 待機から復帰した後に再度ステップ表示を更新
             

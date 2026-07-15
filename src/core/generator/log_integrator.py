@@ -499,6 +499,7 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
     is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_move)
     is_key = "key" in raw_type_lower
     is_uia = "uia" in raw_type_lower
+    is_meta = "meta" in raw_type_lower
 
     dx = 0.0
     dy = 0.0
@@ -508,6 +509,8 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         if isinstance(content_data, dict):
             dx = content_data.get("dx", 0.0)
             dy = content_data.get("dy", 0.0)
+    elif is_meta:
+        action_type = "meta"
     elif is_move:
         action_type = "move"
     elif is_click:
@@ -756,26 +759,46 @@ def generate_macro_workflow(
                     j += 1
                 
                 half_len = len(loop_events) // 2
+                y_offset = 0
+                x_offset = 0
+                
                 if half_len > 0:
                     first_half = loop_events[:half_len]
                     second_half = loop_events[half_len:half_len*2]
                     
-                    y_offset = 30
                     for k in range(half_len):
                         if first_half[k]["raw_action"] == "click" and second_half[k]["raw_action"] == "click":
-                            diff = second_half[k]["cursor_y"] - first_half[k]["cursor_y"]
-                            if 10 < diff < 100:
-                                y_offset = diff
-                                break
-                    
-                    info["loop_variables"] = {"y_offset": y_offset}
-                    optimized_workflow_info.extend(first_half)
+                            diff_y = second_half[k]["cursor_y"] - first_half[k]["cursor_y"]
+                            diff_x = second_half[k]["cursor_x"] - first_half[k]["cursor_x"]
+                            if 10 < abs(diff_y) < 150:
+                                y_offset = diff_y
+                            if 10 < abs(diff_x) < 150:
+                                x_offset = diff_x
+                                
+                    if y_offset != 0 or x_offset != 0:
+                        info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                        optimized_workflow_info.extend(first_half)
+                        logger.info(f"[{workflow_id}] Loop pattern detected. Initial actions kept. Offsets: y={y_offset}, x={x_offset}")
+                    else:
+                        # パターンが見つからなかった場合は全イベントを保持し、デフォルトのオフセットを設定
+                        info["loop_variables"] = {"y_offset": 30, "x_offset": 0}
+                        optimized_workflow_info.extend(loop_events)
+                        logger.info(f"[{workflow_id}] No clear loop pattern found. Using default offsets and keeping all events.")
                 else:
-                    info["loop_variables"] = {"y_offset": 30}
+                    info["loop_variables"] = {"y_offset": 30, "x_offset": 0}
                     optimized_workflow_info.extend(loop_events)
                 
                 if j < len(temp_workflow_info):
                     optimized_workflow_info.append(temp_workflow_info[j])
+                else:
+                    # 記録終了時に「繰り返し終了」が押されなかった場合の自動補完
+                    optimized_workflow_info.append({
+                        "raw_type": "meta_loop_end",
+                        "raw_action": "unknown",
+                        "event_id": "auto_loop_end",
+                        "semantic_role": "",
+                        "window_name": info.get("window_name", "")
+                    })
                 idx = j + 1
             else:
                 optimized_workflow_info.append(info)
