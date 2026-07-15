@@ -1048,6 +1048,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         
                 elif method == "type_text":
                     text = args.get("text", "")
+                    seq_val = args.get("sequence_value")
+                    
+                    if seq_val and loop_stack:
+                        current_loop = loop_stack[-1]
+                        iteration = current_loop["current_iteration"]
+                        start_val = seq_val.get("start", 1)
+                        step_val = seq_val.get("step", 1)
+                        text = str(start_val + step_val * iteration)
+                        
                     if text:
                         for key, val in variables.items():
                             placeholder = f"{{{{{key}}}}}"

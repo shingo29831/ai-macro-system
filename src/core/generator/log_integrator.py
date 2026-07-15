@@ -758,35 +758,76 @@ def generate_macro_workflow(
                     loop_events.append(temp_workflow_info[j])
                     j += 1
                 
-                half_len = len(loop_events) // 2
+                # 周期の推定とノイズ排除 (シーケンスアライメントによるスコアリング)
+                import difflib
+                
+                actions = [e["raw_action"] for e in loop_events]
+                n = len(actions)
+                best_period = 0
+                best_score = 0.0
+                best_first_iter = []
+                best_second_iter = []
+                
+                # 周期の候補を探す (長さ2から N/2 まで)
+                for p in range(2, n // 2 + 1):
+                    template = actions[:p]
+                    target = actions[p:p*2]
+                    sm = difflib.SequenceMatcher(None, template, target)
+                    score = sm.ratio()
+                    
+                    # ユーザーの誤操作を考慮し、完全一致でなくてもスコアが高ければ候補とする
+                    if score > best_score and score >= 0.6:
+                        best_score = score
+                        best_period = p
+                        
+                        first_iter = []
+                        second_iter = []
+                        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                            if tag in ['equal', 'replace']:
+                                # 誤操作（insert, delete）は無視し、対応するアクションのみ抽出
+                                for i, j in zip(range(i1, i2), range(j1, j2)):
+                                    first_iter.append(loop_events[i])
+                                    second_iter.append(loop_events[p + j])
+                        
+                        best_first_iter = first_iter
+                        best_second_iter = second_iter
+
                 y_offset = 0
                 x_offset = 0
                 
-                if half_len > 0:
-                    first_half = loop_events[:half_len]
-                    second_half = loop_events[half_len:half_len*2]
+                if best_period > 0 and best_first_iter and best_second_iter:
+                    first_iter = best_first_iter
+                    second_iter = best_second_iter
                     
-                    for k in range(half_len):
-                        if first_half[k]["raw_action"] == "click" and second_half[k]["raw_action"] == "click":
-                            diff_y = second_half[k]["cursor_y"] - first_half[k]["cursor_y"]
-                            diff_x = second_half[k]["cursor_x"] - first_half[k]["cursor_x"]
-                            if 10 < abs(diff_y) < 150:
+                    for k in range(len(first_iter)):
+                        # 座標の差分抽出
+                        if first_iter[k]["raw_action"] in ["click", "move"] and second_iter[k]["raw_action"] == first_iter[k]["raw_action"]:
+                            diff_y = second_iter[k]["cursor_y"] - first_iter[k]["cursor_y"]
+                            diff_x = second_iter[k]["cursor_x"] - first_iter[k]["cursor_x"]
+                            if 10 < abs(diff_y) < 200:
                                 y_offset = diff_y
-                            if 10 < abs(diff_x) < 150:
+                            if 10 < abs(diff_x) < 200:
                                 x_offset = diff_x
                                 
-                    if y_offset != 0 or x_offset != 0:
-                        info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
-                        optimized_workflow_info.extend(first_half)
-                        logger.info(f"[{workflow_id}] Loop pattern detected. Initial actions kept. Offsets: y={y_offset}, x={x_offset}")
-                    else:
-                        # パターンが見つからなかった場合は全イベントを保持し、デフォルトのオフセットを設定
-                        info["loop_variables"] = {"y_offset": 30, "x_offset": 0}
-                        optimized_workflow_info.extend(loop_events)
-                        logger.info(f"[{workflow_id}] No clear loop pattern found. Using default offsets and keeping all events.")
+                        # 連続値（連番）の抽出
+                        if first_iter[k]["raw_action"] == "type_text" and second_iter[k]["raw_action"] == "type_text":
+                            val1 = first_iter[k]["semantic_role"]
+                            val2 = second_iter[k]["semantic_role"]
+                            try:
+                                num1 = int(val1)
+                                num2 = int(val2)
+                                if num2 - num1 != 0:
+                                    first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
+                            except ValueError:
+                                pass
+                                
+                    info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                    optimized_workflow_info.extend(first_iter)
+                    logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}). Initial actions kept. Offsets: y={y_offset}, x={x_offset}")
                 else:
-                    info["loop_variables"] = {"y_offset": 30, "x_offset": 0}
+                    info["loop_variables"] = {"y_offset": 0, "x_offset": 0}
                     optimized_workflow_info.extend(loop_events)
+                    logger.info(f"[{workflow_id}] Could not determine loop period. Keeping all events.")
                 
                 if j < len(temp_workflow_info):
                     optimized_workflow_info.append(temp_workflow_info[j])
@@ -927,6 +968,8 @@ def generate_macro_workflow(
                 intent = "INPUT_TEXT"
                 desc = f"Type the text: '{final_semantic_role}'"
                 params = ActionParameters(text=final_semantic_role)
+                if "sequence_value" in info:
+                    params.sequence_value = info["sequence_value"]
             elif raw_action == "scroll":
                 cmd = "MOUSE_SCROLL"
                 intent = "SCROLL_WINDOW"
@@ -1119,13 +1162,17 @@ def generate_macro_workflow(
                         })
                 elif cmd_type == "TYPE_TEXT":
                     if params.text:
+                        cmd_args = {
+                            "text": params.text,
+                            "target_id": target_id_for_healer,
+                            "raw_event_id": raw_event_id
+                        }
+                        if params.sequence_value:
+                            cmd_args["sequence_value"] = params.sequence_value
+                            
                         raw_commands_data.append({
                             "method": "type_text",
-                            "args": {
-                                "text": params.text,
-                                "target_id": target_id_for_healer,
-                                "raw_event_id": raw_event_id
-                            }
+                            "args": cmd_args
                         })
                 elif cmd_type == "LOOP_START":
                     raw_commands_data.append({
