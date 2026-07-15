@@ -92,7 +92,7 @@ def _set_ime_state(text: str):
     except Exception as e:
         logger.warning(f"Failed to set IME state: {e}")
 
-def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str):
+def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str, launch_cmd: str = ""):
     """対象のウィンドウをアクティブにし、必要に応じてアプリを起動・サイズ復元を行う"""
     if not window_title or platform.system() != "Windows":
         return
@@ -111,19 +111,31 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
     if not windows:
         logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
         lower_app_name = app_name.lower()
-        launch_cmd = None
-        if "firefox" in lower_app_name:
-            launch_cmd = "start firefox"
-        elif "chrome" in lower_app_name:
-            launch_cmd = "start chrome"
-        elif "edge" in lower_app_name:
-            launch_cmd = "start msedge"
-        elif "excel" in lower_app_name:
-            launch_cmd = "start excel"
+        lower_title = window_title.lower()
+        
+        if not launch_cmd:
+            if "firefox" in lower_app_name:
+                if "プライベート" in lower_title or "private" in lower_title:
+                    launch_cmd = "start firefox -private-window"
+                else:
+                    launch_cmd = "start firefox"
+            elif "chrome" in lower_app_name:
+                if "シークレット" in lower_title or "incognito" in lower_title:
+                    launch_cmd = "start chrome --incognito"
+                else:
+                    launch_cmd = "start chrome"
+            elif "edge" in lower_app_name:
+                if "inprivate" in lower_title:
+                    launch_cmd = "start msedge --inprivate"
+                else:
+                    launch_cmd = "start msedge"
+            elif "excel" in lower_app_name:
+                launch_cmd = "start excel"
             
         if launch_cmd:
             creationflags = 0x08000000 # CREATE_NO_WINDOW (cmd画面を非表示)
-            subprocess.Popen(launch_cmd, shell=True, creationflags=creationflags)
+            use_shell = launch_cmd.startswith("start ")
+            subprocess.Popen(launch_cmd, shell=use_shell, creationflags=creationflags)
             time.sleep(4.0)
             windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
             
@@ -588,7 +600,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     args.get("width", 0),
                     args.get("height", 0),
                     keyboard,
-                    workflow_id
+                    workflow_id,
+                    args.get("launch_cmd", "")
                 )
                 time.sleep(1.0)
                 
@@ -640,7 +653,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         args.get("width", 0),
                         args.get("height", 0),
                         keyboard,
-                        workflow_id
+                        workflow_id,
+                        args.get("launch_cmd", "")
                     )
                     time.sleep(0.5)
             elif not screen_matched and is_browser_target:
@@ -811,8 +825,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 win_y = args.get("y", 0)
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
+                launch_cmd = args.get("launch_cmd", "")
                 
-                _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id)
+                _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id, launch_cmd)
 
             elif method == "click":
                 x = args.get("x", 0)

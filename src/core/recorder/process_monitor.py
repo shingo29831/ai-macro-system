@@ -184,12 +184,18 @@ def get_foreground_window_info() -> dict:
 
         process_name = ""
         exe_path = ""
+        command_line = ""
 
         if process_id and psutil is not None:
             try:
                 proc = psutil.Process(process_id)
                 process_name = proc.name() or ""
                 exe_path = proc.exe() or ""
+                cmdline = proc.cmdline()
+                if cmdline:
+                    # 実行ファイルパスにスペースが含まれる場合を考慮してダブルクォートで囲む
+                    cmdline[0] = f'"{cmdline[0]}"'
+                    command_line = " ".join(cmdline)
             except Exception:
                 pass
 
@@ -201,6 +207,7 @@ def get_foreground_window_info() -> dict:
             "process_id": process_id,
             "process_name": process_name,
             "exe_path": exe_path,
+            "command_line": command_line,
             "rect": {
                 "left": left,
                 "top": top,
@@ -240,6 +247,7 @@ def build_recording_window_fields(
 
     return {
         "WindowName": window_info.get("title", ""),
+        "WindowCommandLine": window_info.get("command_line", ""),
         "WindowSize": {
             "width": int(window_info.get("size", {}).get("width", 0)),
             "height": int(window_info.get("size", {}).get("height", 0)),

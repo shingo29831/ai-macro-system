@@ -8,7 +8,7 @@
 #   - なし
 
 from pydantic import BaseModel, Field
-from typing import List, Union, Literal
+from typing import List, Union, Literal, Optional
 
 class WaitArgs(BaseModel):
     duration: float = Field(..., description="Seconds to wait before next command.")
@@ -21,6 +21,9 @@ class ClickArgs(BaseModel):
     x: int = Field(..., description="Absolute X coordinate on screen.")
     y: int = Field(..., description="Absolute Y coordinate on screen.")
     button: Literal["left", "right", "middle"] = Field(default="left")
+    clicks: Optional[int] = 1
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
 
 class ClickCommand(BaseModel):
     method: Literal["click"] = "click"
@@ -28,6 +31,8 @@ class ClickCommand(BaseModel):
 
 class TypeTextArgs(BaseModel):
     text: str = Field(..., description="Text string to type.")
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
 
 class TypeTextCommand(BaseModel):
     method: Literal["type_text"] = "type_text"
@@ -35,13 +40,58 @@ class TypeTextCommand(BaseModel):
 
 class PressKeyArgs(BaseModel):
     key: str = Field(..., description="Special key name (e.g., enter, esc, tab).")
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
 
 class PressKeyCommand(BaseModel):
     method: Literal["press_key"] = "press_key"
     args: PressKeyArgs
 
-MacroCommand = Union[WaitCommand, ClickCommand, TypeTextCommand, PressKeyCommand]
+class ActivateWindowArgs(BaseModel):
+    window_title: str
+    x: int
+    y: int
+    width: int
+    height: int
+    launch_cmd: str = ""
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+
+class ActivateWindowCommand(BaseModel):
+    method: Literal["activate_window"] = "activate_window"
+    args: ActivateWindowArgs
+
+class MoveArgs(BaseModel):
+    x: int
+    y: int
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+
+class MoveCommand(BaseModel):
+    method: Literal["move"] = "move"
+    args: MoveArgs
+
+class ScrollArgs(BaseModel):
+    dx: float
+    dy: float
+    x: int
+    y: int
+
+class ScrollCommand(BaseModel):
+    method: Literal["scroll"] = "scroll"
+    args: ScrollArgs
+
+MacroCommand = Union[
+    WaitCommand, 
+    ClickCommand, 
+    TypeTextCommand, 
+    PressKeyCommand, 
+    ActivateWindowCommand, 
+    MoveCommand, 
+    ScrollCommand
+]
 
 class ExecutableMacro(BaseModel):
     macro_id: str = Field(..., description="Unique identifier for the macro.")
+    target_application: str = Field(default="auto_generated")
     commands: List[MacroCommand] = Field(default_factory=list, description="Ordered list of executable commands.")

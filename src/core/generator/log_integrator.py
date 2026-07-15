@@ -453,6 +453,7 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         return None
         
     window_name = log_entry.get("WindowName") or "Unknown Window"
+    command_line = log_entry.get("WindowCommandLine", "")
     # システムウィンドウ（記録ウィジェット等）の操作をマクロから除外
     if "python" in window_name.lower() or "unknown window" in window_name.lower():
         return None
@@ -641,6 +642,7 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         "ime_active": ime_active,
         "app_context": app_context,
         "window_name": window_name,
+        "command_line": command_line,
         "integrated_event": integrated_event
     }
     
@@ -759,12 +761,15 @@ def generate_macro_workflow(
                 win_w = win_ctx.size.width if win_ctx else 0
                 win_h = win_ctx.size.height if win_ctx else 0
 
+                command_line = info.get("command_line", "")
+
                 win_info_json = json.dumps({
                     "title": current_window,
                     "x": win_x,
                     "y": win_y,
                     "width": win_w,
-                    "height": win_h
+                    "height": win_h,
+                    "launch_cmd": command_line
                 }, ensure_ascii=False)
 
                 workflow_steps.append(WorkflowStep(
@@ -928,6 +933,7 @@ def generate_macro_workflow(
                             win_y = win_info.get("y", 0)
                             win_w = win_info.get("width", 0)
                             win_h = win_info.get("height", 0)
+                            launch_cmd = win_info.get("launch_cmd", "")
                             
                             raw_commands_data.append({
                                 "method": "activate_window",
@@ -937,6 +943,7 @@ def generate_macro_workflow(
                                     "y": win_y,
                                     "width": win_w,
                                     "height": win_h,
+                                    "launch_cmd": launch_cmd,
                                     "target_id": target_id_for_healer,
                                     "raw_event_id": raw_event_id
                                 }
