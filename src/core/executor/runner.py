@@ -276,10 +276,28 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 logger.warning(f"[{workflow_id}] Screen match timeout ({timeout}s). Proceeding to next action.")
                 if waiting_logged:
                     update_ui("タイムアウトしました。マクロを再開します。", False)
+                
+                try:
+                    if 'curr_crop_color' in locals() and 'dynamic_mask' in locals():
+                        if dynamic_mask.shape[:2] != curr_crop_color.shape[:2]:
+                            dynamic_mask_resized = cv2.resize(dynamic_mask, (curr_crop_color.shape[1], curr_crop_color.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        else:
+                            dynamic_mask_resized = dynamic_mask
+                        
+                        alpha_channel = cv2.bitwise_not(dynamic_mask_resized)
+                        b, g, r = cv2.split(curr_crop_color)
+                        transparent_img = cv2.merge((b, g, r, alpha_channel))
+                        
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_timeout_masked.png"), transparent_img)
+                        logger.info(f"[{workflow_id}] Saved timeout masked image with dynamic regions transparent.")
+                except Exception as e:
+                    logger.warning(f"Failed to save timeout masked image: {e}")
+                    
                 break
 
             curr_img_pil, curr_monitor = take_screenshot()
-            curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+            curr_img_color = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2BGR)
+            curr_img_cv = cv2.cvtColor(curr_img_color, cv2.COLOR_BGR2GRAY)
             
             c_offset_x = curr_monitor.get("left", 0) if isinstance(curr_monitor, dict) else 0
             c_offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
@@ -296,6 +314,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 
             if cx2 > cx1 and cy2 > cy1:
                 curr_crop = curr_img_cv[cy1:cy2, cx1:cx2]
+                curr_crop_color = curr_img_color[cy1:cy2, cx1:cx2]
                 if scale < 1.0:
                     curr_crop_eval = cv2.resize(curr_crop, (pre_crop_eval.shape[1], pre_crop_eval.shape[0]), interpolation=cv2.INTER_AREA)
                 else:
