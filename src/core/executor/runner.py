@@ -961,6 +961,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     time.sleep(remainder)
                     
             elif method == "activate_window":
+                last_win_args = args
                 window_title = args.get("window_title", "")
                 win_x = args.get("x", 0)
                 win_y = args.get("y", 0)
@@ -970,101 +971,126 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
                 _activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, keyboard, workflow_id, launch_cmd)
 
-            elif method == "click":
-                x = args.get("x", 0)
-                y = args.get("y", 0)
-                button_str = args.get("button", "left")
-                clicks = args.get("clicks", 1)
-                
-                btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
-                
-                if platform.system() == "Windows":
-                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                else:
-                    mouse.position = (x, y)
-                    
-                time.sleep(0.05)
-                mouse.click(btn, clicks)
+            elif method in ["click", "move", "scroll", "type_text", "press_key"]:
+                # 操作アクションの直前に、対象ウィンドウが最前面にあるか確認し、違えばアクティブにする
+                if last_win_args:
+                    window_title = last_win_args.get("window_title", "")
+                    app_name = window_title.split("—")[-1].split("-")[-1].strip()
+                    if app_name and platform.system() == "Windows":
+                        hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                        buff = ctypes.create_unicode_buffer(length + 1)
+                        ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                        current_fg_title = buff.value
+                        
+                        if app_name.lower() not in current_fg_title.lower():
+                            logger.info(f"[{workflow_id}] Window '{app_name}' is not in foreground. Activating...")
+                            _activate_and_restore_window(
+                                window_title,
+                                last_win_args.get("x", 0),
+                                last_win_args.get("y", 0),
+                                last_win_args.get("width", 0),
+                                last_win_args.get("height", 0),
+                                keyboard,
+                                workflow_id,
+                                last_win_args.get("launch_cmd", "")
+                            )
 
-            elif method == "move":
-                x = args.get("x", 0)
-                y = args.get("y", 0)
-                
-                if platform.system() == "Windows":
-                    ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                else:
-                    mouse.position = (x, y)
+                if method == "click":
+                    x = args.get("x", 0)
+                    y = args.get("y", 0)
+                    button_str = args.get("button", "left")
+                    clicks = args.get("clicks", 1)
                     
-                time.sleep(0.5)
-                
-            elif method == "scroll":
-                dx = args.get("dx", 0.0)
-                dy = args.get("dy", 0.0)
-                x = args.get("x")
-                y = args.get("y")
-                
-                if x is not None and y is not None and (x != 0 or y != 0):
+                    btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
+                    
                     if platform.system() == "Windows":
                         ctypes.windll.user32.SetCursorPos(int(x), int(y))
                     else:
                         mouse.position = (x, y)
-                    time.sleep(0.01)
-                
-                if platform.system() == "Windows":
-                    if dy != 0.0:
-                        scroll_amount = int(dy * WHEEL_DELTA)
-                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
-                    if dx != 0.0:
-                        scroll_amount_x = int(dx * WHEEL_DELTA)
-                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, scroll_amount_x, 0)
-                else:
-                    mouse.scroll(dx, dy)
+                        
+                    time.sleep(0.05)
+                    mouse.click(btn, clicks)
+
+                elif method == "move":
+                    x = args.get("x", 0)
+                    y = args.get("y", 0)
                     
-            elif method == "type_text":
-                text = args.get("text", "")
-                if text:
-                    for key, val in variables.items():
-                        placeholder = f"{{{{{key}}}}}"
-                        if placeholder in text:
-                            text = text.replace(placeholder, str(val))
-                            
-                    _set_ime_state(text)
-                    for char in text:
-                        if _stop_requested:
-                            break
-                        keyboard.type(char)
-                        time.sleep(0.03)
-                    time.sleep(0.2)
+                    if platform.system() == "Windows":
+                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                    else:
+                        mouse.position = (x, y)
+                        
+                    time.sleep(0.5)
                     
-            elif method == "press_key":
-                key_str = args.get("key", "")
-                if key_str:
-                    try:
-                        if "+" in key_str:
-                            keys = key_str.split("+")
-                            pressed = []
-                            for k in keys:
-                                k_name = k.lower().replace("key.", "")
-                                if k_name in ["win", "windows"]: k_name = "cmd"
-                                key_obj = getattr(Key, k_name, k_name)
-                                keyboard.press(key_obj)
-                                pressed.append(key_obj)
-                            for key_obj in reversed(pressed):
-                                keyboard.release(key_obj)
+                elif method == "scroll":
+                    dx = args.get("dx", 0.0)
+                    dy = args.get("dy", 0.0)
+                    x = args.get("x")
+                    y = args.get("y")
+                    
+                    if x is not None and y is not None and (x != 0 or y != 0):
+                        if platform.system() == "Windows":
+                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
                         else:
-                            key_name = key_str.lower()
-                            if key_name in ["win", "windows"]:
-                                key_name = "cmd"
+                            mouse.position = (x, y)
+                        time.sleep(0.01)
+                    
+                    if platform.system() == "Windows":
+                        if dy != 0.0:
+                            scroll_amount = int(dy * WHEEL_DELTA)
+                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+                        if dx != 0.0:
+                            scroll_amount_x = int(dx * WHEEL_DELTA)
+                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, scroll_amount_x, 0)
+                    else:
+                        mouse.scroll(dx, dy)
+                        
+                elif method == "type_text":
+                    text = args.get("text", "")
+                    if text:
+                        for key, val in variables.items():
+                            placeholder = f"{{{{{key}}}}}"
+                            if placeholder in text:
+                                text = text.replace(placeholder, str(val))
                                 
-                            if hasattr(Key, key_name):
-                                special_key = getattr(Key, key_name)
-                                keyboard.press(special_key)
-                                keyboard.release(special_key)
+                        _set_ime_state(text)
+                        for char in text:
+                            if _stop_requested:
+                                break
+                            keyboard.type(char)
+                            time.sleep(0.03)
+                        time.sleep(0.2)
+                        
+                elif method == "press_key":
+                    key_str = args.get("key", "")
+                    if key_str:
+                        try:
+                            if "+" in key_str:
+                                keys = key_str.split("+")
+                                pressed = []
+                                for k in keys:
+                                    k_name = k.lower().replace("key.", "")
+                                    if k_name in ["win", "windows"]: k_name = "cmd"
+                                    key_obj = getattr(Key, k_name, k_name)
+                                    keyboard.press(key_obj)
+                                    pressed.append(key_obj)
+                                for key_obj in reversed(pressed):
+                                    keyboard.release(key_obj)
                             else:
-                                keyboard.press(key_str)
-                                keyboard.release(key_str)
-                    except Exception as e:
-                        logger.warning(f"Failed to press key {key_str}: {e}")
+                                key_name = key_str.lower()
+                                if key_name in ["win", "windows"]:
+                                    key_name = "cmd"
+                                    
+                                if hasattr(Key, key_name):
+                                    special_key = getattr(Key, key_name)
+                                    keyboard.press(special_key)
+                                    keyboard.release(special_key)
+                                else:
+                                    keyboard.press(key_str)
+                                    keyboard.release(key_str)
+                        except Exception as e:
+                            logger.warning(f"Failed to press key {key_str}: {e}")
             else:
                 logger.warning(f"Unknown method: {method}")
                 
