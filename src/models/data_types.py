@@ -127,6 +127,8 @@ class ActionParameters(BaseModel):
     text: Optional[str] = None
     condition: Optional[str] = None
     timeout_ms: Optional[int] = None
+    loop_count: Optional[int] = Field(None, description='ループの実行回数')
+    loop_variables: Optional[dict] = Field(None, description='ループごとの差分変数（例: {"y_offset": 30, "index_step": 1}）')
 
 class WorkflowCommandAction(BaseModel):
     command: str = Field(..., description="システムのルートコマンド (例: MOUSE_CLICK, TYPE_TEXT)")

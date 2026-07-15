@@ -777,14 +777,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             current_win_h = last_win_args.get("height", 0)
         # --------------------------------------------------
         
-        for i in range(start_index, len(commands)):
+        i = start_index
+        loop_stack = []
+        
+        while i < len(commands):
             cmd = commands[i]
             if _stop_requested:
                 logger.warning(f"[{workflow_id}] Execution aborted by user emergency stop.")
                 break
                 
             method = cmd.get("method")
-            args = cmd.get("args", {})
+            args = cmd.get("args", {}).copy()
+            
+            if loop_stack and method in ["click", "move", "activate_window"]:
+                current_loop = loop_stack[-1]
+                iteration = current_loop["current_iteration"]
+                variables = current_loop["variables"]
+                
+                if "y_offset" in variables and "y" in args:
+                    args["y"] += variables["y_offset"] * iteration
+                if "x_offset" in variables and "x" in args:
+                    args["x"] += variables["x_offset"] * iteration
             
             step_log = {
                 "step_index": i,
@@ -796,11 +809,37 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             }
             
             step_msg = f"Step {i+1}/{len(commands)}: {method}"
+            if loop_stack:
+                step_msg += f" (Loop {loop_stack[-1]['current_iteration']+1}/{loop_stack[-1]['total_count']})"
             logger.info(f"[{workflow_id}] {step_msg}")
             update_ui(step_msg, False)
             
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
+
+            if method == "loop_start":
+                loop_count = args.get("loop_count", 10)
+                loop_variables = args.get("loop_variables", {})
+                loop_stack.append({
+                    "start_index": i,
+                    "total_count": loop_count,
+                    "current_iteration": 0,
+                    "variables": loop_variables
+                })
+                i += 1
+                continue
+                
+            elif method == "loop_end":
+                if loop_stack:
+                    current_loop = loop_stack[-1]
+                    current_loop["current_iteration"] += 1
+                    if current_loop["current_iteration"] < current_loop["total_count"]:
+                        i = current_loop["start_index"] + 1
+                        continue
+                    else:
+                        loop_stack.pop()
+                i += 1
+                continue
 
             if method == "activate_window":
                 current_win_x = args.get("x", 0)
@@ -1028,6 +1067,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 logger.warning(f"Unknown method: {method}")
                 
             execution_log["steps"].append(step_log)
+            i += 1
                 
         if not _stop_requested:
             if macro_needs_save:

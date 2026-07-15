@@ -741,6 +741,49 @@ def generate_macro_workflow(
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
 
+        # --- ループブロックの解析と重複排除・差分抽出 ---
+        optimized_workflow_info = []
+        idx = 0
+        while idx < len(temp_workflow_info):
+            info = temp_workflow_info[idx]
+            if info["raw_type"].lower() == "meta_loop_start":
+                optimized_workflow_info.append(info)
+                
+                loop_events = []
+                j = idx + 1
+                while j < len(temp_workflow_info) and temp_workflow_info[j]["raw_type"].lower() != "meta_loop_end":
+                    loop_events.append(temp_workflow_info[j])
+                    j += 1
+                
+                half_len = len(loop_events) // 2
+                if half_len > 0:
+                    first_half = loop_events[:half_len]
+                    second_half = loop_events[half_len:half_len*2]
+                    
+                    y_offset = 30
+                    for k in range(half_len):
+                        if first_half[k]["raw_action"] == "click" and second_half[k]["raw_action"] == "click":
+                            diff = second_half[k]["cursor_y"] - first_half[k]["cursor_y"]
+                            if 10 < diff < 100:
+                                y_offset = diff
+                                break
+                    
+                    info["loop_variables"] = {"y_offset": y_offset}
+                    optimized_workflow_info.extend(first_half)
+                else:
+                    info["loop_variables"] = {"y_offset": 30}
+                    optimized_workflow_info.extend(loop_events)
+                
+                if j < len(temp_workflow_info):
+                    optimized_workflow_info.append(temp_workflow_info[j])
+                idx = j + 1
+            else:
+                optimized_workflow_info.append(info)
+                idx += 1
+                
+        temp_workflow_info = optimized_workflow_info
+        # ------------------------------------------------
+
         llm_enhanced_data = {} 
 
         workflow_steps = []
@@ -766,6 +809,38 @@ def generate_macro_workflow(
             
             # --- ウィンドウアクティブ化コマンドの自動挿入（サイズと座標情報をJSONで付与） ---
             current_window = next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+            
+            if raw_type == "meta_loop_start":
+                loop_vars = info.get("loop_variables", {"y_offset": 30})
+                workflow_steps.append(WorkflowStep(
+                    step_id=step_idx,
+                    intent="START_LOOP",
+                    description="Start repeating actions.",
+                    context=WorkflowStepContext(active_window_name=current_window),
+                    action=WorkflowCommandAction(
+                        command="LOOP_START",
+                        parameters=ActionParameters(loop_count=10, loop_variables=loop_vars)
+                    ),
+                    fallback_raw_events=[event_id]
+                ))
+                step_idx += 1
+                continue
+                
+            elif raw_type == "meta_loop_end":
+                workflow_steps.append(WorkflowStep(
+                    step_id=step_idx,
+                    intent="END_LOOP",
+                    description="End repeating actions.",
+                    context=WorkflowStepContext(active_window_name=current_window),
+                    action=WorkflowCommandAction(
+                        command="LOOP_END",
+                        parameters=ActionParameters()
+                    ),
+                    fallback_raw_events=[event_id]
+                ))
+                step_idx += 1
+                continue
+
             if current_window != "Unknown" and current_window != prev_window_name:
                 win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
                 win_x = win_ctx.coordinates.x if win_ctx else 0
@@ -1029,6 +1104,19 @@ def generate_macro_workflow(
                                 "raw_event_id": raw_event_id
                             }
                         })
+                elif cmd_type == "LOOP_START":
+                    raw_commands_data.append({
+                        "method": "loop_start",
+                        "args": {
+                            "loop_count": params.loop_count or 10,
+                            "loop_variables": params.loop_variables or {}
+                        }
+                    })
+                elif cmd_type == "LOOP_END":
+                    raw_commands_data.append({
+                        "method": "loop_end",
+                        "args": {}
+                    })
 
             commands_data = []
             for cmd in raw_commands_data:
