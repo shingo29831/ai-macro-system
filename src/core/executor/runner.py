@@ -54,7 +54,7 @@ def _get_system_window_rects():
                 user32.GetWindowTextW(hwnd, buff, length + 1)
                 title = buff.value
                 
-                ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中..."]
+                ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中...", "実行中", "実行中..."]
                 if any(ignored in title for ignored in ignored_titles):
                     rect = wintypes.RECT()
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -364,7 +364,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
                 edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
                 edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
-                kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                 dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
                 dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
                 
@@ -373,9 +373,13 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     for cnt in contours:
                         x, y, w, h = cv2.boundingRect(cnt)
-                        # 文字と推測されるサイズの矩形を透過領域として追加
+                        # 文字と推測されるサイズの矩形を透過領域として追加（膨張分を少し削って文字サイズちょうどにする）
                         if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
-                            cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+                            adj_x = x + 1
+                            adj_y = y + 1
+                            adj_w = max(1, w - 2)
+                            adj_h = max(1, h - 2)
+                            cv2.rectangle(text_mask, (adj_x, adj_y), (adj_x+adj_w, adj_y+adj_h), 255, -1)
                 
                 dynamic_mask = cv2.bitwise_or(dynamic_mask, text_mask)
                 # ------------------------------------
@@ -570,7 +574,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
     edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
     edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
-    kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
     dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
     
@@ -580,7 +584,11 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
-                cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+                adj_x = x + 1
+                adj_y = y + 1
+                adj_w = max(1, w - 2)
+                adj_h = max(1, h - 2)
+                cv2.rectangle(text_mask, (adj_x, adj_y), (adj_x+adj_w, adj_y+adj_h), 255, -1)
                 
     curr_crop_eval[text_mask == 255] = 0
     pre_crop_eval[text_mask == 255] = 0
