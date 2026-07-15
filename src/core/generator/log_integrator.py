@@ -493,17 +493,6 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
     rel_x = cursor_x - win_x
     rel_y = cursor_y - win_y
     
-    button_val = "left"
-    input_val = "unknown"
-    ime_active = False
-    
-    if isinstance(content_data, dict):
-        button_val = content_data.get("button", "left")
-        input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or f"{button_val}_click"
-        ime_active = content_data.get("ime_active", False)
-    else:
-        input_val = str(content_data)
-
     raw_type_lower = raw_type.lower()
     is_scroll = "scroll" in raw_type_lower
     is_move = "hover" in raw_type_lower or "move" in raw_type_lower
@@ -529,6 +518,29 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         action_type = "uia_scan"
     else:
         action_type = "unknown"
+
+    button_val = "left"
+    input_val = "unknown"
+    ime_active = False
+    
+    if isinstance(content_data, dict):
+        button_val = content_data.get("button", "left")
+        ime_active = content_data.get("ime_active", False)
+        
+        if action_type == "click":
+            input_val = f"{button_val}_click"
+        elif action_type == "key_down":
+            input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown_key"
+        elif action_type == "scroll":
+            input_val = "scroll"
+        elif action_type == "move":
+            input_val = "move"
+        elif action_type == "uia_scan":
+            input_val = content_data.get("action") or "uia_scan"
+        else:
+            input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown"
+    else:
+        input_val = str(content_data)
 
     if progress_callback:
         progress = int((i / total_events) * 70)
@@ -746,7 +758,7 @@ def generate_macro_workflow(
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
             
-            if raw_action == "unknown" or "recording" in raw_type:
+            if raw_action in ["unknown", "uia_scan"] or "recording" in raw_type:
                 continue
 
             event_id = info["event_id"]
