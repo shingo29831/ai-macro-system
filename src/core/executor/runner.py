@@ -94,19 +94,38 @@ def _set_ime_state(text: str):
 
 def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, keyboard, workflow_id: str, launch_cmd: str = ""):
     """対象のウィンドウをアクティブにし、必要に応じてアプリを起動・サイズ復元を行う"""
+    global _browser_activated_once
     if not window_title or platform.system() != "Windows":
+        return
+
+    # システムウィンドウは起動やエラー判定、フォーカス操作を完全にスキップ
+    system_windows = ["program manager", "ジャンプ リスト", "taskbar", "cortana", "検索"]
+    is_system_window = any(sw in window_title.lower() for sw in system_windows)
+    
+    if is_system_window:
         return
 
     import pywinauto
     desktop = pywinauto.Desktop(backend="uia")
     safe_title = re.escape(window_title)
-    windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+    
+    # ウィンドウが現れるまで少し待機する（最大5秒）
+    windows = []
+    for _ in range(10):
+        windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+        if windows:
+            break
+        time.sleep(0.5)
     
     app_name = window_title.split("—")[-1].split("-")[-1].strip()
     
     if not windows and app_name:
         safe_app_name = re.escape(app_name)
-        windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+        for _ in range(4):
+            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            if windows:
+                break
+            time.sleep(0.5)
             
     if not windows:
         logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
@@ -136,8 +155,13 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
             creationflags = 0x08000000 # CREATE_NO_WINDOW (cmd画面を非表示)
             use_shell = launch_cmd.startswith("start ")
             subprocess.Popen(launch_cmd, shell=use_shell, creationflags=creationflags)
-            time.sleep(4.0)
-            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            
+            # 起動を待機
+            for _ in range(10):
+                time.sleep(1.0)
+                windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                if windows:
+                    break
             
         is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
         if is_browser:
