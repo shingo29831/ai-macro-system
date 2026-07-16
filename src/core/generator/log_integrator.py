@@ -444,7 +444,7 @@ def track_text_field_by_scoring(
     
     return (l_crop, t_crop, r_crop, b_crop), best_candidate["last_text"]
 
-def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str, macros_root: Path, cv_executor, progress_callback) -> Optional[Dict[str, Any]]:
+def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str, macros_root: Path, progress_callback) -> Optional[Dict[str, Any]]:
     """
     1件の生ログエントリをパースし、CV解析を行って統合イベント情報を返す。
     不要なシステムウィンドウ等の場合は None を返す。
@@ -589,11 +589,8 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
             if full_crop_path.exists():
                 logger.info(f"[{workflow_id}] Processing CV inference: {i+1}/{total_events} (Event: {event_id})...")
                 
-                future_yolo = cv_executor.submit(detect_ui_elements, str(full_crop_path))
-                future_ocr = cv_executor.submit(read_text_from_image, str(full_crop_path))
-                
-                yolo_results = future_yolo.result()
-                ocr_results = future_ocr.result()
+                yolo_results = detect_ui_elements(str(full_crop_path))
+                ocr_results = read_text_from_image(str(full_crop_path))
 
                 if yolo_results:
                     best_yolo = max(yolo_results, key=lambda x: x.confidence)
@@ -710,13 +707,17 @@ def generate_macro_workflow(
         
         total_events = len(log_entries)
 
-        with ThreadPoolExecutor(max_workers=4) as cv_executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
             for i, log_entry in enumerate(log_entries):
+                futures.append(executor.submit(_parse_raw_event, log_entry, i, total_events, workflow_id, macros_root, progress_callback))
+                
+            for future in futures:
                 if check_cancel_callback and check_cancel_callback():
                     logger.info(f"[{workflow_id}] Generation cancelled by user.")
                     raise InterruptedError("Generation cancelled by user")
-
-                parsed_info = _parse_raw_event(log_entry, i, total_events, workflow_id, macros_root, cv_executor, progress_callback)
+                
+                parsed_info = future.result()
                 if parsed_info:
                     integrated_events.append(parsed_info.pop("integrated_event"))
                     temp_workflow_info.append(parsed_info)
@@ -750,10 +751,9 @@ def generate_macro_workflow(
             
         temp_workflow_info = cleaned_workflow_info
 
+        variables = {}
         if progress_callback:
             progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
-
-            variables = {}
 
             try:
                 from core.generator.typing_aggregator import TypingSessionAggregator
@@ -947,10 +947,10 @@ def generate_macro_workflow(
 
             if current_window != "Unknown" and current_window != prev_window_name:
                 win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
-                win_x = win_ctx.coordinates.x if win_ctx else 0
-                win_y = win_ctx.coordinates.y if win_ctx else 0
-                win_w = win_ctx.size.width if win_ctx else 0
-                win_h = win_ctx.size.height if win_ctx else 0
+                win_x = win_ctx.coordinates.x if win_ctx else info.get("win_x", 0)
+                win_y = win_ctx.coordinates.y if win_ctx else info.get("win_y", 0)
+                win_w = win_ctx.size.width if win_ctx else info.get("win_w", 0)
+                win_h = win_ctx.size.height if win_ctx else info.get("win_h", 0)
 
                 command_line = info.get("command_line", "")
 
