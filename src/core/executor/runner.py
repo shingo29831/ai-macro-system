@@ -499,7 +499,12 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                         pass
                         
                     if waiting_logged:
-                        update_ui("マクロを再開します。", False)
+                        # 簡易比較（ピクセル一致）ではなく、マスク適用後の詳細比較で一致した場合
+                        if not is_pixel_match and (is_ssim_match or is_orb_match or is_struct_match):
+                            update_ui("動的領域・テキストを除外して一致を確認しました。\nマクロを再開します。", False)
+                        else:
+                            update_ui("画面の一致を確認しました。\nマクロを再開します。", False)
+                            
                         logger.info(f"[{workflow_id}] Screen matched (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f}). Resuming.")
                         time.sleep(1.5)
                     result_info["matched"] = True

@@ -1,9 +1,8 @@
+# src/ui/views/progress_dialog.py
 # @role: マクロ生成中の進捗状態を表示し、ViewModelを介してユーザーからのキャンセル要求を制御する専用のダイアログ。
 
-import os
-from PySide6.QtWidgets import QDialog, QWidget, QPushButton, QLabel, QProgressBar
-from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import QFile, Qt, Slot
+from PySide6.QtWidgets import QDialog, QWidget, QPushButton, QLabel, QProgressBar, QVBoxLayout, QHBoxLayout
+from PySide6.QtCore import Qt, Slot
 from ui.viewmodels.main_viewmodel import MainViewModel
 
 class ProgressDialog(QDialog):
@@ -15,15 +14,33 @@ class ProgressDialog(QDialog):
         
         self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setModal(True)
+        self.setWindowTitle("マクロ生成中")
+        self.setFixedSize(400, 150)
         
-        self.ui_widget = self._load_ui_and_style("progress_dialog.ui")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
         
-        self.lbl_status = self.ui_widget.findChild(QLabel, "lblStatus")
-        self.progress_bar = self.ui_widget.findChild(QProgressBar, "progressBar")
-        self.btn_cancel = self.ui_widget.findChild(QPushButton, "btnCancel")
+        self.lbl_status = QLabel("AIマクロ生成中...", self)
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("font-size: 14px; font-weight: bold;")
         
-        if self.ui_widget.layout():
-            self.setLayout(self.ui_widget.layout())
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        
+        self.btn_cancel = QPushButton("キャンセル", self)
+        self.btn_cancel.setFixedSize(120, 32)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addStretch()
+        
+        layout.addWidget(self.lbl_status)
+        layout.addWidget(self.progress_bar)
+        layout.addLayout(btn_layout)
             
         if self.btn_cancel:
             self.btn_cancel.clicked.connect(self._on_cancel_clicked)
@@ -43,28 +60,3 @@ class ProgressDialog(QDialog):
             self.btn_cancel.setEnabled(False)
             self.btn_cancel.setText("キャンセル中...")
         self.viewmodel.cancel_generation()
-
-    def _load_ui_and_style(self, ui_file_name: str) -> QWidget:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ui_path = os.path.join(base_dir, "resources", "ui", ui_file_name)
-        
-        loader = QUiLoader()
-        ui_file = QFile(ui_path)
-        if not ui_file.open(QFile.ReadOnly):
-            raise FileNotFoundError(f"Cannot open UI file: {ui_path}")
-            
-        widget = loader.load(ui_file, self)
-        ui_file.close()
-        
-        if widget is None:
-            raise RuntimeError(f"Failed to load UI file: {ui_path}")
-        
-        css_name = os.path.splitext(ui_file_name)[0] + ".css"
-        css_path = os.path.join(base_dir, "resources", "css", css_name)
-        
-        if os.path.exists(css_path):
-            with open(css_path, "r", encoding="utf-8") as f:
-                stylesheet = f.read()
-                widget.setStyleSheet(stylesheet)
-                
-        return widget

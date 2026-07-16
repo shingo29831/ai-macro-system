@@ -1,9 +1,8 @@
 # src/ui/views/running_dialog.py
 # @role: 実行モード中に常時最前面かつフレームレス（枠なし）で画面上部に表示される、キルスイッチコントロール用ウィジェット画面を制御するビュークラス。
-import os
-from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QDialog
-from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import QFile, Qt
+
+from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QVBoxLayout, QFrame
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 
 class RunningDialog:
@@ -16,48 +15,71 @@ class RunningDialog:
         self.parent = parent
         self.on_stop_callback = on_stop_callback
         
-        self.dialog = self._load_ui_and_style("running_dialog.ui")
+        self.dialog = QWidget()
         self.dialog.setWindowTitle("実行中")
         
-        self.dialog.setFixedSize(460, 40)
+        # メッセージ表示用に縦幅をさらに拡張（複数行対応）
+        self.dialog.setFixedSize(460, 110)
         
         self.dialog.setWindowFlags(
             Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
         self.dialog.setAttribute(Qt.WA_TranslucentBackground)
         
-        self.btn_stop = self.dialog.findChild(QPushButton, "btnEmergencyStop")
+        layout = QVBoxLayout(self.dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(5)
+        
+        # 背景用のフレーム（角丸半透明黒）
+        self.frame = QFrame(self.dialog)
+        self.frame.setStyleSheet("QFrame { background-color: rgba(30, 30, 30, 200); border-radius: 8px; }")
+        frame_layout = QVBoxLayout(self.frame)
+        frame_layout.setContentsMargins(10, 10, 10, 10)
+        frame_layout.setSpacing(5)
+        
+        # 停止ボタン外のメッセージ表示用ラベル
+        self.lbl_status = QLabel("実行中...", self.frame)
+        self.lbl_status.setStyleSheet("color: white; font-size: 12px;")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setWordWrap(True)
+        
+        self.btn_stop = QPushButton("緊急停止 (Ctrl + \\)", self.frame)
+        self.btn_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #dc2626;
+            }
+        """)
+        
+        frame_layout.addWidget(self.lbl_status)
+        frame_layout.addWidget(self.btn_stop)
+        
+        layout.addWidget(self.frame)
         
         if self.btn_stop:
             self.btn_stop.clicked.connect(self._on_stop_clicked)
 
-        self._replace_shortcut_text()
-
     @classmethod
-    def set_status(cls, text: str, is_healing: bool):
+    def set_status(cls, text: str, is_warning: bool):
         """外部スレッドからの通知を受け取り、インスタンスのUIを更新する"""
         if cls._instance and cls._instance.dialog.isVisible():
-            cls._instance.update_status(text, is_healing)
+            cls._instance.update_status(text, is_warning)
 
-    def update_status(self, text: str, is_healing: bool = False):
-        """実行中のステータス（自己修復中など）をUIの停止ボタンに反映する"""
-        if self.btn_stop:
-            base_text = "緊急停止 (Ctrl + \\)"
-            if is_healing:
-                self.btn_stop.setText(f"【{text}】 {base_text}")
-                self.btn_stop.setStyleSheet("background-color: #f59e0b; color: white; border: 2px solid #b45309;")
+    def update_status(self, text: str, is_warning: bool = False):
+        """実行中のステータス（検証スコアや自己修復中など）をUIのラベルに反映する"""
+        if hasattr(self, 'lbl_status') and self.lbl_status:
+            self.lbl_status.setText(text)
+            if is_warning:
+                self.lbl_status.setStyleSheet("color: #fca5a5; font-size: 12px; font-weight: bold;")
             else:
-                self.btn_stop.setText(base_text)
-                self.btn_stop.setStyleSheet("") # CSS設定に戻す
-
-    def _replace_shortcut_text(self):
-        widgets = self.dialog.findChildren(QLabel) + self.dialog.findChildren(QPushButton)
-        for widget in widgets:
-            text = widget.text()
-            if text:
-                new_text = text.replace("￥", "Ctrl + \\").replace("¥", "Ctrl + \\").replace("Esc", "Ctrl + \\")
-                if new_text != text:
-                    widget.setText(new_text)
+                self.lbl_status.setStyleSheet("color: white; font-size: 12px;")
 
     def _on_stop_clicked(self):
         # 背景: 一度押されたらボタンを消し、「停止中です。」のラベルを表示してUIレベルでの連打を物理的に防ぐ
@@ -65,17 +87,13 @@ class RunningDialog:
             self.btn_stop.hide()
             
             if not hasattr(self, 'stopping_label'):
-                self.stopping_label = QLabel("停止中です...", self.dialog)
-                self.stopping_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background-color: #ef4444; border-radius: 4px;")
+                self.stopping_label = QLabel("停止中です...", self.frame)
+                self.stopping_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background-color: #ef4444; border-radius: 4px; padding: 5px;")
                 self.stopping_label.setAlignment(Qt.AlignCenter)
-                self.stopping_label.setGeometry(self.btn_stop.geometry())
-                self.stopping_label.show()
+                self.frame.layout().addWidget(self.stopping_label)
 
         if self.on_stop_callback:
             self.on_stop_callback()
-            
-        # 背景: 非同期で停止処理を行うため、即座には閉じず「停止中です」の表示を残す。
-        # (処理が完全に完了した際にメインウィンドウ側から閉じられる想定です)
 
     def show(self):
         self.dialog.show()
@@ -89,28 +107,3 @@ class RunningDialog:
 
     def close_dialog(self):
         self.dialog.close()
-
-    def _load_ui_and_style(self, ui_file_name: str) -> QWidget:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ui_path = os.path.join(base_dir, "resources", "ui", ui_file_name)
-        
-        loader = QUiLoader()
-        ui_file = QFile(ui_path)
-        if not ui_file.open(QFile.ReadOnly):
-            raise FileNotFoundError(f"Cannot open UI file: {ui_path}")
-            
-        widget = loader.load(ui_file, None)
-        ui_file.close()
-        
-        if widget is None:
-            raise RuntimeError(f"Failed to load UI file: {ui_path}")
-        
-        css_name = os.path.splitext(ui_file_name)[0] + ".css"
-        css_path = os.path.join(base_dir, "resources", "css", css_name)
-        
-        if os.path.exists(css_path):
-            with open(css_path, "r", encoding="utf-8") as f:
-                stylesheet = f.read()
-                widget.setStyleSheet(stylesheet)
-                
-        return widget
