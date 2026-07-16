@@ -748,6 +748,9 @@ def generate_macro_workflow(
         # --- Officeイベントの統合とクリーンアップ ---
         cleaned_workflow_info = []
         for info in temp_workflow_info:
+            if check_cancel_callback and check_cancel_callback():
+                raise InterruptedError("Generation cancelled by user")
+                
             if info["raw_action"] == "office_event":
                 msg = info.get("inputValue", "")
                 import re
@@ -785,6 +788,35 @@ def generate_macro_workflow(
             
         temp_workflow_info = cleaned_workflow_info
 
+        # --- OSシェルでの検索・起動操作のカット ---
+        shell_cut_info = []
+        skip_until_new_window = False
+        win_key_window_name = ""
+        
+        for info in temp_workflow_info:
+            if check_cancel_callback and check_cancel_callback():
+                raise InterruptedError("Generation cancelled by user")
+                
+            win_name = info.get("window_name", "")
+            
+            if skip_until_new_window:
+                system_windows = ["python", "unknown window", "検索", "スタート", "start", "search", "taskbar", "タスクバー", "cortana", "ジャンプ リスト"]
+                is_system = not win_name.strip() or any(sw in win_name.lower() for sw in system_windows)
+                
+                if not is_system and win_name != win_key_window_name:
+                    skip_until_new_window = False
+                else:
+                    continue
+            
+            if info.get("raw_action") == "key_down" and info.get("semantic_role", "").lower() in ["win", "cmd", "windows"]:
+                skip_until_new_window = True
+                win_key_window_name = win_name
+                continue
+                
+            shell_cut_info.append(info)
+            
+        temp_workflow_info = shell_cut_info
+
         if progress_callback:
             progress_callback(80, "ループブロックの解析と重複排除・差分抽出中...")
         generation_debug_log["stages"].append({"name": "Loop Analysis", "status": "started"})
@@ -793,9 +825,12 @@ def generate_macro_workflow(
         optimized_workflow_info = []
         idx = 0
         while idx < len(temp_workflow_info):
+            if check_cancel_callback and check_cancel_callback():
+                raise InterruptedError("Generation cancelled by user")
+                
             info = temp_workflow_info[idx]
             if info.get("raw_type", "").lower() == "meta_loop_start":
-                optimized_workflow_info.append(info)
+                loop_start_info = info
                 
                 loop_events = []
                 j = idx + 1
@@ -810,37 +845,47 @@ def generate_macro_workflow(
                 n = len(actions)
                 best_period = 0
                 best_score = 0.0
+                best_start_idx = 0
                 best_first_iter = []
                 best_second_iter = []
                 
-                # 周期の候補を探す (長さ2から N/2 まで)
-                for p in range(2, n // 2 + 1):
-                    template = actions[:p]
-                    target = actions[p:p*2]
-                    sm = difflib.SequenceMatcher(None, template, target)
-                    score = sm.ratio()
-                    
-                    # ユーザーの誤操作を考慮し、完全一致でなくてもスコアが高ければ候補とする
-                    if score > best_score and score >= 0.6:
-                        best_score = score
-                        best_period = p
+                # 周期の候補を探す (開始位置を少しずらして初期化のクリック等のノイズを許容)
+                for start_idx in range(min(4, max(1, n // 2))):
+                    for p in range(2, (n - start_idx) // 2 + 1):
+                        if check_cancel_callback and check_cancel_callback():
+                            raise InterruptedError("Generation cancelled by user")
+                            
+                        template = actions[start_idx : start_idx + p]
+                        target = actions[start_idx + p : start_idx + p * 2]
+                        sm = difflib.SequenceMatcher(None, template, target)
+                        score = sm.ratio()
                         
-                        first_iter = []
-                        second_iter = []
-                        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-                            if tag in ['equal', 'replace']:
-                                # 誤操作（insert, delete）は無視し、対応するアクションのみ抽出
-                                for i, j in zip(range(i1, i2), range(j1, j2)):
-                                    first_iter.append(loop_events[i])
-                                    second_iter.append(loop_events[p + j])
-                        
-                        best_first_iter = first_iter
-                        best_second_iter = second_iter
+                        # ユーザーの誤操作を考慮し、完全一致でなくてもスコアが高ければ候補とする
+                        if score > best_score and score >= 0.6:
+                            best_score = score
+                            best_period = p
+                            best_start_idx = start_idx
+                            
+                            first_iter = []
+                            second_iter = []
+                            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                                if tag in ['equal', 'replace']:
+                                    # 誤操作（insert, delete）は無視し、対応するアクションのみ抽出
+                                    for i, j in zip(range(i1, i2), range(j1, j2)):
+                                        first_iter.append(loop_events[start_idx + i])
+                                        second_iter.append(loop_events[start_idx + p + j])
+                            
+                            best_first_iter = first_iter
+                            best_second_iter = second_iter
 
                 y_offset = 0
                 x_offset = 0
                 
                 if best_period > 0 and best_first_iter and best_second_iter:
+                    # 初期化イベント（最初のクリック等）はループの前に配置する
+                    pre_loop_events = loop_events[:best_start_idx]
+                    optimized_workflow_info.extend(pre_loop_events)
+                    
                     first_iter = best_first_iter
                     second_iter = best_second_iter
                     
@@ -854,8 +899,8 @@ def generate_macro_workflow(
                             if 10 < abs(diff_x) < 200:
                                 x_offset = diff_x
                                 
-                        # 連続値（連番）の抽出
-                        if first_iter[k].get("raw_action") == "type_text" and second_iter[k].get("raw_action") == "type_text":
+                        # 連続値（連番）の抽出 (1文字入力の key_down も対象に含める)
+                        if first_iter[k].get("raw_action") in ["type_text", "key_down"] and second_iter[k].get("raw_action") in ["type_text", "key_down"]:
                             val1 = first_iter[k].get("semantic_role")
                             val2 = second_iter[k].get("semantic_role")
                             try:
@@ -865,14 +910,17 @@ def generate_macro_workflow(
                                     if num2 - num1 != 0:
                                         first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
                                         first_iter[k]["is_sequence"] = True
+                                        first_iter[k]["raw_action"] = "type_text" # 連番として処理するため type_text に昇格
                             except (ValueError, TypeError):
                                 pass
                                 
-                    info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                    loop_start_info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                    optimized_workflow_info.append(loop_start_info)
                     optimized_workflow_info.extend(first_iter)
                     logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}). Initial actions kept. Offsets: y={y_offset}, x={x_offset}")
                 else:
-                    info["loop_variables"] = {"y_offset": 0, "x_offset": 0}
+                    loop_start_info["loop_variables"] = {"y_offset": 0, "x_offset": 0}
+                    optimized_workflow_info.append(loop_start_info)
                     optimized_workflow_info.extend(loop_events)
                     logger.info(f"[{workflow_id}] Could not determine loop period. Keeping all events.")
                 
@@ -896,6 +944,9 @@ def generate_macro_workflow(
         
         # --- 変数化処理 (ループ解析後) ---
         for info in temp_workflow_info:
+            if check_cancel_callback and check_cancel_callback():
+                raise InterruptedError("Generation cancelled by user")
+                
             if info.get("raw_action") == "type_text" and info.get("semantic_role"):
                 if info.get("is_sequence"):
                     continue # 連番として抽出されたものは変数化しない
@@ -928,6 +979,8 @@ def generate_macro_workflow(
         prev_win_rect = None
         
         for info in temp_workflow_info:
+            if check_cancel_callback and check_cancel_callback():
+                raise InterruptedError("Generation cancelled by user")
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
             
@@ -1137,6 +1190,9 @@ def generate_macro_workflow(
             prev_timestamp = None
             
             for step in workflow_steps:
+                if check_cancel_callback and check_cancel_callback():
+                    raise InterruptedError("Generation cancelled by user")
+                    
                 raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
                 integ_evt = next((e for e in integrated_events if e.id == raw_event_id), None)
                 
