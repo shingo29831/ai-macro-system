@@ -1177,6 +1177,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     y = args.get("y", 0)
                     button_str = args.get("button", "left")
                     clicks = args.get("clicks", 1)
+                    excel_dest_cell = args.get("excel_dest_cell")
+                    
+                    if excel_dest_cell and platform.system() == "Windows":
+                        try:
+                            import win32com.client
+                            excel = win32com.client.GetActiveObject("Excel.Application")
+                            sheet = excel.ActiveSheet
+                            sheet.Range(excel_dest_cell).Select()
+                            time.sleep(0.1)
+                        except Exception as e:
+                            logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                     
                     btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                     
@@ -1191,6 +1202,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 elif method == "move":
                     x = args.get("x", 0)
                     y = args.get("y", 0)
+                    excel_dest_cell = args.get("excel_dest_cell")
+                    
+                    if excel_dest_cell and platform.system() == "Windows":
+                        try:
+                            import win32com.client
+                            excel = win32com.client.GetActiveObject("Excel.Application")
+                            sheet = excel.ActiveSheet
+                            sheet.Range(excel_dest_cell).Select()
+                            time.sleep(0.1)
+                        except Exception as e:
+                            logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                     
                     if platform.system() == "Windows":
                         ctypes.windll.user32.SetCursorPos(int(x), int(y))
@@ -1225,6 +1247,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 elif method == "type_text":
                     text = args.get("text", "")
                     seq_val = args.get("sequence_value")
+                    excel_cell = args.get("excel_cell")
                     
                     if seq_val and loop_stack:
                         current_loop = loop_stack[-1]
@@ -1238,6 +1261,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             placeholder = f"{{{{{key}}}}}"
                             if placeholder in text:
                                 text = text.replace(placeholder, str(val))
+                                
+                        if excel_cell and platform.system() == "Windows":
+                            try:
+                                import win32com.client
+                                excel = win32com.client.GetActiveObject("Excel.Application")
+                                sheet = excel.ActiveSheet
+                                sheet.Range(excel_cell).Select()
+                                time.sleep(0.1)
+                            except Exception as e:
+                                logger.warning(f"[{workflow_id}] Failed to select Excel cell {excel_cell}: {e}")
                                 
                         _set_ime_state(text)
                         for char in text:

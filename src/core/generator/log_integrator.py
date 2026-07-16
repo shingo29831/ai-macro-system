@@ -550,8 +550,8 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
     else:
         input_val = str(content_data)
 
-    if progress_callback:
-        progress = int((i / total_events) * 70)
+    if progress_callback and i % max(1, total_events // 20) == 0:
+        progress = 2 + int((i / total_events) * 68)
         action_name = action_type if action_type != "unknown" else raw_type
         progress_callback(progress, f"画像解析中(CV)... {action_name}イベントの処理 ({i+1}/{total_events})")
 
@@ -673,9 +673,17 @@ def generate_macro_workflow(
 ) -> None:
     logger.info(f"[{workflow_id}] Starting log integration and AI workflow generation...")
     
+    generation_debug_log = {
+        "workflow_id": workflow_id,
+        "start_time": datetime.now().isoformat(),
+        "stages": [],
+        "errors": []
+    }
+    
     try:
         if progress_callback:
             progress_callback(0, "初期化中... ワークフローディレクトリの確認")
+        generation_debug_log["stages"].append({"name": "Initialization", "status": "started"})
 
         from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
@@ -685,9 +693,6 @@ def generate_macro_workflow(
 
         if not input_logs_path.exists():
             raise FileNotFoundError(f"Missing input_logs.json at {input_logs_path}")
-
-        if progress_callback:
-            progress_callback(2, "入力ログの読み込み中...")
 
         with open(input_logs_path, 'r', encoding='utf-8') as f:
             raw_logs = json.load(f)
@@ -702,10 +707,13 @@ def generate_macro_workflow(
         else:
             raise ValueError(f"Unsupported JSON structure: {type(raw_logs)}")
 
+        total_events = len(log_entries)
+        if progress_callback:
+            progress_callback(2, f"入力ログの読み込み完了... ({total_events}件のイベントを処理します)")
+        generation_debug_log["stages"].append({"name": "Load Logs", "event_count": total_events})
+
         integrated_events = []
         temp_workflow_info: List[Dict[str, Any]] = []
-        
-        total_events = len(log_entries)
 
         for i, log_entry in enumerate(log_entries):
             if check_cancel_callback and check_cancel_callback():
@@ -719,17 +727,22 @@ def generate_macro_workflow(
 
         variables = {}
         if progress_callback:
-            progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
+            progress_callback(70, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
+        generation_debug_log["stages"].append({"name": "Typing Aggregation", "status": "started"})
 
-            try:
-                from core.generator.typing_aggregator import TypingSessionAggregator
-                aggregator = TypingSessionAggregator(session_timeout_ms=2000)
-                
-                temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
-                
-                logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
-            except Exception as e:
-                logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
+        try:
+            from core.generator.typing_aggregator import TypingSessionAggregator
+            aggregator = TypingSessionAggregator(session_timeout_ms=2000)
+            
+            temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
+            
+            logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
+        except Exception as e:
+            logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
+
+        if progress_callback:
+            progress_callback(75, "Officeイベントの統合とクリーンアップ中...")
+        generation_debug_log["stages"].append({"name": "Office Event Integration", "status": "started"})
 
         # --- Officeイベントの統合とクリーンアップ ---
         cleaned_workflow_info = []
@@ -772,7 +785,8 @@ def generate_macro_workflow(
         temp_workflow_info = cleaned_workflow_info
 
         if progress_callback:
-            progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
+            progress_callback(80, "ループブロックの解析と重複排除・差分抽出中...")
+        generation_debug_log["stages"].append({"name": "Loop Analysis", "status": "started"})
 
         # --- ループブロックの解析と重複排除・差分抽出 ---
         optimized_workflow_info = []
@@ -893,6 +907,10 @@ def generate_macro_workflow(
                     variables[var_name] = role_str
                     info["semantic_role"] = f"{{{{{var_name}}}}}"
         # ------------------------------------------------
+
+        if progress_callback:
+            progress_callback(85, "ワークフロー生成中... アクションの最適化とマッピング")
+        generation_debug_log["stages"].append({"name": "Workflow Mapping", "status": "started"})
 
         llm_enhanced_data = {} 
 
@@ -1045,6 +1063,11 @@ def generate_macro_workflow(
                     desc = f"Type the text: '{final_semantic_role}'"
                     params = ActionParameters(text=final_semantic_role)
 
+            if "excel_cell" in info:
+                params.excel_cell = info["excel_cell"]
+            if "excel_dest_cell" in info:
+                params.excel_dest_cell = info["excel_dest_cell"]
+
             step_context = WorkflowStepContext(
                 active_window_name=current_window
             )
@@ -1071,7 +1094,7 @@ def generate_macro_workflow(
         )
 
         if progress_callback:
-            progress_callback(95, "ファイル出力中... integrated.json / workflow.json / ui_targets.json")
+            progress_callback(90, "ファイル出力中... integrated.json / workflow.json / ui_targets.json")
 
         integrated_path = target_dir / "integrated.json"
         workflow_path = target_dir / "workflow.json"
@@ -1093,7 +1116,8 @@ def generate_macro_workflow(
         logger.info(f"[{workflow_id}] Successfully generated integrated, workflow v2.0, variables, and ui_targets.json.")
 
         if progress_callback:
-            progress_callback(98, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
+            progress_callback(95, "実行エンジンのビルド中... executable_macro.json の決定論的生成")
+        generation_debug_log["stages"].append({"name": "Executable Macro Build", "status": "started"})
 
         try:
             raw_commands_data = []
@@ -1154,29 +1178,35 @@ def generate_macro_workflow(
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
+                        cmd_args = {
+                            "x": win_c.x + rel_c.x,
+                            "y": win_c.y + rel_c.y,
+                            "button": params.button or "left",
+                            "clicks": 1,
+                            "target_id": target_id_for_healer,
+                            "raw_event_id": raw_event_id
+                        }
+                        if params.excel_dest_cell:
+                            cmd_args["excel_dest_cell"] = params.excel_dest_cell
                         raw_commands_data.append({
                             "method": "click",
-                            "args": {
-                                "x": win_c.x + rel_c.x,
-                                "y": win_c.y + rel_c.y,
-                                "button": params.button or "left",
-                                "clicks": 1,
-                                "target_id": target_id_for_healer,
-                                "raw_event_id": raw_event_id
-                            }
+                            "args": cmd_args
                         })
                 elif cmd_type == "MOUSE_MOVE":
                     if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                         win_c = integ_evt.window.coordinates
                         rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
+                        cmd_args = {
+                            "x": win_c.x + rel_c.x,
+                            "y": win_c.y + rel_c.y,
+                            "target_id": target_id_for_healer,
+                            "raw_event_id": raw_event_id
+                        }
+                        if params.excel_dest_cell:
+                            cmd_args["excel_dest_cell"] = params.excel_dest_cell
                         raw_commands_data.append({
                             "method": "move",
-                            "args": {
-                                "x": win_c.x + rel_c.x,
-                                "y": win_c.y + rel_c.y,
-                                "target_id": target_id_for_healer,
-                                "raw_event_id": raw_event_id
-                            }
+                            "args": cmd_args
                         })
                 elif cmd_type == "MOUSE_SCROLL":
                     if params.text:
@@ -1216,6 +1246,8 @@ def generate_macro_workflow(
                         }
                         if params.sequence_value:
                             cmd_args["sequence_value"] = params.sequence_value
+                        if params.excel_cell:
+                            cmd_args["excel_cell"] = params.excel_cell
                             
                         raw_commands_data.append({
                             "method": "type_text",
@@ -1279,9 +1311,24 @@ def generate_macro_workflow(
         except Exception as e:
              logger.error(f"[{workflow_id}] Error generating Executable Macro: {e}")
 
+        generation_debug_log["end_time"] = datetime.now().isoformat()
+        generation_debug_log["status"] = "success"
+        try:
+            with open(target_dir / "generation_log.json", 'w', encoding='utf-8') as f:
+                json.dump(generation_debug_log, f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
+
         if progress_callback:
             progress_callback(100, "完了")
 
     except Exception as e:
+        generation_debug_log["errors"].append(str(e))
+        generation_debug_log["status"] = "failed"
+        try:
+            with open(target_dir / "generation_log.json", 'w', encoding='utf-8') as f:
+                json.dump(generation_debug_log, f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
         logger.error(f"[{workflow_id}] Failed to generate macro workflow: {e}")
         raise

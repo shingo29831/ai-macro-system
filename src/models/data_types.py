@@ -130,6 +130,8 @@ class ActionParameters(BaseModel):
     loop_count: Optional[int] = Field(None, description='ループの実行回数')
     loop_variables: Optional[dict] = Field(None, description='ループごとの差分変数（例: {"y_offset": 30, "x_offset": 0}）')
     sequence_value: Optional[dict] = Field(None, description='連続する値の入力設定（例: {"start": 1, "step": 1}）')
+    excel_cell: Optional[str] = Field(None, description='対象となるExcelのセル番地（例: A1）')
+    excel_dest_cell: Optional[str] = Field(None, description='移動先や範囲指定の対象となるExcelのセル番地')
 
 class WorkflowCommandAction(BaseModel):
     command: str = Field(..., description="システムのルートコマンド (例: MOUSE_CLICK, TYPE_TEXT)")
