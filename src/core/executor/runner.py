@@ -359,14 +359,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 dynamic_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
-                    # 閾値が低すぎたり膨張が強すぎると静的UIまでマスクしてしまうため調整
-                    dynamic_mask = (std_dev > 8).astype(np.uint8) * 255
-                    kernel = np.ones((5, 5), np.uint8)
-                    dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
-                    
-                    # 動的マスクが画面の大部分(60%以上)を占める場合は、マスク暴走を防ぐため閾値を厳しくする
-                    if np.count_nonzero(dynamic_mask) / dynamic_mask.size > 0.6:
-                        dynamic_mask = (std_dev > 15).astype(np.uint8) * 255
+                    # 膨張(dilate)を行わず、本当に変化が激しいピクセルのみを厳密にマスクする
+                    dynamic_mask = (std_dev > 15).astype(np.uint8) * 255
                 
                # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
                 diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
@@ -401,7 +395,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                         # 文字は線が多いためエッジ密度が比較的高くなる（5%以上を文字やカーソルとみなす）
                         # 背景色が変化した場合でも、文字が含まれていればエッジ密度で救済される
                         if edge_density > 0.05:
-                            cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+                            # 矩形で塗りつぶすのではなく、実際の変化ピクセルのみを厳密にマスクする
+                            text_mask[y:y+h, x:x+w] = cv2.bitwise_or(text_mask[y:y+h, x:x+w], region_diff)
 
                             # 参考用：検出した文字領域の画像を保存する
                             try:
@@ -848,12 +843,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
                 # 画面全体の動的マスクを生成
                 std_dev_global = np.std(initial_frames, axis=0)
-                global_dynamic_mask = (std_dev_global > 8).astype(np.uint8) * 255
-                kernel_global = np.ones((5, 5), np.uint8)
-                global_dynamic_mask = cv2.dilate(global_dynamic_mask, kernel_global, iterations=1)
-                
-                if np.count_nonzero(global_dynamic_mask) / global_dynamic_mask.size > 0.6:
-                    global_dynamic_mask = (std_dev_global > 15).astype(np.uint8) * 255
+                # 膨張(dilate)を行わず、本当に変化が激しいピクセルのみを厳密にマスクする
+                global_dynamic_mask = (std_dev_global > 15).astype(np.uint8) * 255
 
                 last_win_args = args
                 for i, cmd in enumerate(commands):
