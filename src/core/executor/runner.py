@@ -1218,6 +1218,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             sheet = excel.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.1)
+                            continue # COM APIでセル選択した場合は物理クリックをスキップ
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                     
@@ -1243,6 +1244,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             sheet = excel.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.1)
+                            continue # COM APIでセル選択した場合は物理移動をスキップ
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                     
@@ -1299,10 +1301,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 import win32com.client
                                 excel = win32com.client.GetActiveObject("Excel.Application")
                                 sheet = excel.ActiveSheet
-                                sheet.Range(excel_cell).Select()
+                                sheet.Range(excel_cell).Value = text
                                 time.sleep(0.1)
+                                continue # COM APIで直接値を書き込んだ場合は物理入力をスキップ
                             except Exception as e:
-                                logger.warning(f"[{workflow_id}] Failed to select Excel cell {excel_cell}: {e}")
+                                logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
                                 
                         _set_ime_state(text)
                         for char in text:

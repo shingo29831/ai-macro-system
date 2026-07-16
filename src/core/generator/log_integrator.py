@@ -762,26 +762,57 @@ def generate_macro_workflow(
                         if val.endswith(".0"):
                             val = val[:-2]
                         
-                        # 直近の文字入力を探して正確な値とセル情報で上書きする
+                        # 直近の物理的な文字入力を削除し、確実な値に置き換える
+                        idx_to_remove = []
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
                             if prev_info["raw_action"] in ["key_down", "type_text"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
-                                if role not in ["enter", "tab", "esc", "backspace", "delete"] and not role.startswith("key."):
-                                    prev_info["semantic_role"] = val
-                                    prev_info["raw_action"] = "type_text"
-                                    prev_info["excel_cell"] = cell
+                                if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key."):
+                                    idx_to_remove.append(i)
+                                else:
                                     break
+                            elif prev_info["raw_action"] in ["click", "move"]:
+                                break
+                                
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
+                            
+                        # office_event自体を確実な type_text に変換
+                        info["raw_action"] = "type_text"
+                        info["semantic_role"] = val
+                        info["excel_cell"] = cell
+                        cleaned_workflow_info.append(info)
+                        
                 elif "選択移動" in msg:
                     match = re.search(r"セル:\s*([^\s|]+)", msg)
                     if match:
                         cell = match.group(1).replace("$", "")
+                        
+                        # 直前の物理的な click や move を削除し、確実なセル選択に置き換える
+                        idx_to_remove = []
+                        last_x, last_y = 0, 0
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
-                            if prev_info["raw_action"] in ["key_down", "click"]:
-                                prev_info["excel_dest_cell"] = cell
+                            if prev_info["raw_action"] in ["click", "move"]:
+                                idx_to_remove.append(i)
+                                if prev_info["raw_action"] == "click" and last_x == 0:
+                                    last_x = prev_info.get("cursor_x", 0)
+                                    last_y = prev_info.get("cursor_y", 0)
+                            elif prev_info["raw_action"] in ["key_down", "type_text"]:
                                 break
-                # office_event自体は実行コマンドにならないため除外
+                                
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
+                            
+                        if idx_to_remove:
+                            info["raw_action"] = "click"
+                            info["excel_dest_cell"] = cell
+                            info["button"] = "left"
+                            info["cursor_x"] = last_x
+                            info["cursor_y"] = last_y
+                            cleaned_workflow_info.append(info)
+                            
                 continue
             
             cleaned_workflow_info.append(info)
