@@ -137,34 +137,46 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
 
     import pywinauto
     desktop = pywinauto.Desktop(backend="uia")
+    
+    app_name = window_title.split("—")[-1].split("-")[-1].strip()
+    browser_names = ["firefox", "chrome", "edge", "brave", "opera"]
+    is_target_browser = any(b in app_name.lower() for b in browser_names)
+    
     safe_title = re.escape(window_title)
     
     # ウィンドウが現れるまで少し待機する（最大5秒）
     windows = []
     for _ in range(10):
-        windows = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+        all_matched = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+        if all_matched:
+            if is_target_browser:
+                windows = all_matched
+            else:
+                windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
         if windows:
             break
         time.sleep(0.5)
     
-    app_name = window_title.split("—")[-1].split("-")[-1].strip()
-    
     if not windows and app_name:
         safe_app_name = re.escape(app_name)
-        browser_names = ["firefox", "chrome", "edge", "brave", "opera"]
-        is_target_browser = any(b in app_name.lower() for b in browser_names)
         
         for _ in range(4):
             # 1. まずはアプリ名がタイトルの末尾にあるウィンドウを優先して探す（ブラウザのタブ名による誤検知防止）
-            windows = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
-            
-            # 2. 見つからなければ部分一致で探すが、対象がブラウザでない場合はブラウザのウィンドウを除外する
-            if not windows:
-                all_matched = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            all_matched = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
+            if all_matched:
                 if is_target_browser:
                     windows = all_matched
                 else:
                     windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
+            
+            # 2. 見つからなければ部分一致で探すが、対象がブラウザでない場合はブラウザのウィンドウを除外する
+            if not windows:
+                all_matched = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                if all_matched:
+                    if is_target_browser:
+                        windows = all_matched
+                    else:
+                        windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
                     
             if windows:
                 break
