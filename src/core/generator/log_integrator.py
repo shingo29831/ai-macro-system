@@ -749,12 +749,12 @@ def generate_macro_workflow(
         idx = 0
         while idx < len(temp_workflow_info):
             info = temp_workflow_info[idx]
-            if info["raw_type"].lower() == "meta_loop_start":
+            if info.get("raw_type", "").lower() == "meta_loop_start":
                 optimized_workflow_info.append(info)
                 
                 loop_events = []
                 j = idx + 1
-                while j < len(temp_workflow_info) and temp_workflow_info[j]["raw_type"].lower() != "meta_loop_end":
+                while j < len(temp_workflow_info) and temp_workflow_info[j].get("raw_type", "").lower() != "meta_loop_end":
                     loop_events.append(temp_workflow_info[j])
                     j += 1
                 
@@ -801,24 +801,25 @@ def generate_macro_workflow(
                     
                     for k in range(len(first_iter)):
                         # 座標の差分抽出
-                        if first_iter[k]["raw_action"] in ["click", "move"] and second_iter[k]["raw_action"] == first_iter[k]["raw_action"]:
-                            diff_y = second_iter[k]["cursor_y"] - first_iter[k]["cursor_y"]
-                            diff_x = second_iter[k]["cursor_x"] - first_iter[k]["cursor_x"]
+                        if first_iter[k].get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == first_iter[k].get("raw_action"):
+                            diff_y = second_iter[k].get("cursor_y", 0) - first_iter[k].get("cursor_y", 0)
+                            diff_x = second_iter[k].get("cursor_x", 0) - first_iter[k].get("cursor_x", 0)
                             if 10 < abs(diff_y) < 200:
                                 y_offset = diff_y
                             if 10 < abs(diff_x) < 200:
                                 x_offset = diff_x
                                 
                         # 連続値（連番）の抽出
-                        if first_iter[k]["raw_action"] == "type_text" and second_iter[k]["raw_action"] == "type_text":
-                            val1 = first_iter[k]["semantic_role"]
-                            val2 = second_iter[k]["semantic_role"]
+                        if first_iter[k].get("raw_action") == "type_text" and second_iter[k].get("raw_action") == "type_text":
+                            val1 = first_iter[k].get("semantic_role")
+                            val2 = second_iter[k].get("semantic_role")
                             try:
-                                num1 = int(val1)
-                                num2 = int(val2)
-                                if num2 - num1 != 0:
-                                    first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
-                            except ValueError:
+                                if val1 is not None and val2 is not None:
+                                    num1 = int(val1)
+                                    num2 = int(val2)
+                                    if num2 - num1 != 0:
+                                        first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
+                            except (ValueError, TypeError):
                                 pass
                                 
                     info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
@@ -1057,10 +1058,12 @@ def generate_macro_workflow(
                 raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
                 integ_evt = next((e for e in integrated_events if e.id == raw_event_id), None)
                 
-                if not integ_evt:
+                cmd_type = step.action.command
+                
+                if not integ_evt and cmd_type != "LOOP_END":
                     continue
 
-                current_timestamp = integ_evt.timestamp
+                current_timestamp = integ_evt.timestamp if integ_evt else prev_timestamp or 0
                 if prev_timestamp is not None:
                     duration = (current_timestamp - prev_timestamp) / 1000.0
                     if duration > 0.01:
@@ -1071,7 +1074,6 @@ def generate_macro_workflow(
                         })
                 prev_timestamp = current_timestamp
                 
-                cmd_type = step.action.command
                 params = step.action.parameters
                 
                 target_id_for_healer = None
