@@ -707,49 +707,15 @@ def generate_macro_workflow(
         
         total_events = len(log_entries)
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = []
-            for i, log_entry in enumerate(log_entries):
-                futures.append(executor.submit(_parse_raw_event, log_entry, i, total_events, workflow_id, macros_root, progress_callback))
-                
-            for future in futures:
-                if check_cancel_callback and check_cancel_callback():
-                    logger.info(f"[{workflow_id}] Generation cancelled by user.")
-                    raise InterruptedError("Generation cancelled by user")
-                
-                parsed_info = future.result()
-                if parsed_info:
-                    integrated_events.append(parsed_info.pop("integrated_event"))
-                    temp_workflow_info.append(parsed_info)
+        for i, log_entry in enumerate(log_entries):
+            if check_cancel_callback and check_cancel_callback():
+                logger.info(f"[{workflow_id}] Generation cancelled by user.")
+                raise InterruptedError("Generation cancelled by user")
 
-        # --- Officeイベントの統合とクリーンアップ ---
-        cleaned_workflow_info = []
-        for info in temp_workflow_info:
-            if info["raw_action"] == "office_event":
-                msg = info.get("inputValue", "")
-                if "入力確定" in msg:
-                    import re
-                    match = re.search(r"値:\s*(.+)", msg)
-                    if match:
-                        val = match.group(1).strip()
-                        if val.endswith(".0"):
-                            val = val[:-2]
-                        
-                        # 直近の文字入力を探して正確な値で上書きする
-                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
-                            prev_info = cleaned_workflow_info[i]
-                            if prev_info["raw_action"] in ["key_down", "type_text"]:
-                                role = str(prev_info.get("semantic_role", "")).lower()
-                                if role not in ["enter", "tab", "esc", "backspace", "delete"] and not role.startswith("key."):
-                                    prev_info["semantic_role"] = val
-                                    prev_info["raw_action"] = "type_text"
-                                    break
-                # office_event自体は実行コマンドにならないため除外
-                continue
-            
-            cleaned_workflow_info.append(info)
-            
-        temp_workflow_info = cleaned_workflow_info
+            parsed_info = _parse_raw_event(log_entry, i, total_events, workflow_id, macros_root, progress_callback)
+            if parsed_info:
+                integrated_events.append(parsed_info.pop("integrated_event"))
+                temp_workflow_info.append(parsed_info)
 
         variables = {}
         if progress_callback:
@@ -764,6 +730,46 @@ def generate_macro_workflow(
                 logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
             except Exception as e:
                 logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
+
+        # --- Officeイベントの統合とクリーンアップ ---
+        cleaned_workflow_info = []
+        for info in temp_workflow_info:
+            if info["raw_action"] == "office_event":
+                msg = info.get("inputValue", "")
+                import re
+                if "入力確定" in msg:
+                    match = re.search(r"セル:\s*([^\s|]+)\s*\|\s*値:\s*(.+)", msg)
+                    if match:
+                        cell = match.group(1).replace("$", "")
+                        val = match.group(2).strip()
+                        if val.endswith(".0"):
+                            val = val[:-2]
+                        
+                        # 直近の文字入力を探して正確な値とセル情報で上書きする
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            prev_info = cleaned_workflow_info[i]
+                            if prev_info["raw_action"] in ["key_down", "type_text"]:
+                                role = str(prev_info.get("semantic_role", "")).lower()
+                                if role not in ["enter", "tab", "esc", "backspace", "delete"] and not role.startswith("key."):
+                                    prev_info["semantic_role"] = val
+                                    prev_info["raw_action"] = "type_text"
+                                    prev_info["excel_cell"] = cell
+                                    break
+                elif "選択移動" in msg:
+                    match = re.search(r"セル:\s*([^\s|]+)", msg)
+                    if match:
+                        cell = match.group(1).replace("$", "")
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            prev_info = cleaned_workflow_info[i]
+                            if prev_info["raw_action"] in ["key_down", "click"]:
+                                prev_info["excel_dest_cell"] = cell
+                                break
+                # office_event自体は実行コマンドにならないため除外
+                continue
+            
+            cleaned_workflow_info.append(info)
+            
+        temp_workflow_info = cleaned_workflow_info
 
         if progress_callback:
             progress_callback(90, "ワークフロー生成中... アクションの最適化とマッピング")
