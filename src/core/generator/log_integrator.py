@@ -500,6 +500,7 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
     is_key = "key" in raw_type_lower
     is_uia = "uia" in raw_type_lower
     is_meta = "meta" in raw_type_lower
+    is_office = "office" in raw_type_lower
 
     dx = 0.0
     dy = 0.0
@@ -509,6 +510,8 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         if isinstance(content_data, dict):
             dx = content_data.get("dx", 0.0)
             dy = content_data.get("dy", 0.0)
+    elif is_office:
+        action_type = "office_event"
     elif is_meta:
         action_type = "meta"
     elif is_move:
@@ -540,6 +543,8 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
             input_val = "move"
         elif action_type == "uia_scan":
             input_val = content_data.get("action") or "uia_scan"
+        elif action_type == "office_event":
+            input_val = content_data.get("office_info", {}).get("message", "")
         else:
             input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown"
     else:
@@ -716,6 +721,35 @@ def generate_macro_workflow(
                     integrated_events.append(parsed_info.pop("integrated_event"))
                     temp_workflow_info.append(parsed_info)
 
+        # --- Officeイベントの統合とクリーンアップ ---
+        cleaned_workflow_info = []
+        for info in temp_workflow_info:
+            if info["raw_action"] == "office_event":
+                msg = info.get("inputValue", "")
+                if "入力確定" in msg:
+                    import re
+                    match = re.search(r"値:\s*(.+)", msg)
+                    if match:
+                        val = match.group(1).strip()
+                        if val.endswith(".0"):
+                            val = val[:-2]
+                        
+                        # 直近の文字入力を探して正確な値で上書きする
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            prev_info = cleaned_workflow_info[i]
+                            if prev_info["raw_action"] in ["key_down", "type_text"]:
+                                role = str(prev_info.get("semantic_role", "")).lower()
+                                if role not in ["enter", "tab", "esc", "backspace", "delete"] and not role.startswith("key."):
+                                    prev_info["semantic_role"] = val
+                                    prev_info["raw_action"] = "type_text"
+                                    break
+                # office_event自体は実行コマンドにならないため除外
+                continue
+            
+            cleaned_workflow_info.append(info)
+            
+        temp_workflow_info = cleaned_workflow_info
+
         if progress_callback:
             progress_callback(75, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
 
@@ -727,16 +761,6 @@ def generate_macro_workflow(
                 
                 temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
                 
-                for info in temp_workflow_info:
-                    if info.get("raw_action") == "type_text" and info.get("semantic_role"):
-                        role_str = str(info["semantic_role"])
-                        role_lower = role_str.lower()
-                        
-                        if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
-                            var_name = f"search_query_{len(variables) + 1}"
-                            variables[var_name] = role_str
-                            info["semantic_role"] = f"{{{{{var_name}}}}}"
-
                 logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
             except Exception as e:
                 logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
@@ -819,6 +843,7 @@ def generate_macro_workflow(
                                     num2 = int(val2)
                                     if num2 - num1 != 0:
                                         first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
+                                        first_iter[k]["is_sequence"] = True
                             except (ValueError, TypeError):
                                 pass
                                 
@@ -847,6 +872,20 @@ def generate_macro_workflow(
                 idx += 1
                 
         temp_workflow_info = optimized_workflow_info
+        
+        # --- 変数化処理 (ループ解析後) ---
+        for info in temp_workflow_info:
+            if info.get("raw_action") == "type_text" and info.get("semantic_role"):
+                if info.get("is_sequence"):
+                    continue # 連番として抽出されたものは変数化しない
+                    
+                role_str = str(info["semantic_role"])
+                role_lower = role_str.lower()
+                
+                if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
+                    var_name = f"search_query_{len(variables) + 1}"
+                    variables[var_name] = role_str
+                    info["semantic_role"] = f"{{{{{var_name}}}}}"
         # ------------------------------------------------
 
         llm_enhanced_data = {} 
