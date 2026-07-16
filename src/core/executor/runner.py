@@ -360,7 +360,20 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
                     # 膨張(dilate)を行わず、本当に変化が激しいピクセルのみを厳密にマスクする
-                    dynamic_mask = (std_dev > 15).astype(np.uint8) * 255
+                    dynamic_mask = (std_dev > 20).astype(np.uint8) * 255
+                    
+                    # 静的なエッジ（UIの枠線や文字など）を保護する
+                    # 複数フレームで共通して存在するエッジを抽出し、背景動画の変動から守る
+                    edges_list = [cv2.Canny(f, 50, 150) for f in frame_buffer]
+                    static_edges = edges_list[0]
+                    for e in edges_list[1:]:
+                        static_edges = cv2.bitwise_and(static_edges, e)
+                    
+                    kernel_protect = np.ones((3, 3), np.uint8)
+                    static_edges_dilated = cv2.dilate(static_edges, kernel_protect, iterations=1)
+                    
+                    # 静的なUI構造部分はマスク（赤色除外）しない
+                    dynamic_mask[static_edges_dilated == 255] = 0
                 
                # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
                 diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
@@ -844,7 +857,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 # 画面全体の動的マスクを生成
                 std_dev_global = np.std(initial_frames, axis=0)
                 # 膨張(dilate)を行わず、本当に変化が激しいピクセルのみを厳密にマスクする
-                global_dynamic_mask = (std_dev_global > 15).astype(np.uint8) * 255
+                global_dynamic_mask = (std_dev_global > 20).astype(np.uint8) * 255
+                
+                # 静的なエッジ（UIの枠線や文字など）を保護する
+                edges_list = [cv2.Canny(f, 50, 150) for f in initial_frames]
+                static_edges = edges_list[0]
+                for e in edges_list[1:]:
+                    static_edges = cv2.bitwise_and(static_edges, e)
+                
+                kernel_protect = np.ones((3, 3), np.uint8)
+                static_edges_dilated = cv2.dilate(static_edges, kernel_protect, iterations=1)
+                
+                # 静的なUI構造部分はマスクしない
+                global_dynamic_mask[static_edges_dilated == 255] = 0
 
                 last_win_args = args
                 for i, cmd in enumerate(commands):
