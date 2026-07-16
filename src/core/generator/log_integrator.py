@@ -745,10 +745,21 @@ def generate_macro_workflow(
             progress_callback(75, "Officeイベントの統合とクリーンアップ中...")
         generation_debug_log["stages"].append({"name": "Office Event Integration", "status": "started"})
 
+        import time
+        last_cancel_check_time = time.time()
+        def should_cancel():
+            nonlocal last_cancel_check_time
+            current_time = time.time()
+            if current_time - last_cancel_check_time > 0.1:
+                last_cancel_check_time = current_time
+                if check_cancel_callback and check_cancel_callback():
+                    return True
+            return False
+
         # --- Officeイベントの統合とクリーンアップ ---
         cleaned_workflow_info = []
         for info in temp_workflow_info:
-            if check_cancel_callback and check_cancel_callback():
+            if should_cancel():
                 raise InterruptedError("Generation cancelled by user")
                 
             if info["raw_action"] == "office_event":
@@ -770,8 +781,6 @@ def generate_macro_workflow(
                                 role = str(prev_info.get("semantic_role", "")).lower()
                                 if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key."):
                                     idx_to_remove.append(i)
-                                else:
-                                    break
                             elif prev_info["raw_action"] in ["click", "move"]:
                                 break
                                 
@@ -805,13 +814,12 @@ def generate_macro_workflow(
                         for i in sorted(idx_to_remove, reverse=True):
                             cleaned_workflow_info.pop(i)
                             
-                        if idx_to_remove:
-                            info["raw_action"] = "click"
-                            info["excel_dest_cell"] = cell
-                            info["button"] = "left"
-                            info["cursor_x"] = last_x
-                            info["cursor_y"] = last_y
-                            cleaned_workflow_info.append(info)
+                        info["raw_action"] = "click"
+                        info["excel_dest_cell"] = cell
+                        info["button"] = "left"
+                        info["cursor_x"] = last_x
+                        info["cursor_y"] = last_y
+                        cleaned_workflow_info.append(info)
                             
                 continue
             
@@ -825,7 +833,7 @@ def generate_macro_workflow(
         win_key_window_name = ""
         
         for info in temp_workflow_info:
-            if check_cancel_callback and check_cancel_callback():
+            if should_cancel():
                 raise InterruptedError("Generation cancelled by user")
                 
             win_name = info.get("window_name", "")
@@ -856,7 +864,7 @@ def generate_macro_workflow(
         optimized_workflow_info = []
         idx = 0
         while idx < len(temp_workflow_info):
-            if check_cancel_callback and check_cancel_callback():
+            if should_cancel():
                 raise InterruptedError("Generation cancelled by user")
                 
             info = temp_workflow_info[idx]
@@ -883,7 +891,7 @@ def generate_macro_workflow(
                 # 周期の候補を探す (開始位置を少しずらして初期化のクリック等のノイズを許容)
                 for start_idx in range(min(4, max(1, n // 2))):
                     for p in range(2, (n - start_idx) // 2 + 1):
-                        if check_cancel_callback and check_cancel_callback():
+                        if should_cancel():
                             raise InterruptedError("Generation cancelled by user")
                             
                         template = actions[start_idx : start_idx + p]
@@ -975,7 +983,7 @@ def generate_macro_workflow(
         
         # --- 変数化処理 (ループ解析後) ---
         for info in temp_workflow_info:
-            if check_cancel_callback and check_cancel_callback():
+            if should_cancel():
                 raise InterruptedError("Generation cancelled by user")
                 
             if info.get("raw_action") == "type_text" and info.get("semantic_role"):
@@ -1010,7 +1018,7 @@ def generate_macro_workflow(
         prev_win_rect = None
         
         for info in temp_workflow_info:
-            if check_cancel_callback and check_cancel_callback():
+            if should_cancel():
                 raise InterruptedError("Generation cancelled by user")
             raw_action = info["raw_action"]
             raw_type = info["raw_type"].lower()
@@ -1221,7 +1229,7 @@ def generate_macro_workflow(
             prev_timestamp = None
             
             for step in workflow_steps:
-                if check_cancel_callback and check_cancel_callback():
+                if should_cancel():
                     raise InterruptedError("Generation cancelled by user")
                     
                 raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
