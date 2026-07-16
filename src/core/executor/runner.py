@@ -359,9 +359,14 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 dynamic_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
-                    dynamic_mask = (std_dev > 10).astype(np.uint8) * 255
+                    # 閾値が低すぎたり膨張が強すぎると静的UIまでマスクしてしまうため調整
+                    dynamic_mask = (std_dev > 8).astype(np.uint8) * 255
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
+                    
+                    # 動的マスクが画面の大部分(60%以上)を占める場合は、マスク暴走を防ぐため閾値を厳しくする
+                    if np.count_nonzero(dynamic_mask) / dynamic_mask.size > 0.6:
+                        dynamic_mask = (std_dev > 15).astype(np.uint8) * 255
                 
                # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
                 diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
@@ -438,7 +443,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     
                     if valid_area > 500:
                         change_ratio = np.count_nonzero(thresh_last) / valid_area
-                        if change_ratio > 0.02:
+                        # 微小なノイズで遷移中と判定されないよう閾値を緩和
+                        if change_ratio > 0.05:
                             is_screen_changing = True
                 last_frame_crop = curr_crop_eval.copy()
                 
@@ -540,11 +546,11 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
         
     return result_info
 
-def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int) -> tuple[bool, dict]:
+def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, win_w: int, win_h: int, offset_x: int, offset_y: int, global_dynamic_mask=None) -> tuple[bool, dict]:
     import cv2
     import numpy as np
     
-    scores = {"diff_ratio": 1.0, "sim": 0.0, "edge_sim": 1.0}
+    scores = {"diff_ratio": 1.0, "sim": 0.0, "edge_sim": 1.0, "ssim": 0.0, "orb": 0.0}
 
     if not pre_image_path.exists():
         return False, scores
@@ -593,6 +599,22 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         else:
             curr_crop_eval = curr_crop.copy()
 
+    # --- 動画などの動的領域マスクの適用 ---
+    static_mask = np.ones_like(curr_crop_eval, dtype=np.uint8) * 255
+    if global_dynamic_mask is not None:
+        dynamic_crop = global_dynamic_mask[cy1:cy2, cx1:cx2]
+        if scale < 1.0:
+            dynamic_crop_eval = cv2.resize(dynamic_crop, (curr_crop_eval.shape[1], curr_crop_eval.shape[0]), interpolation=cv2.INTER_NEAREST)
+        else:
+            dynamic_crop_eval = dynamic_crop.copy()
+            if dynamic_crop.shape != curr_crop_eval.shape:
+                dynamic_crop_eval = cv2.resize(dynamic_crop, (curr_crop_eval.shape[1], curr_crop_eval.shape[0]), interpolation=cv2.INTER_NEAREST)
+        
+        curr_crop_eval[dynamic_crop_eval == 255] = 0
+        pre_crop_eval[dynamic_crop_eval == 255] = 0
+        static_mask[dynamic_crop_eval == 255] = 0
+    # ------------------------------------
+
     # --- システムウィンドウのマスク処理 ---
     system_rects = _get_system_window_rects()
     for (sl, st, sr, sb) in system_rects:
@@ -605,6 +627,7 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
         if mr > ml and mb > mt:
             curr_crop_eval[mt:mb, ml:mr] = 0
             pre_crop_eval[mt:mb, ml:mr] = 0
+            static_mask[mt:mb, ml:mr] = 0
     # ------------------------------------
 
     # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
@@ -636,40 +659,37 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
             if edge_density > 0.05:
                 cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
 
-                # 参考用：検出した文字領域の画像を保存する
-                try:
-                    debug_dir = pre_image_path.parent.parent / "temp" / "text_detection_debug"
-                    debug_dir.mkdir(parents=True, exist_ok=True)
-                    import time
-                    timestamp = int(time.time() * 1000)
-                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_curr.png"), region_curr)
-                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_pre.png"), region_pre)
-                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_diff.png"), region_diff)
-                except Exception:
-                    pass                
-
     curr_crop_eval[text_mask == 255] = 0
     pre_crop_eval[text_mask == 255] = 0
+    static_mask[text_mask == 255] = 0
     # ------------------------------------
 
     # 1. ピクセル差分の計算
     diff_full = cv2.absdiff(pre_crop_eval, curr_crop_eval)
     _, thresh_full = cv2.threshold(diff_full, 30, 255, cv2.THRESH_BINARY)
-    diff_ratio = np.count_nonzero(thresh_full) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    
+    valid_area = np.count_nonzero(static_mask)
+    if valid_area > 500:
+        diff_ratio = np.count_nonzero(thresh_full) / valid_area
+    else:
+        diff_ratio = np.count_nonzero(thresh_full) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
     
     # 2. エッジの比較
     pre_edges = cv2.Canny(pre_crop_eval, 50, 150)
     curr_edges = cv2.Canny(curr_crop_eval, 50, 150)
     
     edge_diff = cv2.absdiff(pre_edges, curr_edges)
-    edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
+    if valid_area > 500:
+        edge_diff_ratio = np.count_nonzero(cv2.bitwise_and(edge_diff, edge_diff, mask=static_mask)) / valid_area
+    else:
+        edge_diff_ratio = np.count_nonzero(edge_diff) / (pre_crop_eval.shape[0] * pre_crop_eval.shape[1])
     
     # 3. テンプレートマッチング
     res = cv2.matchTemplate(curr_crop_eval, pre_crop_eval, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-    ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval)
-    orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval)
+    ssim_val = _calculate_ssim(pre_crop_eval, curr_crop_eval, mask=static_mask)
+    orb_score = _calculate_orb_match(pre_crop_eval, curr_crop_eval, mask=static_mask)
 
     scores = {
         "diff_ratio": float(diff_ratio),
@@ -813,10 +833,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 import numpy as np
                 from core.recorder.screen_capturer import take_screenshot
                 
-                curr_img_pil, curr_monitor = take_screenshot()
-                curr_img_cv = cv2.cvtColor(np.array(curr_img_pil), cv2.COLOR_RGB2GRAY)
+                # スマートレジュームのための初期フレームバッファリング（動画領域の特定）
+                logger.info(f"[{workflow_id}] Buffering initial frames to detect dynamic regions (e.g., videos)...")
+                initial_frames = []
+                for _ in range(5):
+                    img_pil, curr_monitor = take_screenshot()
+                    img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2GRAY)
+                    initial_frames.append(img_cv)
+                    time.sleep(0.1)
+                
+                curr_img_cv = initial_frames[-1]
                 offset_x = curr_monitor.get("left", 0) if isinstance(curr_monitor, dict) else 0
                 offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
+
+                # 画面全体の動的マスクを生成
+                std_dev_global = np.std(initial_frames, axis=0)
+                global_dynamic_mask = (std_dev_global > 8).astype(np.uint8) * 255
+                kernel_global = np.ones((5, 5), np.uint8)
+                global_dynamic_mask = cv2.dilate(global_dynamic_mask, kernel_global, iterations=1)
+                
+                if np.count_nonzero(global_dynamic_mask) / global_dynamic_mask.size > 0.6:
+                    global_dynamic_mask = (std_dev_global > 15).astype(np.uint8) * 255
 
                 last_win_args = args
                 for i, cmd in enumerate(commands):
@@ -832,7 +869,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             win_w = last_win_args.get("width", 0)
                             win_h = last_win_args.get("height", 0)
                             
-                            is_match, scores = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y)
+                            is_match, scores = _is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y, global_dynamic_mask)
                             if is_match:
                                 logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
                                 start_index = i
