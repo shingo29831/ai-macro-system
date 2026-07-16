@@ -863,6 +863,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             
         commands = macro_data.get("commands", [])
         macro_needs_save = False
+        excel_app_cache = None
         
         # --- スマートレジューム（途中からの実行）の判定 ---
         start_index = 0
@@ -1226,13 +1227,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
                             import win32com.client
-                            excel = win32com.client.GetActiveObject("Excel.Application")
-                            sheet = excel.ActiveSheet
+                            if excel_app_cache is None:
+                                excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                            sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
-                            time.sleep(0.1)
+                            time.sleep(0.05)
                             continue # COM APIでセル選択した場合は物理クリックをスキップ
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
+                            excel_app_cache = None
                     
                     btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                     
@@ -1252,13 +1255,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
                             import win32com.client
-                            excel = win32com.client.GetActiveObject("Excel.Application")
-                            sheet = excel.ActiveSheet
+                            if excel_app_cache is None:
+                                excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                            sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
-                            time.sleep(0.1)
+                            time.sleep(0.05)
                             continue # COM APIでセル選択した場合は物理移動をスキップ
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
+                            excel_app_cache = None
                     
                     if platform.system() == "Windows":
                         ctypes.windll.user32.SetCursorPos(int(x), int(y))
@@ -1311,13 +1316,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         if excel_cell and platform.system() == "Windows":
                             try:
                                 import win32com.client
-                                excel = win32com.client.GetActiveObject("Excel.Application")
-                                sheet = excel.ActiveSheet
+                                if excel_app_cache is None:
+                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                sheet = excel_app_cache.ActiveSheet
                                 sheet.Range(excel_cell).Value = text
-                                time.sleep(0.1)
+                                time.sleep(0.05)
                                 continue # COM APIで直接値を書き込んだ場合は物理入力をスキップ
                             except Exception as e:
                                 logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
+                                excel_app_cache = None
                                 
                         _set_ime_state(text)
                         for char in text:
