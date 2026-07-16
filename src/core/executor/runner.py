@@ -314,12 +314,14 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                         else:
                             dynamic_mask_resized = dynamic_mask
                         
-                        alpha_channel = cv2.bitwise_not(dynamic_mask_resized)
-                        b, g, r = cv2.split(curr_crop_color)
-                        transparent_img = cv2.merge((b, g, r, alpha_channel))
+                        overlay = curr_crop_color.copy()
+                        overlay[dynamic_mask_resized == 255] = [0, 0, 255]
                         
-                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_timeout_masked.png"), transparent_img)
-                        logger.info(f"[{workflow_id}] Saved timeout masked image with dynamic regions transparent.")
+                        alpha = 0.5
+                        highlighted_img = cv2.addWeighted(overlay, alpha, curr_crop_color, 1 - alpha, 0)
+                        
+                        cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_timeout_masked.png"), highlighted_img)
+                        logger.info(f"[{workflow_id}] Saved timeout masked image with dynamic regions highlighted in red.")
                 except Exception as e:
                     logger.warning(f"Failed to save timeout masked image: {e}")
                     
@@ -361,26 +363,52 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel = np.ones((5, 5), np.uint8)
                     dynamic_mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
                 
-                # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
-                edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
-                edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
+               # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
+                diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
+                _, diff_thresh = cv2.threshold(diff_for_mask, 30, 255, cv2.THRESH_BINARY)
+
                 kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
-                dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
-                
+                diff_dilated = cv2.dilate(diff_thresh, kernel_text, iterations=1)
+
                 text_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
-                for edges_dilated in [dilated_pre, dilated_curr]:
-                    contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for cnt in contours:
-                        x, y, w, h = cv2.boundingRect(cnt)
-                        # 文字と推測されるサイズの矩形を透過領域として追加（膨張分を少し削って文字サイズちょうどにする）
-                        if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
-                            adj_x = x + 1
-                            adj_y = y + 1
-                            adj_w = max(1, w - 2)
-                            adj_h = max(1, h - 2)
-                            cv2.rectangle(text_mask, (adj_x, adj_y), (adj_x+adj_w, adj_y+adj_h), 255, -1)
-                
+                contours, _ = cv2.findContours(diff_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                for cnt in contours:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    # 変化領域が文字、カーソル、入力フィールド程度のサイズであるか確認
+                    if 2 <= w < curr_crop_eval.shape[1] * 0.8 and 5 <= h < curr_crop_eval.shape[0] * 0.5:
+                        region_curr = curr_crop_eval[y:y+h, x:x+w]
+                        region_pre = pre_crop_eval[y:y+h, x:x+w]
+                        region_diff = diff_thresh[y:y+h, x:x+w]
+
+                        # エッジを抽出して文字らしさ（複雑さ）を判定
+                        edges_curr = cv2.Canny(region_curr, 50, 150)
+                        edges_pre = cv2.Canny(region_pre, 50, 150)
+
+                        # 差分領域内のエッジのみを評価対象とする
+                        valid_edges_curr = cv2.bitwise_and(edges_curr, edges_curr, mask=region_diff)
+                        valid_edges_pre = cv2.bitwise_and(edges_pre, edges_pre, mask=region_diff)
+
+                        area = w * h
+                        # 入力前・入力後のどちらかに文字特有のエッジが含まれていればテキスト領域とみなす
+                        edge_count = max(np.count_nonzero(valid_edges_curr), np.count_nonzero(valid_edges_pre))
+                        edge_density = edge_count / area if area > 0 else 0
+                        # 文字は線が多いためエッジ密度が比較的高くなる（5%以上を文字やカーソルとみなす）
+                        # 背景色が変化した場合でも、文字が含まれていればエッジ密度で救済される
+                        if edge_density > 0.05:
+                            cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+
+                            # 参考用：検出した文字領域の画像を保存する
+                            try:
+                                debug_dir = exec_logs_dir / "text_detection_debug"
+                                debug_dir.mkdir(parents=True, exist_ok=True)
+                                timestamp = int(time.time() * 1000)
+                                cv2.imwrite(str(debug_dir / f"step_{step_index:03d}_{raw_event_id}_{timestamp}_curr.png"), region_curr)
+                                cv2.imwrite(str(debug_dir / f"step_{step_index:03d}_{raw_event_id}_{timestamp}_pre.png"), region_pre)
+                                cv2.imwrite(str(debug_dir / f"step_{step_index:03d}_{raw_event_id}_{timestamp}_diff.png"), region_diff)
+                            except Exception as e:
+                                logger.warning(f"Failed to save text detection debug image: {e}")
+
                 dynamic_mask = cv2.bitwise_or(dynamic_mask, text_mask)
                 # ------------------------------------
                 
@@ -571,25 +599,47 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
             pre_crop_eval[mt:mb, ml:mr] = 0
     # ------------------------------------
 
-    # --- テキスト領域のマスク処理（文字の違いによる不一致を防ぐ） ---
-    edges_pre = cv2.Canny(pre_crop_eval, 50, 150)
-    edges_curr = cv2.Canny(curr_crop_eval, 50, 150)
+    # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
+    diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
+    _, diff_thresh = cv2.threshold(diff_for_mask, 30, 255, cv2.THRESH_BINARY)
+
     kernel_text = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    dilated_pre = cv2.dilate(edges_pre, kernel_text, iterations=1)
-    dilated_curr = cv2.dilate(edges_curr, kernel_text, iterations=1)
-    
+    diff_dilated = cv2.dilate(diff_thresh, kernel_text, iterations=1)
+
     text_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
-    for edges_dilated in [dilated_pre, dilated_curr]:
-        contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if 5 < w < curr_crop_eval.shape[1]*0.8 and 5 < h < curr_crop_eval.shape[0]*0.5:
-                adj_x = x + 1
-                adj_y = y + 1
-                adj_w = max(1, w - 2)
-                adj_h = max(1, h - 2)
-                cv2.rectangle(text_mask, (adj_x, adj_y), (adj_x+adj_w, adj_y+adj_h), 255, -1)
-                
+    contours, _ = cv2.findContours(diff_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if 2 <= w < curr_crop_eval.shape[1] * 0.8 and 5 <= h < curr_crop_eval.shape[0] * 0.5:
+            region_curr = curr_crop_eval[y:y+h, x:x+w]
+            region_pre = pre_crop_eval[y:y+h, x:x+w]
+            region_diff = diff_thresh[y:y+h, x:x+w]
+
+            edges_curr = cv2.Canny(region_curr, 50, 150)
+            edges_pre = cv2.Canny(region_pre, 50, 150)
+
+            valid_edges_curr = cv2.bitwise_and(edges_curr, edges_curr, mask=region_diff)
+            valid_edges_pre = cv2.bitwise_and(edges_pre, edges_pre, mask=region_diff)
+
+            area = w * h
+            edge_count = max(np.count_nonzero(valid_edges_curr), np.count_nonzero(valid_edges_pre))
+            edge_density = edge_count / area if area > 0 else 0
+            if edge_density > 0.05:
+                cv2.rectangle(text_mask, (x, y), (x+w, y+h), 255, -1)
+
+                # 参考用：検出した文字領域の画像を保存する
+                try:
+                    debug_dir = pre_image_path.parent.parent / "temp" / "text_detection_debug"
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    import time
+                    timestamp = int(time.time() * 1000)
+                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_curr.png"), region_curr)
+                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_pre.png"), region_pre)
+                    cv2.imwrite(str(debug_dir / f"match_check_{timestamp}_diff.png"), region_diff)
+                except Exception:
+                    pass                
+
     curr_crop_eval[text_mask == 255] = 0
     pre_crop_eval[text_mask == 255] = 0
     # ------------------------------------
