@@ -454,8 +454,9 @@ def _parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: st
         
     window_name = log_entry.get("WindowName") or "Unknown Window"
     command_line = log_entry.get("WindowCommandLine", "")
-    # システムウィンドウ（記録ウィジェット等）の操作をマクロから除外
-    if "python" in window_name.lower() or "unknown window" in window_name.lower():
+    # システムウィンドウ（記録ウィジェットやOSシェル等）の操作をマクロから除外
+    system_windows = ["python", "unknown window", "検索", "スタート", "start", "search", "taskbar", "タスクバー", "cortana", "ジャンプ リスト"]
+    if not window_name.strip() or any(sw in window_name.lower() for sw in system_windows):
         return None
         
     event_no = log_entry.get("EventNo", f"{i+1:03d}")
@@ -924,6 +925,7 @@ def generate_macro_workflow(
         
         step_idx = 1
         prev_window_name = None
+        prev_win_rect = None
         
         for info in temp_workflow_info:
             raw_action = info["raw_action"]
@@ -969,37 +971,48 @@ def generate_macro_workflow(
                 step_idx += 1
                 continue
 
-            if current_window != "Unknown" and current_window != prev_window_name:
+            if current_window != "Unknown":
                 win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
                 win_x = win_ctx.coordinates.x if win_ctx else info.get("win_x", 0)
                 win_y = win_ctx.coordinates.y if win_ctx else info.get("win_y", 0)
                 win_w = win_ctx.size.width if win_ctx else info.get("win_w", 0)
                 win_h = win_ctx.size.height if win_ctx else info.get("win_h", 0)
+                
+                current_win_rect = (win_x, win_y, win_w, win_h)
+                
+                needs_activation = False
+                if current_window != prev_window_name:
+                    needs_activation = True
+                elif prev_win_rect:
+                    px, py, pw, ph = prev_win_rect
+                    if abs(win_x - px) > 10 or abs(win_y - py) > 10 or abs(win_w - pw) > 10 or abs(win_h - ph) > 10:
+                        needs_activation = True
+                        
+                if needs_activation:
+                    command_line = info.get("command_line", "")
+                    win_info_json = json.dumps({
+                        "title": current_window,
+                        "x": win_x,
+                        "y": win_y,
+                        "width": win_w,
+                        "height": win_h,
+                        "launch_cmd": command_line
+                    }, ensure_ascii=False)
 
-                command_line = info.get("command_line", "")
-
-                win_info_json = json.dumps({
-                    "title": current_window,
-                    "x": win_x,
-                    "y": win_y,
-                    "width": win_w,
-                    "height": win_h,
-                    "launch_cmd": command_line
-                }, ensure_ascii=False)
-
-                workflow_steps.append(WorkflowStep(
-                    step_id=step_idx,
-                    intent="ACTIVATE_WINDOW",
-                    description=f"Activate window: {current_window}",
-                    context=WorkflowStepContext(active_window_name=current_window),
-                    action=WorkflowCommandAction(
-                        command="ACTIVATE_WINDOW",
-                        parameters=ActionParameters(text=win_info_json)
-                    ),
-                    fallback_raw_events=[event_id]
-                ))
-                step_idx += 1
-                prev_window_name = current_window
+                    workflow_steps.append(WorkflowStep(
+                        step_id=step_idx,
+                        intent="ACTIVATE_WINDOW",
+                        description=f"Activate and resize window: {current_window}",
+                        context=WorkflowStepContext(active_window_name=current_window),
+                        action=WorkflowCommandAction(
+                            command="ACTIVATE_WINDOW",
+                            parameters=ActionParameters(text=win_info_json)
+                        ),
+                        fallback_raw_events=[event_id]
+                    ))
+                    step_idx += 1
+                    prev_window_name = current_window
+                    prev_win_rect = current_win_rect
             # ------------------------------------------------
             
             final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])

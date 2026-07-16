@@ -151,8 +151,21 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
     
     if not windows and app_name:
         safe_app_name = re.escape(app_name)
+        browser_names = ["firefox", "chrome", "edge", "brave", "opera"]
+        is_target_browser = any(b in app_name.lower() for b in browser_names)
+        
         for _ in range(4):
-            windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+            # 1. まずはアプリ名がタイトルの末尾にあるウィンドウを優先して探す（ブラウザのタブ名による誤検知防止）
+            windows = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
+            
+            # 2. 見つからなければ部分一致で探すが、対象がブラウザでない場合はブラウザのウィンドウを除外する
+            if not windows:
+                all_matched = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
+                if is_target_browser:
+                    windows = all_matched
+                else:
+                    windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
+                    
             if windows:
                 break
             time.sleep(0.5)
@@ -204,7 +217,25 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
         if win.is_minimized():
             win.restore()
             
-        win.set_focus()
+        try:
+            # フォアグラウンド化の確実性を上げるためのハック
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = win.handle
+            
+            # Altキーをシミュレートしてフォアグラウンドロックを解除
+            user32.keybd_event(0x12, 0, 0, 0) # ALT down
+            user32.keybd_event(0x12, 0, 2, 0) # ALT up
+            
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+            win.set_focus()
+        except Exception as e:
+            logger.warning(f"Failed to set focus aggressively: {e}")
+            try:
+                win.set_focus()
+            except Exception:
+                pass
         
         if win_w > 0 and win_h > 0:
             try:
@@ -217,8 +248,9 @@ def _activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_
                 else:
                     if win.is_maximized():
                         win.restore()
-                    # SWP_NOZORDER = 0x0004 (Zオーダーを変更しない)
-                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0004)
+                    # HWND_TOP = 0, SWP_SHOWWINDOW = 0x0040
+                    # Zオーダーを最前面にしつつサイズを変更する
+                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0040)
             except Exception as e:
                 logger.warning(f"Failed to resize window: {e}")
                 
