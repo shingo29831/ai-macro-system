@@ -508,21 +508,24 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     if is_screen_changing:
                         update_ui("画面遷移を待機しています...", False)
                         waiting_logged = False
-                    elif not waiting_logged:
+                    else:
                         if time.time() - start_time > 3.0:
-                            update_ui("記録時と同じ画面にしてください。", True)
-                            logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
-                            waiting_logged = True
-                        else:
+                            # リアルタイムに検証スコアをUIへ表示し続ける
+                            detail_msg = f"記録時と同じ画面にしてください。\n差分: {diff_ratio:.1%} / 構造: {ssim_val:.2f} / 特徴: {orb_score:.2f}"
+                            update_ui(detail_msg, True)
+                            if not waiting_logged:
+                                logger.info(f"[{workflow_id}] Waiting for screen to match... (diff: {diff_ratio:.1%}, sim: {max_val:.2f}, ssim: {ssim_val:.2f}, orb: {orb_score:.2f})")
+                                waiting_logged = True
+                        elif not waiting_logged:
                             update_ui("画面の応答を待機しています...", False)
             else:
-                if not waiting_logged:
-                    if time.time() - start_time > 3.0:
-                        update_ui("記録時と同じ画面にしてください。", True)
+                if time.time() - start_time > 3.0:
+                    update_ui("記録時と同じ画面にしてください。\n(ウィンドウサイズが異なります)", True)
+                    if not waiting_logged:
                         logger.info(f"[{workflow_id}] Waiting for screen to match... (size mismatch)")
                         waiting_logged = True
-                    else:
-                        update_ui("画面の応答を待機しています...", False)
+                elif not waiting_logged:
+                    update_ui("画面の応答を待機しています...", False)
             
             time.sleep(0.5)
             
