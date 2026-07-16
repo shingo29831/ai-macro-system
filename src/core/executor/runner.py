@@ -308,20 +308,25 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     update_ui("タイムアウトしました。マクロを再開します。", False)
                 
                 try:
-                    if 'curr_crop_color' in locals() and 'dynamic_mask' in locals():
-                        if dynamic_mask.shape[:2] != curr_crop_color.shape[:2]:
-                            dynamic_mask_resized = cv2.resize(dynamic_mask, (curr_crop_color.shape[1], curr_crop_color.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    if 'curr_crop_color' in locals() and 'video_mask' in locals() and 'text_mask' in locals():
+                        if video_mask.shape[:2] != curr_crop_color.shape[:2]:
+                            video_mask_resized = cv2.resize(video_mask, (curr_crop_color.shape[1], curr_crop_color.shape[0]), interpolation=cv2.INTER_NEAREST)
+                            text_mask_resized = cv2.resize(text_mask, (curr_crop_color.shape[1], curr_crop_color.shape[0]), interpolation=cv2.INTER_NEAREST)
                         else:
-                            dynamic_mask_resized = dynamic_mask
+                            video_mask_resized = video_mask
+                            text_mask_resized = text_mask
                         
                         overlay = curr_crop_color.copy()
-                        overlay[dynamic_mask_resized == 255] = [0, 0, 255]
+                        # 動画領域は赤色 (BGR: 0, 0, 255)
+                        overlay[video_mask_resized == 255] = [0, 0, 255]
+                        # テキスト領域は緑色 (BGR: 0, 255, 0)
+                        overlay[text_mask_resized == 255] = [0, 255, 0]
                         
                         alpha = 0.5
                         highlighted_img = cv2.addWeighted(overlay, alpha, curr_crop_color, 1 - alpha, 0)
                         
                         cv2.imwrite(str(exec_logs_dir / f"step_{step_index:03d}_{raw_event_id}_timeout_masked.png"), highlighted_img)
-                        logger.info(f"[{workflow_id}] Saved timeout masked image with dynamic regions highlighted in red.")
+                        logger.info(f"[{workflow_id}] Saved timeout masked image (Video: Red, Text: Green).")
                 except Exception as e:
                     logger.warning(f"Failed to save timeout masked image: {e}")
                     
@@ -356,11 +361,11 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                 if len(frame_buffer) > 5:
                     frame_buffer.pop(0)
                 
-                dynamic_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
+                video_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
                     # 膨張(dilate)を行わず、本当に変化が激しいピクセルのみを厳密にマスクする
-                    dynamic_mask = (std_dev > 20).astype(np.uint8) * 255
+                    video_mask = (std_dev > 20).astype(np.uint8) * 255
                     
                     # 静的なエッジ（UIの枠線や文字など）を保護する
                     # 複数フレームで共通して存在するエッジを抽出し、背景動画の変動から守る
@@ -372,8 +377,13 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                     kernel_protect = np.ones((3, 3), np.uint8)
                     static_edges_dilated = cv2.dilate(static_edges, kernel_protect, iterations=1)
                     
-                    # 静的なUI構造部分はマスク（赤色除外）しない
-                    dynamic_mask[static_edges_dilated == 255] = 0
+                    # 静的なUI構造部分はマスクしない
+                    video_mask[static_edges_dilated == 255] = 0
+                    
+                    # 動的マスクが広すぎる（画面の30%以上）場合は、過剰マスクとみなして破棄する
+                    # これにより、動画が大部分を占めるページで有効ピクセルが消滅し、ORB/SSIMが0になるのを防ぐ
+                    if np.count_nonzero(video_mask) / video_mask.size > 0.3:
+                        video_mask = np.zeros_like(video_mask)
                 
                # --- テキスト領域のマスク処理（文字の違いや背景色変化による不一致を防ぐ） ---
                 diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
@@ -422,7 +432,7 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
                             except Exception as e:
                                 logger.warning(f"Failed to save text detection debug image: {e}")
 
-                dynamic_mask = cv2.bitwise_or(dynamic_mask, text_mask)
+                dynamic_mask = cv2.bitwise_or(video_mask, text_mask)
                 # ------------------------------------
                 
                 # --- システムウィンドウのマスク処理 ---
@@ -502,7 +512,8 @@ def _wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_
 
                 # 検索結果画面などの変動を考慮し、閾値を緩和
                 is_ssim_match = ssim_val >= 0.75
-                is_orb_match = orb_score >= 0.15
+                # 動画ページなどでdiff_ratioが高い場合でも、特徴点と大まかな構造が一致していればOKとする
+                is_orb_match = orb_score >= 0.15 or (orb_score >= 0.08 and max_val >= 0.6)
 
                 if is_pixel_match or is_struct_match or is_edge_match or is_ssim_match or is_orb_match:
                     # マッチ成功時の画像を保存
@@ -713,8 +724,8 @@ def _is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, 
     # ほぼ同じ画面（少しのノイズやカーソルの点滅、広告の変化などを許容）
     is_high_match = (diff_ratio <= 0.15) and (edge_diff_ratio <= 0.10) and (max_val >= 0.85)
 
-    # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
-    is_structural_match = (ssim_val >= 0.75) or (orb_score >= 0.15)
+     # 構造的・特徴的な一致（広告やサジェストでピクセル差分が大きくても、基本UIが同じなら一致とする）
+    is_structural_match = (ssim_val >= 0.75) or (orb_score >= 0.15) or (orb_score >= 0.08 and max_val >= 0.6)
     
     return (is_exact_match or is_high_match or is_structural_match), scores
 
@@ -870,6 +881,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 
                 # 静的なUI構造部分はマスクしない
                 global_dynamic_mask[static_edges_dilated == 255] = 0
+                
+                # 動的マスクが広すぎる場合は破棄する
+                if np.count_nonzero(global_dynamic_mask) / global_dynamic_mask.size > 0.3:
+                    global_dynamic_mask = np.zeros_like(global_dynamic_mask)
 
                 last_win_args = args
                 for i, cmd in enumerate(commands):
