@@ -45,7 +45,8 @@ def optimize_workflow_events(
                             role = str(prev_info.get("semantic_role", "")).lower()
                             # EnterやTabなどの確定キーも不要になるため削除対象に含める
                             idx_to_remove.append(i)
-                            if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key."):
+                            # ★修正: "+" を含むショートカットキー（shift+tab等）も制御キーとして扱い、遡りを継続する
+                            if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key.") and "+" not in role:
                                 # 実際の文字入力（値）を見つけたら遡りを終了
                                 break
                         elif prev_info["raw_action"] in ["click", "move"]:
@@ -76,7 +77,8 @@ def optimize_workflow_events(
                         elif prev_info["raw_action"] in ["key_down", "type_text"]:
                             role = str(prev_info.get("semantic_role", "")).lower()
                             # 移動のトリガーとなったEnterやTabなどのキーも削除対象にする
-                            if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key."):
+                            # ★修正: "+" を含むショートカットキー（shift+tab等）も削除対象に含める
+                            if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
                                 idx_to_remove.append(i)
                             else:
                                 # 文字入力に到達したら遡りを終了
