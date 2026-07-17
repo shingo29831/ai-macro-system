@@ -38,60 +38,76 @@ def optimize_workflow_events(
                     if val.endswith(".0"):
                         val = val[:-2]
                     
-                    idx_to_remove = []
-                    for i in range(len(cleaned_workflow_info) - 1, -1, -1):
-                        prev_info = cleaned_workflow_info[i]
-                        # 直前のセル選択移動や、別の入力確定に到達したら遡りを終了
-                        if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
-                            break
-                        # 入力セッション中の物理キー入力、クリック、移動をすべて削除対象にする
-                        if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
-                            idx_to_remove.append(i)
-                        else:
-                            break
+                    # ★修正: 直前のイベントが全く同じセルに対する入力確定だった場合は、重複イベントとして無視する
+                    is_duplicate = False
+                    if cleaned_workflow_info:
+                        last_info = cleaned_workflow_info[-1]
+                        if last_info.get("excel_cell") == cell and last_info.get("raw_action") == "type_text":
+                            is_duplicate = True
                             
-                    for i in sorted(idx_to_remove, reverse=True):
-                        cleaned_workflow_info.pop(i)
-                        
-                    info["raw_action"] = "type_text"
-                    info["semantic_role"] = val
-                    info["excel_cell"] = cell
-                    cleaned_workflow_info.append(info)
+                    if not is_duplicate:
+                        idx_to_remove = []
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            prev_info = cleaned_workflow_info[i]
+                            # 直前のセル選択移動や、別の入力確定に到達したら遡りを終了
+                            if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
+                                break
+                            # 入力セッション中の物理キー入力、クリック、移動をすべて削除対象にする
+                            if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
+                                idx_to_remove.append(i)
+                            else:
+                                break
+                                
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
+                            
+                        info["raw_action"] = "type_text"
+                        info["semantic_role"] = val
+                        info["excel_cell"] = cell
+                        cleaned_workflow_info.append(info)
                     
             elif "選択移動" in msg:
                 match = re.search(r"セル:\s*([^\s|]+)", msg)
                 if match:
                     cell = match.group(1).replace("$", "")
                     
-                    idx_to_remove = []
-                    last_x, last_y = 0, 0
-                    for i in range(len(cleaned_workflow_info) - 1, -1, -1):
-                        prev_info = cleaned_workflow_info[i]
-                        if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
-                            break
-                        if prev_info["raw_action"] in ["click", "move"]:
-                            idx_to_remove.append(i)
-                            if prev_info["raw_action"] == "click" and last_x == 0:
-                                last_x = prev_info.get("cursor_x", 0)
-                                last_y = prev_info.get("cursor_y", 0)
-                        elif prev_info["raw_action"] in ["key_down", "type_text"]:
-                            role = str(prev_info.get("semantic_role", "")).lower()
-                            if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                    # ★修正: 直前のイベントが全く同じセルに対する選択移動だった場合は、重複イベントとして無視する
+                    is_duplicate = False
+                    if cleaned_workflow_info:
+                        last_info = cleaned_workflow_info[-1]
+                        if last_info.get("excel_dest_cell") == cell and last_info.get("raw_action") == "click":
+                            is_duplicate = True
+                            
+                    if not is_duplicate:
+                        idx_to_remove = []
+                        last_x, last_y = 0, 0
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            prev_info = cleaned_workflow_info[i]
+                            if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
+                                break
+                            if prev_info["raw_action"] in ["click", "move"]:
                                 idx_to_remove.append(i)
+                                if prev_info["raw_action"] == "click" and last_x == 0:
+                                    last_x = prev_info.get("cursor_x", 0)
+                                    last_y = prev_info.get("cursor_y", 0)
+                            elif prev_info["raw_action"] in ["key_down", "type_text"]:
+                                role = str(prev_info.get("semantic_role", "")).lower()
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                                    idx_to_remove.append(i)
+                                else:
+                                    break
                             else:
                                 break
-                        else:
-                            break
+                                
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
                             
-                    for i in sorted(idx_to_remove, reverse=True):
-                        cleaned_workflow_info.pop(i)
-                        
-                    info["raw_action"] = "click"
-                    info["excel_dest_cell"] = cell
-                    info["button"] = "left"
-                    info["cursor_x"] = last_x
-                    info["cursor_y"] = last_y
-                    cleaned_workflow_info.append(info)
+                        info["raw_action"] = "click"
+                        info["excel_dest_cell"] = cell
+                        info["button"] = "left"
+                        info["cursor_x"] = last_x
+                        info["cursor_y"] = last_y
+                        cleaned_workflow_info.append(info)
                         
             continue
         
