@@ -461,6 +461,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     clicks = args.get("clicks", 1)
                     excel_dest_cell = args.get("excel_dest_cell")
                     
+                    skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
                             import win32com.client
@@ -469,26 +470,28 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.05)
-                            continue
+                            skip_physical = True
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
-                    btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
-                    
-                    if platform.system() == "Windows":
-                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                    else:
-                        mouse.position = (x, y)
+                    if not skip_physical:
+                        btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         
-                    time.sleep(0.05)
-                    mouse.click(btn, clicks)
+                        if platform.system() == "Windows":
+                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                        else:
+                            mouse.position = (x, y)
+                            
+                        time.sleep(0.05)
+                        mouse.click(btn, clicks)
 
                 elif method == "move":
                     x = args.get("x", 0)
                     y = args.get("y", 0)
                     excel_dest_cell = args.get("excel_dest_cell")
                     
+                    skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
                             import win32com.client
@@ -497,18 +500,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.05)
-                            continue
+                            skip_physical = True
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
-                    if platform.system() == "Windows":
-                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                    else:
-                        mouse.position = (x, y)
+                    if not skip_physical:
+                        if platform.system() == "Windows":
+                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                        else:
+                            mouse.position = (x, y)
+                            
+                        time.sleep(0.5)
                         
-                    time.sleep(0.5)
-                    
                 elif method == "scroll":
                     dx = args.get("dx", 0.0)
                     dy = args.get("dy", 0.0)
@@ -550,6 +554,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             if placeholder in text:
                                 text = text.replace(placeholder, str(val))
                                 
+                        skip_physical = False
                         if excel_cell and platform.system() == "Windows":
                             try:
                                 import win32com.client
@@ -558,18 +563,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                                 sheet = excel_app_cache.ActiveSheet
                                 sheet.Range(excel_cell).Value = text
                                 time.sleep(0.05)
-                                continue
+                                skip_physical = True
                             except Exception as e:
                                 logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
                                 excel_app_cache = None
                                 
-                        set_ime_state(text)
-                        for char in text:
-                            if _stop_requested:
-                                break
-                            keyboard.type(char)
-                            time.sleep(0.03)
-                        time.sleep(0.2)
+                        if not skip_physical:
+                            set_ime_state(text)
+                            for char in text:
+                                if _stop_requested:
+                                    break
+                                keyboard.type(char)
+                                time.sleep(0.03)
+                            time.sleep(0.2)
                         
                 elif method == "press_key":
                     key_str = args.get("key", "")
