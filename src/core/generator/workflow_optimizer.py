@@ -41,15 +41,13 @@ def optimize_workflow_events(
                     idx_to_remove = []
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
-                        if prev_info["raw_action"] in ["key_down", "type_text"]:
-                            role = str(prev_info.get("semantic_role", "")).lower()
-                            # EnterやTabなどの確定キーも不要になるため削除対象に含める
+                        # 直前のセル選択移動や、別の入力確定に到達したら遡りを終了
+                        if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
+                            break
+                        # 入力セッション中の物理キー入力、クリック、移動をすべて削除対象にする
+                        if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
                             idx_to_remove.append(i)
-                            # ★修正: "+" を含むショートカットキー（shift+tab等）も制御キーとして扱い、遡りを継続する
-                            if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key.") and "+" not in role:
-                                # 実際の文字入力（値）を見つけたら遡りを終了
-                                break
-                        elif prev_info["raw_action"] in ["click", "move"]:
+                        else:
                             break
                             
                     for i in sorted(idx_to_remove, reverse=True):
@@ -69,6 +67,8 @@ def optimize_workflow_events(
                     last_x, last_y = 0, 0
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
+                        if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
+                            break
                         if prev_info["raw_action"] in ["click", "move"]:
                             idx_to_remove.append(i)
                             if prev_info["raw_action"] == "click" and last_x == 0:
@@ -76,13 +76,12 @@ def optimize_workflow_events(
                                 last_y = prev_info.get("cursor_y", 0)
                         elif prev_info["raw_action"] in ["key_down", "type_text"]:
                             role = str(prev_info.get("semantic_role", "")).lower()
-                            # 移動のトリガーとなったEnterやTabなどのキーも削除対象にする
-                            # ★修正: "+" を含むショートカットキー（shift+tab等）も削除対象に含める
                             if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
                                 idx_to_remove.append(i)
                             else:
-                                # 文字入力に到達したら遡りを終了
                                 break
+                        else:
+                            break
                             
                     for i in sorted(idx_to_remove, reverse=True):
                         cleaned_workflow_info.pop(i)
@@ -238,6 +237,17 @@ def optimize_workflow_events(
             
     temp_workflow_info = optimized_workflow_info
     
+    # 物理キー入力に対する excel_cell の補完
+    last_excel_dest_cell = None
+    for info in temp_workflow_info:
+        if info.get("excel_dest_cell"):
+            last_excel_dest_cell = info["excel_dest_cell"]
+        elif info.get("excel_cell"):
+            last_excel_dest_cell = info["excel_cell"]
+        elif info["raw_action"] == "type_text" and last_excel_dest_cell:
+            if "excel_cell" not in info:
+                info["excel_cell"] = last_excel_dest_cell
+
     variables = {}
     for info in temp_workflow_info:
         if should_cancel():
