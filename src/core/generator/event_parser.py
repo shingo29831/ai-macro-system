@@ -96,6 +96,10 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     else:
         action_type = "unknown"
 
+    # ★修正: uia_scan や不要なイベントを初期段階で除外する
+    if action_type in ["unknown", "uia_scan"] or "recording" in raw_type_lower:
+        return None
+
     button_val = "left"
     input_val = "unknown"
     ime_active = False
@@ -112,8 +116,6 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
             input_val = "scroll"
         elif action_type == "move":
             input_val = "move"
-        elif action_type == "uia_scan":
-            input_val = content_data.get("action") or "uia_scan"
         elif action_type == "office_event":
             input_val = content_data.get("office_info", {}).get("message", "")
         else:

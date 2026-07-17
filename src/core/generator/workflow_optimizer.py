@@ -29,7 +29,7 @@ def optimize_workflow_events(
             raise InterruptedError("Generation cancelled by user")
             
         if info["raw_action"] == "office_event":
-            msg = info.get("inputValue", "")
+            msg = info.get("semantic_role", "")
             if "入力確定" in msg:
                 match = re.search(r"セル:\s*([^\s|]+)\s*\|\s*値:\s*(.+)", msg)
                 if match:
@@ -43,8 +43,11 @@ def optimize_workflow_events(
                         prev_info = cleaned_workflow_info[i]
                         if prev_info["raw_action"] in ["key_down", "type_text"]:
                             role = str(prev_info.get("semantic_role", "")).lower()
+                            # EnterやTabなどの確定キーも不要になるため削除対象に含める
+                            idx_to_remove.append(i)
                             if role not in ["enter", "tab", "esc", "up", "down", "left", "right"] and not role.startswith("key."):
-                                idx_to_remove.append(i)
+                                # 実際の文字入力（値）を見つけたら遡りを終了
+                                break
                         elif prev_info["raw_action"] in ["click", "move"]:
                             break
                             
@@ -71,7 +74,13 @@ def optimize_workflow_events(
                                 last_x = prev_info.get("cursor_x", 0)
                                 last_y = prev_info.get("cursor_y", 0)
                         elif prev_info["raw_action"] in ["key_down", "type_text"]:
-                            break
+                            role = str(prev_info.get("semantic_role", "")).lower()
+                            # 移動のトリガーとなったEnterやTabなどのキーも削除対象にする
+                            if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key."):
+                                idx_to_remove.append(i)
+                            else:
+                                # 文字入力に到達したら遡りを終了
+                                break
                             
                     for i in sorted(idx_to_remove, reverse=True):
                         cleaned_workflow_info.pop(i)
