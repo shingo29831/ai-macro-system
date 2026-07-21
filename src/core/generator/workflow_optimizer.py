@@ -1,4 +1,3 @@
-# src/core/generator/workflow_optimizer.py
 # Role: 統合されたイベントリストに対し、Officeイベントのクリーンアップ、OSシェル操作のカット、ループ解析、変数化などの最適化を行うモジュール
 
 import logging
@@ -47,22 +46,31 @@ def optimize_workflow_events(
                             
                     if not is_duplicate:
                         idx_to_remove = []
+                        insert_idx = len(cleaned_workflow_info)
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
                             if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                                 break
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
-                                idx_to_remove.append(i)
+                                role = str(prev_info.get("semantic_role", "")).lower()
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                                    insert_idx = i
+                                else:
+                                    idx_to_remove.append(i)
                             else:
                                 break
                                 
-                        for i in sorted(idx_to_remove, reverse=True):
-                            cleaned_workflow_info.pop(i)
-                            
                         info["raw_action"] = "type_text"
                         info["semantic_role"] = val
                         info["excel_cell"] = cell
-                        cleaned_workflow_info.append(info)
+                        
+                        cleaned_workflow_info.insert(insert_idx, info)
+                        
+                        for i in sorted(idx_to_remove, reverse=True):
+                            if i >= insert_idx:
+                                cleaned_workflow_info.pop(i + 1)
+                            else:
+                                cleaned_workflow_info.pop(i)
                     
             elif "選択移動" in msg:
                 match = re.search(r"セル:\s*([^\s|]+)", msg)
@@ -257,7 +265,7 @@ def optimize_workflow_events(
             else:
                 optimized_workflow_info.append({
                     "raw_type": "meta_loop_end",
-                    "raw_action": "unknown",
+                    "raw_action": "meta_loop_end",
                     "event_id": "auto_loop_end",
                     "semantic_role": "",
                     "window_name": info.get("window_name", "")
