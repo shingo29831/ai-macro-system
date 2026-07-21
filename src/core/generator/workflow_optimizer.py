@@ -43,7 +43,7 @@ def optimize_workflow_events(
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
                         if prev_info["raw_action"] == "type_text":
-                            if prev_info.get("excel_cell") == cell:
+                            if prev_info.get("excel_cell") == cell and prev_info.get("semantic_role") == val:
                                 is_duplicate = True
                             break
                         elif prev_info.get("excel_dest_cell"):
@@ -58,7 +58,7 @@ def optimize_workflow_events(
                                 break
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
-                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role or prev_info["raw_action"] == "key_down":
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
                                     insert_idx = i
                                 else:
                                     idx_to_remove.append(i)
@@ -109,7 +109,7 @@ def optimize_workflow_events(
                                     last_y = prev_info.get("cursor_y", prev_info.get("y", 0))
                             elif prev_info["raw_action"] in ["key_down", "type_text"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
-                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role or prev_info["raw_action"] == "key_down":
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
                                     has_nav_key = True
                                     break
                                 else:
@@ -213,7 +213,6 @@ def optimize_workflow_events(
             
             if best_period > 0 and (best_start_idx + best_period * 2) <= n:
                 pre_loop_events = loop_events[:best_start_idx]
-                optimized_workflow_info.extend(pre_loop_events)
                 
                 num_iterations = (n - best_start_idx) // best_period
                 iterations = []
@@ -225,15 +224,17 @@ def optimize_workflow_events(
                 second_iter = iterations[1]
                 
                 for k in range(len(first_iter)):
-                    if first_iter[k].get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == first_iter[k].get("raw_action"):
-                        diff_y = second_iter[k].get("cursor_y", second_iter[k].get("y", 0)) - first_iter[k].get("cursor_y", first_iter[k].get("y", 0))
-                        diff_x = second_iter[k].get("cursor_x", second_iter[k].get("x", 0)) - first_iter[k].get("cursor_x", first_iter[k].get("x", 0))
+                    evt = first_iter[k]
+                    
+                    if evt.get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == evt.get("raw_action"):
+                        diff_y = second_iter[k].get("cursor_y", second_iter[k].get("y", 0)) - evt.get("cursor_y", evt.get("y", 0))
+                        diff_x = second_iter[k].get("cursor_x", second_iter[k].get("x", 0)) - evt.get("cursor_x", evt.get("x", 0))
                         if 10 < abs(diff_y) < 200:
                             y_offset = diff_y
                         if 10 < abs(diff_x) < 200:
                             x_offset = diff_x
                             
-                    if first_iter[k].get("raw_action") in ["type_text", "key_down"]:
+                    if evt.get("raw_action") in ["type_text", "key_down"]:
                         vals = []
                         is_valid_num_seq = True
                         for iter_idx in range(len(iterations)):
@@ -252,18 +253,19 @@ def optimize_workflow_events(
                             step = vals[1] - vals[0]
                             is_uniform_step = all(vals[i] - vals[i - 1] == step for i in range(1, len(vals)))
                             if is_uniform_step and step != 0:
-                                first_iter[k]["sequence_value"] = {"start": vals[0], "step": step}
-                                first_iter[k]["is_sequence"] = True
-                                first_iter[k]["raw_action"] = "type_text"
-                                first_iter[k]["semantic_role"] = str(vals[0])
+                                evt["sequence_value"] = {"start": vals[0], "step": step}
+                                evt["is_sequence"] = True
+                                evt["raw_action"] = "type_text"
+                                evt["semantic_role"] = str(vals[0])
                                 
                     for cell_key in ["excel_cell", "excel_dest_cell"]:
-                        if cell_key in first_iter[k] and cell_key in second_iter[k]:
-                            if first_iter[k][cell_key] != second_iter[k][cell_key]:
-                                del first_iter[k][cell_key]
-                                first_iter[k]["dynamic_excel_cell"] = True
+                        if cell_key in evt and cell_key in second_iter[k]:
+                            if evt[cell_key] != second_iter[k][cell_key]:
+                                del evt[cell_key]
+                                evt["dynamic_excel_cell"] = True
                             
                 loop_start_info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                optimized_workflow_info.extend(pre_loop_events)
                 optimized_workflow_info.append(loop_start_info)
                 optimized_workflow_info.extend(first_iter)
                 logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}, count={num_iterations}). Offsets: y={y_offset}, x={x_offset}")
