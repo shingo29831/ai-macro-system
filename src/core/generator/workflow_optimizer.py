@@ -1,3 +1,4 @@
+# src/core/generator/workflow_optimizer.py
 # Role: 統合されたイベントリストに対し、Officeイベントのクリーンアップ、OSシェル操作のカット、ループ解析、変数化などの最適化を行うモジュール
 
 import logging
@@ -77,6 +78,7 @@ def optimize_workflow_events(
                     if not is_duplicate:
                         idx_to_remove = []
                         last_x, last_y = 0, 0
+                        has_nav_key = False
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
                             if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
@@ -89,21 +91,30 @@ def optimize_workflow_events(
                             elif prev_info["raw_action"] in ["key_down", "type_text"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
                                 if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
-                                    idx_to_remove.append(i)
+                                    has_nav_key = True
+                                    break
                                 else:
                                     break
                             else:
                                 break
                                 
-                        for i in sorted(idx_to_remove, reverse=True):
-                            cleaned_workflow_info.pop(i)
-                            
-                        info["raw_action"] = "click"
-                        info["excel_dest_cell"] = cell
-                        info["button"] = "left"
-                        info["cursor_x"] = last_x
-                        info["cursor_y"] = last_y
-                        cleaned_workflow_info.append(info)
+                        if has_nav_key:
+                            for i in sorted(idx_to_remove, reverse=True):
+                                cleaned_workflow_info.pop(i)
+                            for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                                if cleaned_workflow_info[i]["raw_action"] in ["key_down", "type_text"]:
+                                    cleaned_workflow_info[i]["excel_dest_cell"] = cell
+                                    break
+                        else:
+                            for i in sorted(idx_to_remove, reverse=True):
+                                cleaned_workflow_info.pop(i)
+                                
+                            info["raw_action"] = "click"
+                            info["excel_dest_cell"] = cell
+                            info["button"] = "left"
+                            info["cursor_x"] = last_x
+                            info["cursor_y"] = last_y
+                            cleaned_workflow_info.append(info)
                         
             continue
         
@@ -224,6 +235,12 @@ def optimize_workflow_events(
                                 first_iter[k]["is_sequence"] = True
                                 first_iter[k]["raw_action"] = "type_text"
                                 first_iter[k]["semantic_role"] = str(vals[0])
+                                
+                    for cell_key in ["excel_cell", "excel_dest_cell"]:
+                        if cell_key in first_iter[k] and cell_key in second_iter[k]:
+                            if first_iter[k][cell_key] != second_iter[k][cell_key]:
+                                del first_iter[k][cell_key]
+                                first_iter[k]["dynamic_excel_cell"] = True
                             
                 loop_start_info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
                 optimized_workflow_info.append(loop_start_info)
@@ -259,7 +276,7 @@ def optimize_workflow_events(
         elif info.get("excel_cell"):
             last_excel_dest_cell = info["excel_cell"]
         elif info["raw_action"] == "type_text" and last_excel_dest_cell:
-            if "excel_cell" not in info:
+            if "excel_cell" not in info and not info.get("dynamic_excel_cell"):
                 info["excel_cell"] = last_excel_dest_cell
 
     variables = {}
