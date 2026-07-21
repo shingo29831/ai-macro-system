@@ -1,3 +1,4 @@
+# src/core/generator/workflow_optimizer.py
 # Role: 統合されたイベントリストに対し、Officeイベントのクリーンアップ、OSシェル操作のカット、ループ解析、変数化などの最適化を行うモジュール
 
 import logging
@@ -39,10 +40,14 @@ def optimize_workflow_events(
                         val = val[:-2]
                     
                     is_duplicate = False
-                    if cleaned_workflow_info:
-                        last_info = cleaned_workflow_info[-1]
-                        if last_info.get("excel_cell") == cell and last_info.get("raw_action") == "type_text":
-                            is_duplicate = True
+                    for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                        prev_info = cleaned_workflow_info[i]
+                        if prev_info["raw_action"] == "type_text":
+                            if prev_info.get("excel_cell") == cell:
+                                is_duplicate = True
+                            break
+                        elif prev_info.get("excel_dest_cell"):
+                            break
                             
                     if not is_duplicate:
                         idx_to_remove = []
@@ -53,7 +58,7 @@ def optimize_workflow_events(
                                 break
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
-                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role or prev_info["raw_action"] == "key_down":
                                     insert_idx = i
                                 else:
                                     idx_to_remove.append(i)
@@ -78,10 +83,16 @@ def optimize_workflow_events(
                     cell = match.group(1).replace("$", "")
                     
                     is_duplicate = False
-                    if cleaned_workflow_info:
-                        last_info = cleaned_workflow_info[-1]
-                        if last_info.get("excel_dest_cell") == cell and last_info.get("raw_action") == "click":
-                            is_duplicate = True
+                    for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                        prev_info = cleaned_workflow_info[i]
+                        if prev_info["raw_action"] == "click" and prev_info.get("excel_dest_cell"):
+                            if prev_info.get("excel_dest_cell") == cell:
+                                is_duplicate = True
+                            break
+                        elif prev_info["raw_action"] == "type_text" and prev_info.get("excel_cell"):
+                            if prev_info.get("excel_cell") == cell:
+                                is_duplicate = True
+                            break
                             
                     if not is_duplicate:
                         idx_to_remove = []
@@ -94,11 +105,11 @@ def optimize_workflow_events(
                             if prev_info["raw_action"] in ["click", "move"]:
                                 idx_to_remove.append(i)
                                 if prev_info["raw_action"] == "click" and last_x == 0:
-                                    last_x = prev_info.get("cursor_x", 0)
-                                    last_y = prev_info.get("cursor_y", 0)
+                                    last_x = prev_info.get("cursor_x", prev_info.get("x", 0))
+                                    last_y = prev_info.get("cursor_y", prev_info.get("y", 0))
                             elif prev_info["raw_action"] in ["key_down", "type_text"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
-                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role or prev_info["raw_action"] == "key_down":
                                     has_nav_key = True
                                     break
                                 else:
@@ -117,12 +128,13 @@ def optimize_workflow_events(
                             for i in sorted(idx_to_remove, reverse=True):
                                 cleaned_workflow_info.pop(i)
                                 
-                            info["raw_action"] = "click"
-                            info["excel_dest_cell"] = cell
-                            info["button"] = "left"
-                            info["cursor_x"] = last_x
-                            info["cursor_y"] = last_y
-                            cleaned_workflow_info.append(info)
+                            if last_x != 0 or last_y != 0:
+                                info["raw_action"] = "click"
+                                info["excel_dest_cell"] = cell
+                                info["button"] = "left"
+                                info["cursor_x"] = last_x
+                                info["cursor_y"] = last_y
+                                cleaned_workflow_info.append(info)
                         
             continue
         
@@ -180,7 +192,8 @@ def optimize_workflow_events(
             best_score = 0.0
             best_start_idx = 0
             
-            for start_idx in range(min(4, max(1, n // 2)) if n >= 2 else 1):
+            max_start_idx = min(4, max(1, n - 1))
+            for start_idx in range(max_start_idx):
                 for p in range(1, (n - start_idx) // 2 + 1):
                     if should_cancel():
                         raise InterruptedError("Generation cancelled by user")
@@ -213,8 +226,8 @@ def optimize_workflow_events(
                 
                 for k in range(len(first_iter)):
                     if first_iter[k].get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == first_iter[k].get("raw_action"):
-                        diff_y = second_iter[k].get("cursor_y", 0) - first_iter[k].get("cursor_y", 0)
-                        diff_x = second_iter[k].get("cursor_x", 0) - first_iter[k].get("cursor_x", 0)
+                        diff_y = second_iter[k].get("cursor_y", second_iter[k].get("y", 0)) - first_iter[k].get("cursor_y", first_iter[k].get("y", 0))
+                        diff_x = second_iter[k].get("cursor_x", second_iter[k].get("x", 0)) - first_iter[k].get("cursor_x", first_iter[k].get("x", 0))
                         if 10 < abs(diff_y) < 200:
                             y_offset = diff_y
                         if 10 < abs(diff_x) < 200:
