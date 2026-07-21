@@ -87,7 +87,11 @@ class RecordDialog:
         
         event_no = state.get_next_event_no()
         dt = now_datetime()
-        window_info = process_monitor.get_foreground_window_info()
+        
+        window_info = {
+            "title": "System_Meta",
+            "rect": {"x": 0, "y": 0, "width": 0, "height": 0}
+        }
         
         if state.is_loop_recording:
             self.btn_loop.setText("⏹ 繰り返し終了")
