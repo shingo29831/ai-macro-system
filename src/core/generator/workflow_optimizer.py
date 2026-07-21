@@ -38,7 +38,6 @@ def optimize_workflow_events(
                     if val.endswith(".0"):
                         val = val[:-2]
                     
-                    # ★修正: 直前のイベントが全く同じセルに対する入力確定だった場合は、重複イベントとして無視する
                     is_duplicate = False
                     if cleaned_workflow_info:
                         last_info = cleaned_workflow_info[-1]
@@ -49,10 +48,8 @@ def optimize_workflow_events(
                         idx_to_remove = []
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
-                            # 直前のセル選択移動や、別の入力確定に到達したら遡りを終了
                             if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                                 break
-                            # 入力セッション中の物理キー入力、クリック、移動をすべて削除対象にする
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
                                 idx_to_remove.append(i)
                             else:
@@ -71,7 +68,6 @@ def optimize_workflow_events(
                 if match:
                     cell = match.group(1).replace("$", "")
                     
-                    # ★修正: 直前のイベントが全く同じセルに対する選択移動だった場合は、重複イベントとして無視する
                     is_duplicate = False
                     if cleaned_workflow_info:
                         last_info = cleaned_workflow_info[-1]
@@ -164,11 +160,9 @@ def optimize_workflow_events(
             best_period = 0
             best_score = 0.0
             best_start_idx = 0
-            best_first_iter = []
-            best_second_iter = []
             
-            for start_idx in range(min(4, max(1, n // 2))):
-                for p in range(2, (n - start_idx) // 2 + 1):
+            for start_idx in range(min(4, max(1, n // 2)) if n >= 2 else 1):
+                for p in range(1, (n - start_idx) // 2 + 1):
                     if should_cancel():
                         raise InterruptedError("Generation cancelled by user")
                         
@@ -181,27 +175,22 @@ def optimize_workflow_events(
                         best_score = score
                         best_period = p
                         best_start_idx = start_idx
-                        
-                        first_iter = []
-                        second_iter = []
-                        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-                            if tag in ['equal', 'replace']:
-                                for i, j in zip(range(i1, i2), range(j1, j2)):
-                                    first_iter.append(loop_events[start_idx + i])
-                                    second_iter.append(loop_events[start_idx + p + j])
-                        
-                        best_first_iter = first_iter
-                        best_second_iter = second_iter
 
             y_offset = 0
             x_offset = 0
             
-            if best_period > 0 and best_first_iter and best_second_iter:
+            if best_period > 0 and (best_start_idx + best_period * 2) <= n:
                 pre_loop_events = loop_events[:best_start_idx]
                 optimized_workflow_info.extend(pre_loop_events)
                 
-                first_iter = best_first_iter
-                second_iter = best_second_iter
+                num_iterations = (n - best_start_idx) // best_period
+                iterations = []
+                for it in range(num_iterations):
+                    it_start = best_start_idx + it * best_period
+                    iterations.append(loop_events[it_start : it_start + best_period])
+                
+                first_iter = iterations[0]
+                second_iter = iterations[1]
                 
                 for k in range(len(first_iter)):
                     if first_iter[k].get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == first_iter[k].get("raw_action"):
@@ -212,24 +201,34 @@ def optimize_workflow_events(
                         if 10 < abs(diff_x) < 200:
                             x_offset = diff_x
                             
-                    if first_iter[k].get("raw_action") in ["type_text", "key_down"] and second_iter[k].get("raw_action") in ["type_text", "key_down"]:
-                        val1 = first_iter[k].get("semantic_role")
-                        val2 = second_iter[k].get("semantic_role")
-                        try:
-                            if val1 is not None and val2 is not None:
-                                num1 = int(val1)
-                                num2 = int(val2)
-                                if num2 - num1 != 0:
-                                    first_iter[k]["sequence_value"] = {"start": num1, "step": num2 - num1}
-                                    first_iter[k]["is_sequence"] = True
-                                    first_iter[k]["raw_action"] = "type_text"
-                        except (ValueError, TypeError):
-                            pass
+                    if first_iter[k].get("raw_action") in ["type_text", "key_down"]:
+                        vals = []
+                        is_valid_num_seq = True
+                        for iter_idx in range(len(iterations)):
+                            if k < len(iterations[iter_idx]):
+                                v = iterations[iter_idx][k].get("semantic_role")
+                                try:
+                                    vals.append(int(v))
+                                except (ValueError, TypeError):
+                                    is_valid_num_seq = False
+                                    break
+                            else:
+                                is_valid_num_seq = False
+                                break
+                                
+                        if is_valid_num_seq and len(vals) >= 2:
+                            step = vals[1] - vals[0]
+                            is_uniform_step = all(vals[i] - vals[i - 1] == step for i in range(1, len(vals)))
+                            if is_uniform_step and step != 0:
+                                first_iter[k]["sequence_value"] = {"start": vals[0], "step": step}
+                                first_iter[k]["is_sequence"] = True
+                                first_iter[k]["raw_action"] = "type_text"
+                                first_iter[k]["semantic_role"] = str(vals[0])
                             
                 loop_start_info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
                 optimized_workflow_info.append(loop_start_info)
                 optimized_workflow_info.extend(first_iter)
-                logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}). Initial actions kept. Offsets: y={y_offset}, x={x_offset}")
+                logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}, count={num_iterations}). Offsets: y={y_offset}, x={x_offset}")
             else:
                 loop_start_info["loop_variables"] = {"y_offset": 0, "x_offset": 0}
                 optimized_workflow_info.append(loop_start_info)
@@ -253,7 +252,6 @@ def optimize_workflow_events(
             
     temp_workflow_info = optimized_workflow_info
     
-    # 物理キー入力に対する excel_cell の補完
     last_excel_dest_cell = None
     for info in temp_workflow_info:
         if info.get("excel_dest_cell"):
