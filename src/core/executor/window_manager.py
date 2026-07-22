@@ -122,6 +122,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 break
             time.sleep(0.5)
             
+    is_newly_launched = False
     if not windows:
         logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
         lower_app_name = app_name.lower()
@@ -150,6 +151,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             creationflags = 0x08000000
             use_shell = launch_cmd.startswith("start ")
             subprocess.Popen(launch_cmd, shell=use_shell, creationflags=creationflags)
+            is_newly_launched = True
             
             for _ in range(10):
                 time.sleep(1.0)
@@ -164,6 +166,21 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     if windows:
         win = windows[0]
         
+        if "excel" in app_name.lower() and is_newly_launched:
+            try:
+                win.set_focus()
+                time.sleep(0.5)
+                from pynput.keyboard import Controller as KeyboardController, Key
+                keyboard = KeyboardController()
+                keyboard.press(Key.enter)
+                keyboard.release(Key.enter)
+                time.sleep(1.0)
+                all_matched = desktop.windows(title_re=f".*{re.escape(app_name)}.*", visible_only=True)
+                if all_matched:
+                    win = all_matched[0]
+            except Exception as e:
+                logger.warning(f"Failed to send Enter key to Excel start screen: {e}")
+
         if win.is_minimized():
             win.restore()
             
