@@ -466,7 +466,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         try:
                             import win32com.client
                             if excel_app_cache is None:
-                                excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                try:
+                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                except Exception:
+                                    excel_app_cache = win32com.client.Dispatch("Excel.Application")
+                                    excel_app_cache.Visible = True
+                                    if excel_app_cache.Workbooks.Count == 0:
+                                        excel_app_cache.Workbooks.Add()
                             sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.05)
@@ -496,7 +502,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         try:
                             import win32com.client
                             if excel_app_cache is None:
-                                excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                try:
+                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                except Exception:
+                                    excel_app_cache = win32com.client.Dispatch("Excel.Application")
+                                    excel_app_cache.Visible = True
+                                    if excel_app_cache.Workbooks.Count == 0:
+                                        excel_app_cache.Workbooks.Add()
                             sheet = excel_app_cache.ActiveSheet
                             sheet.Range(excel_dest_cell).Select()
                             time.sleep(0.05)
@@ -559,7 +571,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                             try:
                                 import win32com.client
                                 if excel_app_cache is None:
-                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                    try:
+                                        excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
+                                    except Exception:
+                                        excel_app_cache = win32com.client.Dispatch("Excel.Application")
+                                        excel_app_cache.Visible = True
+                                        if excel_app_cache.Workbooks.Count == 0:
+                                            excel_app_cache.Workbooks.Add()
                                 sheet = excel_app_cache.ActiveSheet
                                 sheet.Range(excel_cell).Value = text
                                 time.sleep(0.05)
