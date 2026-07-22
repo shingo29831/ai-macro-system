@@ -41,6 +41,7 @@ class MainScreen(QWidget):
     start_record_requested = Signal()
     run_macro_requested = Signal()
     delete_macro_requested = Signal()
+    edit_macro_requested = Signal()
 
     def __init__(self, viewmodel: MainViewModel, parent=None):
         super().__init__(parent)
@@ -145,6 +146,11 @@ class MainScreen(QWidget):
         table_title_layout.addWidget(macro_list_title)
         table_title_layout.addWidget(macro_list_description)
 
+        self.btn_edit_selected = PushButton("編集", self)
+        self.btn_edit_selected.setFont(self._font(10))
+        self.btn_edit_selected.setFixedSize(100, 36)
+        self.btn_edit_selected.setEnabled(False)
+
         self.btn_delete_selected = PushButton("削除", self)
         self.btn_delete_selected.setFont(self._font(10))
         self.btn_delete_selected.setFixedSize(100, 36)
@@ -157,6 +163,7 @@ class MainScreen(QWidget):
 
         table_header.addLayout(table_title_layout)
         table_header.addStretch(1)
+        table_header.addWidget(self.btn_edit_selected)
         table_header.addWidget(self.btn_delete_selected)
         table_header.addWidget(self.btn_run_selected)
 
@@ -209,6 +216,9 @@ class MainScreen(QWidget):
         self.btn_delete_selected.clicked.connect(
             self.delete_macro_requested.emit
         )
+        self.btn_edit_selected.clicked.connect(
+            self.edit_macro_requested.emit
+        )
 
         self.table_macros.itemSelectionChanged.connect(
             self._on_table_selection_changed
@@ -237,6 +247,7 @@ class MainScreen(QWidget):
     def _update_control_buttons_state(self, can_run: bool):
         self.btn_run_selected.setEnabled(can_run)
         self.btn_delete_selected.setEnabled(can_run)
+        self.btn_edit_selected.setEnabled(can_run)
 
     @Slot(list)
     def _render_table(self, macros: list):
@@ -412,7 +423,10 @@ class MainWindow(FluentWindow):
             self.open_record_dialog
         )
         self.home_screen.run_macro_requested.connect(
-            self.open_running_dialog
+            self.open_macro_editor_for_run
+        )
+        self.home_screen.edit_macro_requested.connect(
+            self.open_macro_editor_for_edit
         )
         self.home_screen.delete_macro_requested.connect(
             self._on_delete_selected_clicked
@@ -508,9 +522,39 @@ class MainWindow(FluentWindow):
             self.raise_()
             self.activateWindow()
 
-    def open_running_dialog(self):
+    def open_macro_editor_for_edit(self):
+        macro_name = self.viewmodel._selected_macro
+        if not macro_name:
+            return
+        commands = self.viewmodel.load_macro_commands(macro_name)
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
+        from core.recorder.screen_capturer import get_macros_root
+        workflow_dir = get_macros_root() / workflow_id
+        
+        from ui.views.macro_editor.macro_editor_dialog import MacroEditorDialog
+        dialog = MacroEditorDialog(macro_name, commands, workflow_dir, is_temporary=False, parent=self)
+        if dialog.exec():
+            self.viewmodel.save_macro_commands(macro_name, dialog.get_commands())
+            QMessageBox.information(self, "保存完了", "マクロを保存しました。")
+
+    def open_macro_editor_for_run(self):
+        macro_name = self.viewmodel._selected_macro
+        if not macro_name:
+            return
+        commands = self.viewmodel.load_macro_commands(macro_name)
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
+        from core.recorder.screen_capturer import get_macros_root
+        workflow_dir = get_macros_root() / workflow_id
+        
+        from ui.views.macro_editor.macro_editor_dialog import MacroEditorDialog
+        dialog = MacroEditorDialog(macro_name, commands, workflow_dir, is_temporary=True, parent=self)
+        if dialog.exec():
+            temp_commands = dialog.get_commands()
+            self.open_running_dialog(temp_commands)
+
+    def open_running_dialog(self, temp_commands=None):
         try:
-            self.viewmodel.run_selected_macro()
+            self.viewmodel.run_selected_macro(temp_commands)
 
             self.running_dialog = RunningDialog(
                 self,

@@ -104,6 +104,42 @@ class MainViewModel(QObject):
             logger.error(f'Failed to load macros from directory structure: {e}')
             raise
 
+    def load_macro_commands(self, macro_name: str) -> list[dict]:
+        workflow_id = self._macro_id_map.get(macro_name)
+        if not workflow_id:
+            raise ValueError(f"Macro not found: {macro_name}")
+            
+        from core.recorder.screen_capturer import get_macros_root
+        macros_root = get_macros_root()
+        macro_file = macros_root / workflow_id / "executable_macro.json"
+        
+        if not macro_file.exists():
+            return []
+            
+        with open(macro_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("commands", [])
+
+    def save_macro_commands(self, macro_name: str, commands: list[dict]):
+        workflow_id = self._macro_id_map.get(macro_name)
+        if not workflow_id:
+            raise ValueError(f"Macro not found: {macro_name}")
+            
+        from core.recorder.screen_capturer import get_macros_root
+        macros_root = get_macros_root()
+        macro_file = macros_root / workflow_id / "executable_macro.json"
+        
+        if macro_file.exists():
+            with open(macro_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {"macro_id": workflow_id, "target_application": "auto_generated"}
+            
+        data["commands"] = commands
+        
+        with open(macro_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
     @Slot()
     def start_recording(self):
         try:
@@ -156,7 +192,6 @@ class MainViewModel(QObject):
                         def check_cancel() -> bool:
                             return self._cancel_requested
                         
-                        # 修正箇所: cfg=app_config というキーワード引数指定を削除し、位置引数に戻しました
                         log_integrator.generate_macro_workflow(
                             workflow_id, 
                             app_config, 
@@ -204,8 +239,8 @@ class MainViewModel(QObject):
         self._selected_macro = macro_name if macro_name else None
         self.can_run_changed.emit(self._selected_macro is not None)
 
-    @Slot()
-    def run_selected_macro(self):
+    @Slot(list)
+    def run_selected_macro(self, temp_commands: list[dict] = None):
         if not self._selected_macro:
             logger.warning('Run requested but no macro is selected.')
             return
@@ -223,9 +258,9 @@ class MainViewModel(QObject):
             def status_cb(text: str, is_healing: bool):
                 self._internal_status_signal.emit(text, is_healing)
             
-            def background_execution(cfg: AppConfig):
+            def background_execution(cfg: AppConfig, cmds: list[dict] = None):
                 try:
-                    runner.run_workflow(workflow_id, cfg, status_callback=status_cb)
+                    runner.run_workflow(workflow_id, cfg, status_callback=status_cb, temp_commands=cmds)
                     logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
                 except Exception as exec_err:
                     logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
@@ -233,7 +268,7 @@ class MainViewModel(QObject):
                     self.load_macros()
                     self.execution_finished.emit()
             
-            exec_thread = threading.Thread(target=background_execution, args=(app_config,), daemon=True)
+            exec_thread = threading.Thread(target=background_execution, args=(app_config, temp_commands), daemon=True)
             exec_thread.start()
             
         except Exception as e:

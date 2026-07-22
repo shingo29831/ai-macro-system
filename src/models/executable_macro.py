@@ -1,3 +1,4 @@
+# src/models/executable_macro.py
 # @role: 実行エンジンが直接解釈可能な、メソッド名と解決済み引数を持つマクロ用JSONの型定義。
 #
 # 【参照元 (呼ばれる側)】
@@ -81,6 +82,24 @@ class ScrollCommand(BaseModel):
     method: Literal["scroll"] = "scroll"
     args: ScrollArgs
 
+class LoopStartArgs(BaseModel):
+    loop_count: int = Field(default=1, description="Number of times to repeat the loop.")
+    loop_variables: Optional[dict] = Field(default_factory=dict, description="Variables to change in each iteration (e.g., x_offset, y_offset).")
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+
+class LoopStartCommand(BaseModel):
+    method: Literal["loop_start"] = "loop_start"
+    args: LoopStartArgs
+
+class LoopEndArgs(BaseModel):
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+
+class LoopEndCommand(BaseModel):
+    method: Literal["loop_end"] = "loop_end"
+    args: Optional[LoopEndArgs] = Field(default_factory=LoopEndArgs)
+
 MacroCommand = Union[
     WaitCommand, 
     ClickCommand, 
@@ -88,7 +107,9 @@ MacroCommand = Union[
     PressKeyCommand, 
     ActivateWindowCommand, 
     MoveCommand, 
-    ScrollCommand
+    ScrollCommand,
+    LoopStartCommand,
+    LoopEndCommand
 ]
 
 class ExecutableMacro(BaseModel):

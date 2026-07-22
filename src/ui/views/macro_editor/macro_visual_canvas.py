@@ -127,9 +127,11 @@ class MacroVisualCanvas(QWidget):
         for cmd in self.commands:
             method = cmd.get("method")
             if method == "loop_start":
+                args = cmd.get("args", {})
                 loop_stack.append({
                     "start_action_idx": action_idx,
-                    "loop_count": cmd.get("args", {}).get("loop_count", 1)
+                    "loop_count": args.get("loop_count", 1),
+                    "loop_variables": args.get("loop_variables", {})
                 })
             elif method == "loop_end":
                 if loop_stack:
@@ -222,8 +224,19 @@ class MacroVisualCanvas(QWidget):
             text = f"{loop['loop_count']}回"
             text_y = (y_top + y_bottom) / 2
             
+            vars_text = ""
+            if loop.get("loop_variables"):
+                vars_text = "\n".join([f"{k}: {v}" for k, v in loop["loop_variables"].items()])
+            
             if loop["direction"] == "right":
                 painter.drawText(x_turn + 8, text_y, text)
+                if vars_text:
+                    for idx, line in enumerate(vars_text.split("\n")):
+                        painter.drawText(x_turn + 8, text_y + 15 + (idx * 15), line)
             else:
                 text_width = fm.horizontalAdvance(text)
                 painter.drawText(x_turn - text_width - 8, text_y, text)
+                if vars_text:
+                    for idx, line in enumerate(vars_text.split("\n")):
+                        line_width = fm.horizontalAdvance(line)
+                        painter.drawText(x_turn - line_width - 8, text_y + 15 + (idx * 15), line)
