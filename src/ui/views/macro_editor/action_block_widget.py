@@ -1,16 +1,26 @@
 import json
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QFont
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
+                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox)
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QDrag, QMouseEvent
+from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
 
 class ActionBlockWidget(QFrame):
-    def __init__(self, command: dict, workflow_dir: Path, parent=None):
+    delete_requested = Signal(int)
+    content_changed = Signal()
+
+    def __init__(self, command: dict, cmd_index: int, workflow_dir: Path, loop_start_cmd: dict = None, parent=None):
         super().__init__(parent)
         self.command = command
+        self.cmd_index = cmd_index
         self.workflow_dir = workflow_dir
+        self.loop_start_cmd = loop_start_cmd
+        
         self.method = command.get("method", "")
         self.args = command.get("args", {})
+        
+        self.is_expanded = False
+        self.drag_start_pos = None
         
         self.setObjectName("ActionBlock")
         self.setStyleSheet("""
@@ -28,11 +38,11 @@ class ActionBlockWidget(QFrame):
         self._build_ui()
         
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(16, 16, 16, 16)
+        self.main_layout.setSpacing(12)
         
-        # 1. ヘッダー（アクション名）
+        # 1. ヘッダー（アクション名と削除ボタン）
         header_layout = QHBoxLayout()
         title_label = QLabel(self._get_title())
         font = title_label.font()
@@ -42,7 +52,14 @@ class ActionBlockWidget(QFrame):
         title_label.setStyleSheet("color: #333333;")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        layout.addLayout(header_layout)
+        
+        delete_btn = QPushButton("✕")
+        delete_btn.setFixedSize(24, 24)
+        delete_btn.setStyleSheet("QPushButton { border: none; color: #d13438; font-weight: bold; } QPushButton:hover { background-color: #fde7e9; border-radius: 12px; }")
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.cmd_index))
+        header_layout.addWidget(delete_btn)
+        
+        self.main_layout.addLayout(header_layout)
         
         # 2. スクリーンショット画像とカーソル合成
         raw_event_id = self.args.get("raw_event_id")
@@ -53,33 +70,123 @@ class ActionBlockWidget(QFrame):
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 pixmap = QPixmap(str(img_path))
                 
-                # クリックや移動の場合は座標にカーソル風のマークを描画
                 if self.method in ["click", "move"] and "x" in self.args and "y" in self.args:
                     pixmap = self._draw_cursor_on_pixmap(pixmap, self.args["x"], self.args["y"])
                 
-                # 表示用に縮小（アスペクト比維持）
                 scaled_pixmap = pixmap.scaled(308, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 img_label.setPixmap(scaled_pixmap)
                 img_label.setStyleSheet("border: 1px solid #e0e0e0; border-radius: 4px;")
-                layout.addWidget(img_label)
+                self.main_layout.addWidget(img_label)
                 
-        # 3. フッター（テキスト内容やキー情報）
-        info_text = self._get_info_text()
-        if info_text:
-            info_label = QLabel(info_text)
-            info_label.setWordWrap(True)
-            info_label.setStyleSheet("color: #555555; background-color: #f3f2f1; padding: 6px; border-radius: 4px;")
-            layout.addWidget(info_label)
+        # 3. フッター（サマリー情報）
+        self.info_label = QLabel(self._get_info_text())
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet("color: #555555; background-color: #f3f2f1; padding: 6px; border-radius: 4px;")
+        if not self.info_label.text():
+            self.info_label.hide()
+        self.main_layout.addWidget(self.info_label)
+        
+        # 4. インライン編集フォーム（初期状態は非表示）
+        self.edit_container = QWidget()
+        self.edit_layout = QFormLayout(self.edit_container)
+        self.edit_layout.setContentsMargins(0, 10, 0, 0)
+        self._build_edit_form()
+        self.edit_container.hide()
+        self.main_layout.addWidget(self.edit_container)
+        
+    def _build_edit_form(self):
+        if self.method in ["click", "move"]:
+            self.x_spin = QSpinBox()
+            self.x_spin.setRange(-9999, 9999)
+            self.x_spin.setValue(self.args.get("x", 0))
+            self.x_spin.valueChanged.connect(lambda v: self._update_arg("x", v))
+            self.edit_layout.addRow("X座標:", self.x_spin)
             
+            self.y_spin = QSpinBox()
+            self.y_spin.setRange(-9999, 9999)
+            self.y_spin.setValue(self.args.get("y", 0))
+            self.y_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
+            self.edit_layout.addRow("Y座標:", self.y_spin)
+            
+            if self.loop_start_cmd:
+                loop_vars = self.loop_start_cmd.setdefault("args", {}).setdefault("loop_variables", {})
+                self.dx_spin = QSpinBox()
+                self.dx_spin.setRange(-999, 999)
+                self.dx_spin.setValue(loop_vars.get("x_offset", 0))
+                self.dx_spin.valueChanged.connect(lambda v: self._update_loop_var("x_offset", v))
+                self.edit_layout.addRow("X差分(ループ):", self.dx_spin)
+                
+                self.dy_spin = QSpinBox()
+                self.dy_spin.setRange(-999, 999)
+                self.dy_spin.setValue(loop_vars.get("y_offset", 0))
+                self.dy_spin.valueChanged.connect(lambda v: self._update_loop_var("y_offset", v))
+                self.edit_layout.addRow("Y差分(ループ):", self.dy_spin)
+                
+        elif self.method == "type_text":
+            self.text_edit = QLineEdit(self.args.get("text", ""))
+            self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
+            self.edit_layout.addRow("テキスト:", self.text_edit)
+            
+            if self.loop_start_cmd:
+                seq_val = self.args.setdefault("sequence_value", {"start": 1, "step": 1})
+                self.seq_start_spin = QSpinBox()
+                self.seq_start_spin.setValue(seq_val.get("start", 1))
+                self.seq_start_spin.valueChanged.connect(lambda v: self._update_seq_var("start", v))
+                self.edit_layout.addRow("連番開始:", self.seq_start_spin)
+                
+                self.seq_step_spin = QSpinBox()
+                self.seq_step_spin.setValue(seq_val.get("step", 1))
+                self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("step", v))
+                self.edit_layout.addRow("ステップ:", self.seq_step_spin)
+                
+        elif self.method == "wait":
+            self.duration_spin = QDoubleSpinBox()
+            self.duration_spin.setRange(0.1, 3600.0)
+            self.duration_spin.setValue(self.args.get("duration", 1.0))
+            self.duration_spin.valueChanged.connect(lambda v: self._update_arg("duration", v))
+            self.edit_layout.addRow("待機(秒):", self.duration_spin)
+
+    def _update_arg(self, key, value):
+        self.args[key] = value
+        self.info_label.setText(self._get_info_text())
+        self.content_changed.emit()
+
+    def _update_loop_var(self, key, value):
+        self.loop_start_cmd["args"]["loop_variables"][key] = value
+        self.content_changed.emit()
+        
+    def _update_seq_var(self, key, value):
+        self.args["sequence_value"][key] = value
+        self.content_changed.emit()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self.drag_start_pos:
+            return
+        if (event.pos() - self.drag_start_pos).manhattanLength() > 10:
+            drag = QDrag(self)
+            mime_data = QMimeData()
+            mime_data.setText(f"action_block:{self.cmd_index}")
+            drag.setMimeData(mime_data)
+            drag.exec_(Qt.DropAction.MoveAction)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and self.drag_start_pos:
+            if (event.pos() - self.drag_start_pos).manhattanLength() <= 10:
+                self.is_expanded = not self.is_expanded
+                self.edit_container.setVisible(self.is_expanded)
+        self.drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
     def _get_title(self) -> str:
         method_map = {
-            "click": "クリック",
-            "move": "マウス移動",
-            "type_text": "テキスト入力",
-            "press_key": "キー入力",
-            "wait": "待機",
-            "scroll": "スクロール",
-            "activate_window": "ウィンドウアクティブ化"
+            "click": "クリック", "move": "マウス移動", "type_text": "テキスト入力",
+            "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", "activate_window": "ウィンドウアクティブ化"
         }
         return method_map.get(self.method, self.method)
         
@@ -97,18 +204,12 @@ class ActionBlockWidget(QFrame):
     def _draw_cursor_on_pixmap(self, pixmap: QPixmap, x: int, y: int) -> QPixmap:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # 半透明の赤い円を描画
         pen = QPen(QColor(255, 0, 0, 200), 4)
         painter.setPen(pen)
         painter.setBrush(QColor(255, 0, 0, 80))
-        
         radius = 24
         painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
-        
-        # 十字のクロスヘアを描画
         painter.drawLine(x - radius - 10, y, x + radius + 10, y)
         painter.drawLine(x, y - radius - 10, x, y + radius + 10)
-        
         painter.end()
         return pixmap

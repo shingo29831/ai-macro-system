@@ -1,11 +1,13 @@
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout
-from PySide6.QtGui import QPainter, QPen, QColor
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMenu
+from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QCursor
+from PySide6.QtCore import Qt, Signal
 
 from .action_block_widget import ActionBlockWidget
 
 class MacroVisualCanvas(QWidget):
+    commands_changed = Signal()
+
     def __init__(self, commands: list, workflow_dir: Path, parent=None):
         super().__init__(parent)
         self.commands = commands
@@ -13,18 +15,115 @@ class MacroVisualCanvas(QWidget):
         self.blocks = []
         self.loops = []
         
-        self._analyze_loops()
-        self._build_ui()
+        self.setAcceptDrops(True)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.main_layout.setContentsMargins(100, 60, 100, 60)
+        self.main_layout.setSpacing(20)
         
+        self.rebuild()
+        
+    def rebuild(self):
+        self._analyze_loops()
+        
+        while self.main_layout.count():
+            item = self.main_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+                
+        self.blocks.clear()
+        
+        # 先頭の追加ボタン
+        self.main_layout.addWidget(self._create_add_button(0))
+        
+        current_loop_start = None
+        for i, cmd in enumerate(self.commands):
+            method = cmd.get("method")
+            if method == "loop_start":
+                current_loop_start = cmd
+                continue
+            elif method == "loop_end":
+                current_loop_start = None
+                continue
+                
+            block = ActionBlockWidget(cmd, i, self.workflow_dir, current_loop_start)
+            block.delete_requested.connect(self._on_delete_requested)
+            block.content_changed.connect(self.commands_changed.emit)
+            
+            self.main_layout.addWidget(block)
+            self.blocks.append(block)
+            
+            # ブロック間の追加ボタン（余白確保のためマージンを設定）
+            add_btn = self._create_add_button(i + 1)
+            add_btn.setStyleSheet("QPushButton { border: none; color: #0078d4; font-size: 18px; font-weight: bold; margin-top: 30px; margin-bottom: 30px; } QPushButton:hover { background-color: #e1dfdd; border-radius: 12px; }")
+            self.main_layout.addWidget(add_btn)
+            
+        self.update()
+
+    def _create_add_button(self, insert_idx: int) -> QPushButton:
+        btn = QPushButton("＋")
+        btn.setFixedSize(24, 24)
+        btn.setStyleSheet("QPushButton { border: none; color: #0078d4; font-size: 18px; font-weight: bold; } QPushButton:hover { background-color: #e1dfdd; border-radius: 12px; }")
+        btn.clicked.connect(lambda: self._show_add_menu(insert_idx))
+        return btn
+
+    def _show_add_menu(self, insert_idx: int):
+        menu = QMenu(self)
+        actions = {
+            "クリック": {"method": "click", "args": {"x": 0, "y": 0, "button": "left", "clicks": 1}},
+            "テキスト入力": {"method": "type_text", "args": {"text": ""}},
+            "待機": {"method": "wait", "args": {"duration": 1.0}},
+            "キー入力": {"method": "press_key", "args": {"key": "enter"}}
+        }
+        for label, cmd_template in actions.items():
+            menu.addAction(label, lambda c=cmd_template: self._add_command(c, insert_idx))
+        menu.exec_(QCursor.pos())
+
+    def _add_command(self, cmd_template: dict, insert_idx: int):
+        import copy
+        self.commands.insert(insert_idx, copy.deepcopy(cmd_template))
+        self.commands_changed.emit()
+        self.rebuild()
+
+    def _on_delete_requested(self, cmd_index: int):
+        if 0 <= cmd_index < len(self.commands):
+            self.commands.pop(cmd_index)
+            self.commands_changed.emit()
+            self.rebuild()
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasText() and event.mimeData().text().startswith("action_block:"):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        mime_text = event.mimeData().text()
+        source_idx = int(mime_text.split(":")[1])
+        
+        drop_y = event.pos().y()
+        target_idx = len(self.commands)
+        
+        for block in self.blocks:
+            if drop_y < block.geometry().center().y():
+                target_idx = block.cmd_index
+                break
+                
+        if source_idx == target_idx or source_idx == target_idx - 1:
+            return
+            
+        cmd = self.commands.pop(source_idx)
+        if target_idx > source_idx:
+            target_idx -= 1
+        self.commands.insert(target_idx, cmd)
+        
+        self.commands_changed.emit()
+        self.rebuild()
+
     def _analyze_loops(self):
-        """
-        コマンドリストを解析し、ループの範囲と左右レーンの割り当てを計算する。
-        """
         self.loops = []
         loop_stack = []
         action_idx = 0
         
-        # 1. ループの範囲（開始・終了ブロックのインデックス）を特定
         for cmd in self.commands:
             method = cmd.get("method")
             if method == "loop_start":
@@ -35,60 +134,30 @@ class MacroVisualCanvas(QWidget):
             elif method == "loop_end":
                 if loop_stack:
                     loop_info = loop_stack.pop()
-                    # loop_end の直前のアクションが終了ブロック
                     loop_info["end_action_idx"] = action_idx - 1
                     loop_info["size"] = loop_info["end_action_idx"] - loop_info["start_action_idx"]
                     self.loops.append(loop_info)
             else:
-                # 実際のアクションブロックのみカウント
                 action_idx += 1
                 
-        # 2. ループを大きさ（包含するブロック数）の降順にソート
         self.loops.sort(key=lambda x: x["size"], reverse=True)
-        
         right_loops = []
         left_loops = []
         
-        # 3. 左右に順番に割り振り、交差しないようにレーン（外側への距離）を計算
         for i, loop in enumerate(self.loops):
-            if i % 2 == 0:
-                direction = "right"
-                target_list = right_loops
-            else:
-                direction = "left"
-                target_list = left_loops
+            direction = "right" if i % 2 == 0 else "left"
+            target_list = right_loops if direction == "right" else left_loops
                 
-            # 同じ方向に割り当てられたループの中で、範囲が重なるものを探す
             overlapping_lanes = []
             for other in target_list:
-                # 重なり判定（一方が他方の完全に外側でない場合は重なっている）
                 if not (loop["end_action_idx"] < other["start_action_idx"] or loop["start_action_idx"] > other["end_action_idx"]):
                     overlapping_lanes.append(other["lane"])
                     
-            # 重なるループの最大レーン + 1 を自分のレーンとする（重ならなければレーン0）
             lane = max(overlapping_lanes) + 1 if overlapping_lanes else 0
-            
             loop["direction"] = direction
             loop["lane"] = lane
             target_list.append(loop)
 
-    def _build_ui(self):
-        # 中央揃えの縦レイアウト
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        # ループ矢印が上下にはみ出さないようマージンを少し大きめに設定
-        self.main_layout.setContentsMargins(100, 60, 100, 60)
-        self.main_layout.setSpacing(80) # 矢印を描画するためのブロック間の余白
-        
-        for cmd in self.commands:
-            method = cmd.get("method")
-            if method in ["loop_start", "loop_end"]:
-                continue
-                
-            block = ActionBlockWidget(cmd, self.workflow_dir)
-            self.main_layout.addWidget(block)
-            self.blocks.append(block)
-            
     def paintEvent(self, event):
         super().paintEvent(event)
         if not self.blocks:
@@ -97,7 +166,6 @@ class MacroVisualCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # --- 1. フロー矢印（ブロック間の下向き直線）の描画 ---
         flow_pen = QPen(QColor(180, 180, 180), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(flow_pen)
         
@@ -115,7 +183,6 @@ class MacroVisualCanvas(QWidget):
             painter.drawLine(x, y2, x - arrow_size, y2 - arrow_size)
             painter.drawLine(x, y2, x + arrow_size, y2 - arrow_size)
 
-        # --- 2. ループ矢印の描画 ---
         loop_pen = QPen(QColor("#0078d4"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(loop_pen)
         
@@ -135,32 +202,23 @@ class MacroVisualCanvas(QWidget):
             end_block = self.blocks[end_idx]
             
             x_center = start_block.geometry().center().x()
-            
-            # ブロック間スペース(80)の中間点(40)を曲がるポイントとする
             y_bottom = end_block.geometry().bottom() + 40
             y_top = start_block.geometry().top() - 40
             
-            # ブロックの幅(340)の半分(170) + 基本余白(20)
             base_offset = 190
             lane_width = 40
             offset = base_offset + loop["lane"] * lane_width
             
-            if loop["direction"] == "right":
-                x_turn = x_center + offset
-            else:
-                x_turn = x_center - offset
+            x_turn = x_center + offset if loop["direction"] == "right" else x_center - offset
                 
-            # コの字型の線を描画（下端から出て上端へ戻る）
             painter.drawLine(x_center, y_bottom, x_turn, y_bottom)
             painter.drawLine(x_turn, y_bottom, x_turn, y_top)
             painter.drawLine(x_turn, y_top, x_center, y_top)
             
-            # 矢印の先端（上端中央で下向きに合流）
             arrow_size = 8
             painter.drawLine(x_center, y_top, x_center - arrow_size, y_top - arrow_size)
             painter.drawLine(x_center, y_top, x_center + arrow_size, y_top - arrow_size)
             
-            # ループ回数のテキストを描画
             text = f"{loop['loop_count']}回"
             text_y = (y_top + y_bottom) / 2
             
