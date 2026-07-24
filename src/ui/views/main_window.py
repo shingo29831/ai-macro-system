@@ -528,6 +528,7 @@ class MainWindow(FluentWindow):
         workflow_dir = get_macros_root() / workflow_id
         
         self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False)
+        self.navigationInterface.hide()
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     def open_macro_editor_for_run(self):
@@ -540,20 +541,24 @@ class MainWindow(FluentWindow):
         workflow_dir = get_macros_root() / workflow_id
         
         self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=True)
+        self.navigationInterface.hide()
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     @Slot(str, list)
     def _on_macro_saved(self, macro_name: str, commands: list):
         self.viewmodel.save_macro_commands(macro_name, commands)
         QMessageBox.information(self, "保存完了", "マクロを保存しました。")
+        self.navigationInterface.show()
         self.stackedWidget.setCurrentWidget(self.home_screen)
 
     @Slot()
     def _on_macro_edit_canceled(self):
+        self.navigationInterface.show()
         self.stackedWidget.setCurrentWidget(self.home_screen)
 
     @Slot(list)
     def _on_macro_run_requested(self, temp_commands: list):
+        self.navigationInterface.show()
         self.stackedWidget.setCurrentWidget(self.home_screen)
         self.open_running_dialog(temp_commands)
 

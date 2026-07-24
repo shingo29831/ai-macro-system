@@ -182,7 +182,8 @@ class ActionBlockWidget(QFrame):
     def _get_title(self) -> str:
         method_map = {
             "click": "クリック", "move": "マウス移動", "type_text": "テキスト入力",
-            "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", "activate_window": "ウィンドウアクティブ化"
+            "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", 
+            "activate_window": "ウィンドウアクティブ化", "loop_start": "ループ開始", "loop_end": "ループ終了"
         }
         return method_map.get(self.method, self.method)
         
@@ -195,6 +196,8 @@ class ActionBlockWidget(QFrame):
             return f"待機時間: {self.args.get('duration', 0)} 秒"
         elif self.method == "activate_window":
             return f"対象: {self.args.get('window_title', '')}"
+        elif self.method == "loop_start":
+            return f"回数: {self.args.get('loop_count', 1)} 回"
         return ""
         
     def _draw_cursor_on_pixmap(self, pixmap: QPixmap, x: int, y: int) -> QPixmap:

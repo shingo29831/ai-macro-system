@@ -1,7 +1,7 @@
 # src/ui/views/macro_editor/macro_visual_canvas.py
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMenu
-from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QCursor
+from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent
 from PySide6.QtCore import Qt, Signal
 
 from .action_block_widget import ActionBlockWidget
@@ -19,8 +19,8 @@ class MacroVisualCanvas(QWidget):
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.main_layout.setContentsMargins(100, 60, 100, 60)
-        self.main_layout.setSpacing(20)
+        self.main_layout.setContentsMargins(100, 40, 100, 40)
+        self.main_layout.setSpacing(40) # ブロック間の間隔
         
         self.rebuild()
         
@@ -35,18 +35,11 @@ class MacroVisualCanvas(QWidget):
                 
         self.blocks.clear()
         
-        # 先頭の追加ボタン
-        self.main_layout.addWidget(self._create_add_button(0))
-        
         current_loop_depth = 0
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
             if method == "loop_start":
                 current_loop_depth += 1
-                continue
-            elif method == "loop_end":
-                current_loop_depth = max(0, current_loop_depth - 1)
-                continue
                 
             is_in_loop = current_loop_depth > 0
             block = ActionBlockWidget(cmd, i, self.workflow_dir, is_in_loop)
@@ -56,37 +49,25 @@ class MacroVisualCanvas(QWidget):
             self.main_layout.addWidget(block)
             self.blocks.append(block)
             
-            # ブロック間の追加ボタン
-            add_btn = self._create_add_button(i + 1)
-            add_btn.setStyleSheet("QPushButton { border: none; color: #0078d4; font-size: 18px; font-weight: bold; margin-top: 30px; margin-bottom: 30px; } QPushButton:hover { background-color: #e1dfdd; border-radius: 12px; }")
-            self.main_layout.addWidget(add_btn)
+            if method == "loop_end":
+                current_loop_depth = max(0, current_loop_depth - 1)
             
         self.update()
 
-    def _create_add_button(self, insert_idx: int) -> QPushButton:
-        btn = QPushButton("＋")
-        btn.setFixedSize(24, 24)
-        btn.setStyleSheet("QPushButton { border: none; color: #0078d4; font-size: 18px; font-weight: bold; } QPushButton:hover { background-color: #e1dfdd; border-radius: 12px; }")
-        btn.clicked.connect(lambda: self._show_add_menu(insert_idx))
-        return btn
+    def get_block_widget(self, index: int) -> QWidget:
+        for block in self.blocks:
+            if block.cmd_index == index:
+                return block
+        return None
 
-    def _show_add_menu(self, insert_idx: int):
-        menu = QMenu(self)
-        actions = {
-            "クリック": {"method": "click", "args": {"x": 0, "y": 0, "button": "left", "clicks": 1}},
-            "テキスト入力": {"method": "type_text", "args": {"text": ""}},
-            "待機": {"method": "wait", "args": {"duration": 1.0}},
-            "キー入力": {"method": "press_key", "args": {"key": "enter"}}
+    def _get_template_for_action(self, action_type: str) -> dict:
+        templates = {
+            "click": {"method": "click", "args": {"x": 0, "y": 0, "button": "left", "clicks": 1}},
+            "type_text": {"method": "type_text", "args": {"text": ""}},
+            "wait": {"method": "wait", "args": {"duration": 1.0}},
+            "press_key": {"method": "press_key", "args": {"key": "enter"}}
         }
-        for label, cmd_template in actions.items():
-            menu.addAction(label, lambda c=cmd_template: self._add_command(c, insert_idx))
-        menu.exec_(QCursor.pos())
-
-    def _add_command(self, cmd_template: dict, insert_idx: int):
-        import copy
-        self.commands.insert(insert_idx, copy.deepcopy(cmd_template))
-        self.commands_changed.emit()
-        self.rebuild()
+        return templates.get(action_type, {"method": action_type, "args": {}})
 
     def _on_delete_requested(self, cmd_index: int):
         if 0 <= cmd_index < len(self.commands):
@@ -95,13 +76,12 @@ class MacroVisualCanvas(QWidget):
             self.rebuild()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasText() and event.mimeData().text().startswith("action_block:"):
+        mime_text = event.mimeData().text()
+        if mime_text.startswith("action_block:") or mime_text.startswith("new_action:"):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
         mime_text = event.mimeData().text()
-        source_idx = int(mime_text.split(":")[1])
-        
         drop_y = event.pos().y()
         target_idx = len(self.commands)
         
@@ -110,14 +90,22 @@ class MacroVisualCanvas(QWidget):
                 target_idx = block.cmd_index
                 break
                 
-        if source_idx == target_idx or source_idx == target_idx - 1:
-            return
+        if mime_text.startswith("action_block:"):
+            source_idx = int(mime_text.split(":")[1])
+            if source_idx == target_idx or source_idx == target_idx - 1:
+                return
+                
+            cmd = self.commands.pop(source_idx)
+            if target_idx > source_idx:
+                target_idx -= 1
+            self.commands.insert(target_idx, cmd)
             
-        cmd = self.commands.pop(source_idx)
-        if target_idx > source_idx:
-            target_idx -= 1
-        self.commands.insert(target_idx, cmd)
-        
+        elif mime_text.startswith("new_action:"):
+            action_type = mime_text.split(":")[1]
+            cmd_template = self._get_template_for_action(action_type)
+            import copy
+            self.commands.insert(target_idx, copy.deepcopy(cmd_template))
+            
         self.commands_changed.emit()
         self.rebuild()
 
@@ -137,11 +125,10 @@ class MacroVisualCanvas(QWidget):
             elif method == "loop_end":
                 if loop_stack:
                     loop_info = loop_stack.pop()
-                    loop_info["end_action_idx"] = action_idx - 1
+                    loop_info["end_action_idx"] = action_idx
                     loop_info["size"] = loop_info["end_action_idx"] - loop_info["start_action_idx"]
                     self.loops.append(loop_info)
-            else:
-                action_idx += 1
+            action_idx += 1
                 
         self.loops.sort(key=lambda x: x["size"], reverse=True)
         right_loops = []
@@ -205,8 +192,8 @@ class MacroVisualCanvas(QWidget):
             end_block = self.blocks[end_idx]
             
             x_center = start_block.geometry().center().x()
-            y_bottom = end_block.geometry().bottom() + 40
-            y_top = start_block.geometry().top() - 40
+            y_bottom = end_block.geometry().bottom() + 20
+            y_top = start_block.geometry().top() - 20
             
             base_offset = 190
             lane_width = 40
