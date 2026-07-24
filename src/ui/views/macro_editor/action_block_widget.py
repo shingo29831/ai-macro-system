@@ -34,7 +34,7 @@ class ActionBlockWidget(QFrame):
                 border: 2px solid #0078d4;
             }
         """)
-        self.setFixedWidth(340)
+        self.setFixedWidth(480)
         
         self._build_ui()
         
@@ -48,7 +48,7 @@ class ActionBlockWidget(QFrame):
         title_label = QLabel(self._get_title())
         font = title_label.font()
         font.setBold(True)
-        font.setPointSize(11)
+        font.setPointSize(14)
         title_label.setFont(font)
         title_label.setStyleSheet("color: #333333;")
         header_layout.addWidget(title_label)
@@ -68,7 +68,7 @@ class ActionBlockWidget(QFrame):
                 if self.method in ["click", "move"] and "x" in self.args and "y" in self.args:
                     pixmap = self._draw_cursor_on_pixmap(pixmap, self.args["x"], self.args["y"])
                 
-                scaled_pixmap = pixmap.scaled(308, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled_pixmap = pixmap.scaled(448, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 img_label.setPixmap(scaled_pixmap)
                 img_label.setStyleSheet("border: 1px solid #e0e0e0; border-radius: 4px;")
                 self.main_layout.addWidget(img_label)
@@ -76,7 +76,7 @@ class ActionBlockWidget(QFrame):
         # 3. フッター（サマリー情報）
         self.info_label = QLabel(self._get_info_text())
         self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("color: #555555; background-color: #f3f2f1; padding: 6px; border-radius: 4px;")
+        self.info_label.setStyleSheet("color: #555555; background-color: #f3f2f1; padding: 8px; border-radius: 4px; font-size: 13px;")
         if not self.info_label.text():
             self.info_label.hide()
         self.main_layout.addWidget(self.info_label)
@@ -87,6 +87,7 @@ class ActionBlockWidget(QFrame):
             QLabel, QSpinBox, QLineEdit, QDoubleSpinBox {
                 color: #333333;
                 background-color: #ffffff;
+                font-size: 13px;
             }
         """)
         self.edit_layout = QFormLayout(self.edit_container)
