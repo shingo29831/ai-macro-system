@@ -2,9 +2,43 @@
 import json
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
-                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox)
+                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox, QDialog)
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QDrag, QMouseEvent
 from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
+
+class ImagePreviewDialog(QDialog):
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("background-color: white; border: 1px solid #999999; border-radius: 4px;")
+        
+        screen = self.screen().availableGeometry()
+        max_w = screen.width() * 0.8
+        max_h = screen.height() * 0.8
+        
+        if pixmap.width() > max_w or pixmap.height() > max_h:
+            pixmap = pixmap.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            
+        label.setPixmap(pixmap)
+        layout.addWidget(label)
+        
+        self.adjustSize()
+        if parent:
+            parent_rect = parent.window().geometry()
+            x = parent_rect.x() + (parent_rect.width() - self.width()) // 2
+            y = parent_rect.y() + (parent_rect.height() - self.height()) // 2
+            self.move(x, y)
+
+    def mousePressEvent(self, event):
+        self.accept()
+        super().mousePressEvent(event)
 
 class ActionBlockWidget(QFrame):
     delete_requested = Signal(int)
@@ -61,17 +95,21 @@ class ActionBlockWidget(QFrame):
         if raw_event_id:
             img_path = self.workflow_dir / "images" / f"{raw_event_id}_pre.png"
             if img_path.exists():
-                img_label = QLabel()
-                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.img_label = QLabel()
+                self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+                
                 pixmap = QPixmap(str(img_path))
                 
                 if self.method in ["click", "move"] and "x" in self.args and "y" in self.args:
                     pixmap = self._draw_cursor_on_pixmap(pixmap, self.args["x"], self.args["y"])
                 
+                self._original_pixmap = pixmap
+                
                 scaled_pixmap = pixmap.scaled(448, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                img_label.setPixmap(scaled_pixmap)
-                img_label.setStyleSheet("border: 1px solid #e0e0e0; border-radius: 4px;")
-                self.main_layout.addWidget(img_label)
+                self.img_label.setPixmap(scaled_pixmap)
+                self.img_label.setStyleSheet("border: 1px solid #e0e0e0; border-radius: 4px;")
+                self.main_layout.addWidget(self.img_label)
                 
         # 3. フッター（サマリー情報）
         self.info_label = QLabel(self._get_info_text())
@@ -181,10 +219,18 @@ class ActionBlockWidget(QFrame):
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self.drag_start_pos:
             if (event.pos() - self.drag_start_pos).manhattanLength() <= 10:
-                self.is_expanded = not self.is_expanded
-                self.edit_container.setVisible(self.is_expanded)
+                if hasattr(self, 'img_label') and self.img_label.geometry().contains(event.pos()):
+                    self._show_image_preview()
+                else:
+                    self.is_expanded = not self.is_expanded
+                    self.edit_container.setVisible(self.is_expanded)
         self.drag_start_pos = None
         super().mouseReleaseEvent(event)
+
+    def _show_image_preview(self):
+        if hasattr(self, '_original_pixmap'):
+            dialog = ImagePreviewDialog(self._original_pixmap, self)
+            dialog.exec()
 
     def _get_title(self) -> str:
         method_map = {

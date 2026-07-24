@@ -40,6 +40,10 @@ class MacroVisualCanvas(QWidget):
             method = cmd.get("method")
             if method == "loop_start":
                 current_loop_depth += 1
+                continue
+            elif method == "loop_end":
+                current_loop_depth = max(0, current_loop_depth - 1)
+                continue
                 
             is_in_loop = current_loop_depth > 0
             block = ActionBlockWidget(cmd, i, self.workflow_dir, is_in_loop)
@@ -48,9 +52,6 @@ class MacroVisualCanvas(QWidget):
             
             self.main_layout.addWidget(block)
             self.blocks.append(block)
-            
-            if method == "loop_end":
-                current_loop_depth = max(0, current_loop_depth - 1)
             
         self.update()
 
@@ -112,41 +113,47 @@ class MacroVisualCanvas(QWidget):
     def _analyze_loops(self):
         self.loops = []
         loop_stack = []
-        action_idx = 0
         
-        for cmd in self.commands:
+        for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
             if method == "loop_start":
                 args = cmd.get("args", {})
                 loop_stack.append({
-                    "start_action_idx": action_idx,
+                    "loop_start_idx": i,
                     "loop_count": args.get("loop_count", 1)
                 })
             elif method == "loop_end":
                 if loop_stack:
                     loop_info = loop_stack.pop()
-                    loop_info["end_action_idx"] = action_idx
-                    loop_info["size"] = loop_info["end_action_idx"] - loop_info["start_action_idx"]
-                    self.loops.append(loop_info)
-            action_idx += 1
+                    loop_info["loop_end_idx"] = i
+                    
+                    start_idx = -1
+                    end_idx = -1
+                    
+                    for j in range(loop_info["loop_start_idx"] + 1, i):
+                        if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
+                            if start_idx == -1:
+                                start_idx = j
+                            end_idx = j
+                            
+                    if start_idx != -1 and end_idx != -1:
+                        loop_info["start_action_idx"] = start_idx
+                        loop_info["end_action_idx"] = end_idx
+                        loop_info["size"] = end_idx - start_idx
+                        self.loops.append(loop_info)
                 
         self.loops.sort(key=lambda x: x["size"], reverse=True)
         right_loops = []
-        left_loops = []
         
         for i, loop in enumerate(self.loops):
-            direction = "right" if i % 2 == 0 else "left"
-            target_list = right_loops if direction == "right" else left_loops
-                
             overlapping_lanes = []
-            for other in target_list:
+            for other in right_loops:
                 if not (loop["end_action_idx"] < other["start_action_idx"] or loop["start_action_idx"] > other["end_action_idx"]):
                     overlapping_lanes.append(other["lane"])
                     
             lane = max(overlapping_lanes) + 1 if overlapping_lanes else 0
-            loop["direction"] = direction
             loop["lane"] = lane
-            target_list.append(loop)
+            right_loops.append(loop)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -179,41 +186,38 @@ class MacroVisualCanvas(QWidget):
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        fm = painter.fontMetrics()
         
         for loop in self.loops:
             start_idx = loop["start_action_idx"]
             end_idx = loop["end_action_idx"]
             
-            if start_idx < 0 or end_idx >= len(self.blocks) or start_idx > end_idx:
+            start_block = self.get_block_widget(start_idx)
+            end_block = self.get_block_widget(end_idx)
+            
+            if not start_block or not end_block:
                 continue
-                
-            start_block = self.blocks[start_idx]
-            end_block = self.blocks[end_idx]
             
-            x_center = start_block.geometry().center().x()
-            y_bottom = end_block.geometry().bottom() + 20
-            y_top = start_block.geometry().top() - 20
+            x_start = end_block.geometry().right()
+            y_start = end_block.geometry().center().y()
             
-            base_offset = 190
+            x_end = start_block.geometry().right()
+            y_end = start_block.geometry().center().y()
+            
+            base_offset = 40
             lane_width = 40
             offset = base_offset + loop["lane"] * lane_width
             
-            x_turn = x_center + offset if loop["direction"] == "right" else x_center - offset
+            x_turn = max(x_start, x_end) + offset
                 
-            painter.drawLine(x_center, y_bottom, x_turn, y_bottom)
-            painter.drawLine(x_turn, y_bottom, x_turn, y_top)
-            painter.drawLine(x_turn, y_top, x_center, y_top)
+            painter.drawLine(x_start, y_start, x_turn, y_start)
+            painter.drawLine(x_turn, y_start, x_turn, y_end)
+            painter.drawLine(x_turn, y_end, x_end, y_end)
             
             arrow_size = 8
-            painter.drawLine(x_center, y_top, x_center - arrow_size, y_top - arrow_size)
-            painter.drawLine(x_center, y_top, x_center + arrow_size, y_top - arrow_size)
+            painter.drawLine(x_end, y_end, x_end + arrow_size, y_end - arrow_size)
+            painter.drawLine(x_end, y_end, x_end + arrow_size, y_end + arrow_size)
             
             text = f"{loop['loop_count']}回"
-            text_y = (y_top + y_bottom) / 2
+            text_y = (y_start + y_end) / 2
             
-            if loop["direction"] == "right":
-                painter.drawText(x_turn + 8, text_y, text)
-            else:
-                text_width = fm.horizontalAdvance(text)
-                painter.drawText(x_turn - text_width - 8, text_y, text)
+            painter.drawText(x_turn + 8, text_y, text)
