@@ -117,25 +117,70 @@ class MacroEditorScreen(QWidget):
         
         self.btn_tool = TransparentToolButton(FluentIcon.ADD)
         self.btn_tool.setToolTip("ツール")
-        self.btn_tool.clicked.connect(lambda: self.side_panel_stack.setCurrentIndex(0))
+        self.btn_tool.clicked.connect(self._toggle_tool_panel)
         
         self.btn_index = TransparentToolButton(FluentIcon.MENU)
         self.btn_index.setToolTip("目次")
-        self.btn_index.clicked.connect(lambda: self.side_panel_stack.setCurrentIndex(1))
+        self.btn_index.clicked.connect(self._toggle_index_panel)
         
         sidebar_layout.addWidget(self.btn_tool)
         sidebar_layout.addWidget(self.btn_index)
         sidebar_layout.addStretch()
         main_layout.addWidget(sidebar)
         
-        # 2. サイドパネル（ツール / 目次）
-        self.side_panel_stack = QStackedWidget()
-        self.side_panel_stack.setFixedWidth(240)
-        self.side_panel_stack.setStyleSheet("background-color: #ffffff; border-right: 1px solid #e0e0e0;")
-        
-        # 2.1 ツールパネル
-        tool_panel = QWidget()
-        tool_layout = QVBoxLayout(tool_panel)
+        # スクロールバーのモダンスタイル
+        modern_scrollbar_style = """
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background-color: transparent;
+                width: 8px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: rgba(0, 0, 0, 0.2);
+                min-height: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: rgba(0, 0, 0, 0.4);
+            }
+            QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QScrollBar:horizontal {
+                border: none;
+                background-color: transparent;
+                height: 8px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: rgba(0, 0, 0, 0.2);
+                min-width: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: rgba(0, 0, 0, 0.4);
+            }
+            QScrollBar::sub-line:horizontal, QScrollBar::add-line:horizontal {
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+            }
+        """
+
+        # 2. ツールパネル（左側）
+        self.tool_panel = QWidget()
+        self.tool_panel.setFixedWidth(240)
+        self.tool_panel.setStyleSheet("background-color: #ffffff; border-right: 1px solid #e0e0e0;")
+        tool_layout = QVBoxLayout(self.tool_panel)
         tool_layout.setContentsMargins(16, 20, 16, 20)
         tool_layout.setSpacing(12)
         tool_title = QLabel("ツール")
@@ -151,29 +196,7 @@ class MacroEditorScreen(QWidget):
         for label, action_type in tools:
             tool_layout.addWidget(ToolItemWidget(label, action_type))
         tool_layout.addStretch()
-        self.side_panel_stack.addWidget(tool_panel)
-        
-        # 2.2 目次パネル
-        index_panel = QWidget()
-        index_layout = QVBoxLayout(index_panel)
-        index_layout.setContentsMargins(16, 20, 16, 20)
-        index_title = QLabel("目次")
-        index_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
-        index_layout.addWidget(index_title)
-        
-        self.index_scroll = QScrollArea()
-        self.index_scroll.setWidgetResizable(True)
-        self.index_scroll.setStyleSheet("border: none; background: transparent;")
-        self.index_content = QWidget()
-        self.index_content_layout = QVBoxLayout(self.index_content)
-        self.index_content_layout.setContentsMargins(0, 0, 0, 0)
-        self.index_content_layout.setSpacing(2)
-        self.index_content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.index_scroll.setWidget(self.index_content)
-        index_layout.addWidget(self.index_scroll)
-        
-        self.side_panel_stack.addWidget(index_panel)
-        main_layout.addWidget(self.side_panel_stack)
+        main_layout.addWidget(self.tool_panel)
         
         # 3. メインキャンバスエリア
         canvas_area = QWidget()
@@ -191,7 +214,7 @@ class MacroEditorScreen(QWidget):
         
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+        self.scroll_area.setStyleSheet(modern_scrollbar_style)
         
         self.canvas_container = QWidget()
         self.canvas_container_layout = QVBoxLayout(self.canvas_container)
@@ -217,6 +240,35 @@ class MacroEditorScreen(QWidget):
         
         canvas_layout.addLayout(footer_layout)
         main_layout.addWidget(canvas_area, 1)
+
+        # 4. 目次パネル（右側）
+        self.index_panel = QWidget()
+        self.index_panel.setFixedWidth(240)
+        self.index_panel.setStyleSheet("background-color: #ffffff; border-left: 1px solid #e0e0e0;")
+        index_layout = QVBoxLayout(self.index_panel)
+        index_layout.setContentsMargins(16, 20, 16, 20)
+        index_title = QLabel("目次")
+        index_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+        index_layout.addWidget(index_title)
+        
+        self.index_scroll = QScrollArea()
+        self.index_scroll.setWidgetResizable(True)
+        self.index_scroll.setStyleSheet(modern_scrollbar_style)
+        self.index_content = QWidget()
+        self.index_content_layout = QVBoxLayout(self.index_content)
+        self.index_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.index_content_layout.setSpacing(2)
+        self.index_content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.index_scroll.setWidget(self.index_content)
+        index_layout.addWidget(self.index_scroll)
+        
+        main_layout.addWidget(self.index_panel)
+
+    def _toggle_tool_panel(self):
+        self.tool_panel.setVisible(not self.tool_panel.isVisible())
+
+    def _toggle_index_panel(self):
+        self.index_panel.setVisible(not self.index_panel.isVisible())
         
     def load_macro(self, macro_name: str, commands: list, workflow_dir: Path, is_temporary: bool = False):
         self.macro_name = macro_name
