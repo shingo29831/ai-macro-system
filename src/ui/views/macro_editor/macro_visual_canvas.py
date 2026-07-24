@@ -1,8 +1,8 @@
 # src/ui/views/macro_editor/macro_visual_canvas.py
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QSpinBox, QLabel
-from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent
-from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QDrag
+from PySide6.QtCore import Qt, Signal, QPoint, QMimeData
 
 from .action_block_widget import ActionBlockWidget
 
@@ -88,6 +88,8 @@ class MacroVisualCanvas(QWidget):
             w.deleteLater()
         self.loop_widgets.clear()
         
+        self.blocks.clear()
+        
         current_loop_depth = 0
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
@@ -144,9 +146,47 @@ class MacroVisualCanvas(QWidget):
             self.commands_changed.emit()
             self.rebuild()
 
+    def mousePressEvent(self, event):
+        pos = event.pos()
+        for loop in self.loops:
+            start_idx = loop["start_action_idx"]
+            end_idx = loop["end_action_idx"]
+            
+            start_block = self.get_block_widget(start_idx)
+            end_block = self.get_block_widget(end_idx)
+            
+            if not start_block or not end_block:
+                continue
+                
+            x_start = end_block.geometry().right()
+            y_start = end_block.geometry().center().y()
+            
+            x_end = start_block.geometry().right()
+            y_end = start_block.geometry().center().y()
+            
+            # 終了地点ハンドル (下側)
+            if (pos.x() - x_start)**2 + (pos.y() - y_start)**2 < 100: # 半径10
+                drag = QDrag(self)
+                mime_data = QMimeData()
+                mime_data.setText(f"loop_handle:end:{loop['loop_end_idx']}")
+                drag.setMimeData(mime_data)
+                drag.exec_(Qt.DropAction.MoveAction)
+                return
+                
+            # 開始地点ハンドル (上側・矢先)
+            if (pos.x() - x_end)**2 + (pos.y() - y_end)**2 < 100:
+                drag = QDrag(self)
+                mime_data = QMimeData()
+                mime_data.setText(f"loop_handle:start:{loop['loop_start_idx']}")
+                drag.setMimeData(mime_data)
+                drag.exec_(Qt.DropAction.MoveAction)
+                return
+                
+        super().mousePressEvent(event)
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         mime_text = event.mimeData().text()
-        if mime_text.startswith("action_block:") or mime_text.startswith("new_action:"):
+        if mime_text.startswith("action_block:") or mime_text.startswith("new_action:") or mime_text.startswith("loop_handle:"):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
@@ -174,6 +214,16 @@ class MacroVisualCanvas(QWidget):
             cmd_template = self._get_template_for_action(action_type)
             import copy
             self.commands.insert(target_idx, copy.deepcopy(cmd_template))
+            
+        elif mime_text.startswith("loop_handle:"):
+            parts = mime_text.split(":")
+            cmd_idx = int(parts[2])
+            
+            if 0 <= cmd_idx < len(self.commands):
+                cmd = self.commands.pop(cmd_idx)
+                if target_idx > cmd_idx:
+                    target_idx -= 1
+                self.commands.insert(target_idx, cmd)
             
         self.commands_changed.emit()
         self.rebuild()
@@ -244,7 +294,7 @@ class MacroVisualCanvas(QWidget):
             
             painter.drawLine(x, y1, x, y2)
             
-            arrow_size = 8
+            arrow_size = 12
             painter.drawLine(x, y2, x - arrow_size, y2 - arrow_size)
             painter.drawLine(x, y2, x + arrow_size, y2 - arrow_size)
 
@@ -277,9 +327,16 @@ class MacroVisualCanvas(QWidget):
             painter.drawLine(x_turn, y_start, x_turn, y_end)
             painter.drawLine(x_turn, y_end, x_end, y_end)
             
-            arrow_size = 8
+            arrow_size = 14
             painter.drawLine(x_end, y_end, x_end + arrow_size, y_end - arrow_size)
             painter.drawLine(x_end, y_end, x_end + arrow_size, y_end + arrow_size)
+            
+            # ハンドルの描画
+            handle_radius = 4
+            painter.setBrush(QColor("#ffffff"))
+            painter.setPen(QPen(QColor("#0078d4"), 2))
+            painter.drawEllipse(QPoint(x_start, y_start), handle_radius, handle_radius)
+            painter.drawEllipse(QPoint(x_end, y_end), handle_radius, handle_radius)
             
             if i < len(self.loop_widgets):
                 w = self.loop_widgets[i]
