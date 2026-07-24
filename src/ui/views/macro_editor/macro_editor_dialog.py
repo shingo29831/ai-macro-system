@@ -186,19 +186,6 @@ class MacroEditorScreen(QWidget):
         font.setBold(True)
         self.title_label.setFont(font)
         header_layout.addWidget(self.title_label)
-        
-        header_layout.addStretch()
-        self.btn_cancel = QPushButton("キャンセル")
-        self.btn_cancel.setFixedSize(100, 32)
-        self.btn_cancel.clicked.connect(self.canceled.emit)
-        header_layout.addWidget(self.btn_cancel)
-        
-        self.btn_save = QPushButton("保存")
-        self.btn_save.setFixedSize(100, 32)
-        self.btn_save.setStyleSheet("background-color: #0078d4; color: white; font-weight: bold;")
-        self.btn_save.clicked.connect(self._on_save_clicked)
-        header_layout.addWidget(self.btn_save)
-        
         canvas_layout.addLayout(header_layout)
         
         self.scroll_area = QScrollArea()
@@ -211,6 +198,22 @@ class MacroEditorScreen(QWidget):
         self.scroll_area.setWidget(self.canvas_container)
         
         canvas_layout.addWidget(self.scroll_area)
+        
+        footer_layout = QHBoxLayout()
+        footer_layout.addStretch()
+        
+        self.btn_cancel = QPushButton("キャンセル")
+        self.btn_cancel.setFixedSize(100, 32)
+        self.btn_cancel.clicked.connect(self.canceled.emit)
+        footer_layout.addWidget(self.btn_cancel)
+        
+        self.btn_save = QPushButton("保存")
+        self.btn_save.setFixedSize(100, 32)
+        self.btn_save.setStyleSheet("background-color: #0078d4; color: white; font-weight: bold;")
+        self.btn_save.clicked.connect(self._on_save_clicked)
+        footer_layout.addWidget(self.btn_save)
+        
+        canvas_layout.addLayout(footer_layout)
         main_layout.addWidget(canvas_area, 1)
         
     def load_macro(self, macro_name: str, commands: list, workflow_dir: Path, is_temporary: bool = False):
