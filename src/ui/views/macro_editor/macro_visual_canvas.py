@@ -95,6 +95,7 @@ class MacroVisualCanvas(QWidget):
         self.loops = []
         self.loop_widgets = []
         self.warning_widgets = []
+        self._drag_loop_info = None
         
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
@@ -250,7 +251,41 @@ class MacroVisualCanvas(QWidget):
         if mime_text.startswith("action_block:") or mime_text.startswith("new_action:") or mime_text.startswith("loop_handle:"):
             event.acceptProposedAction()
 
+    def dragMoveEvent(self, event):
+        mime_text = event.mimeData().text()
+        if mime_text.startswith("loop_handle:"):
+            drop_y = event.pos().y()
+            target_idx = len(self.commands)
+            for block in self.blocks:
+                if drop_y < block.geometry().center().y():
+                    target_idx = block.cmd_index
+                    break
+            
+            parts = mime_text.split(":")
+            handle_type = parts[1]
+            cmd_idx = int(parts[2])
+            
+            if 0 <= cmd_idx < len(self.commands):
+                loop_id = self.commands[cmd_idx].get("loop_id")
+                self._drag_loop_info = {
+                    "type": handle_type,
+                    "loop_id": loop_id,
+                    "target_idx": target_idx
+                }
+                self.update()
+            event.acceptProposedAction()
+        elif mime_text.startswith("action_block:") or mime_text.startswith("new_action:"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._drag_loop_info = None
+        self.update()
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent):
+        self._drag_loop_info = None
         mime_text = event.mimeData().text()
         drop_y = event.pos().y()
         target_idx = len(self.commands)
@@ -469,3 +504,73 @@ class MacroVisualCanvas(QWidget):
                 warn_y = int((y_top + y_bottom) / 2 - warn_w.height() / 2)
                 if warn_w.pos() != QPoint(warn_x, warn_y):
                     warn_w.move(warn_x, warn_y)
+
+        # プレビューの描画
+        if getattr(self, '_drag_loop_info', None):
+            info = self._drag_loop_info
+            loop_id = info["loop_id"]
+            handle_type = info["type"]
+            target_idx = info["target_idx"]
+            
+            current_loop = None
+            for loop in self.loops:
+                start_cmd = self.commands[loop["loop_start_idx"]]
+                if start_cmd.get("loop_id") == loop_id:
+                    current_loop = loop
+                    break
+                    
+            if current_loop:
+                target_block = self.get_block_widget(target_idx)
+                if target_block:
+                    target_y = target_block.geometry().center().y()
+                    target_x = target_block.geometry().right()
+                else:
+                    if self.blocks:
+                        last_block = self.blocks[-1]
+                        target_y = last_block.geometry().bottom() + 20
+                        target_x = last_block.geometry().right()
+                    else:
+                        target_y = 0
+                        target_x = 0
+                
+                fixed_block = None
+                if handle_type == "start":
+                    fixed_block = self.get_block_widget(current_loop["end_action_idx"])
+                    if fixed_block:
+                        y_top = target_y
+                        x_top = target_x
+                        y_bottom = fixed_block.geometry().center().y()
+                        x_bottom = fixed_block.geometry().right()
+                else:
+                    fixed_block = self.get_block_widget(current_loop["start_action_idx"])
+                    if fixed_block:
+                        y_top = fixed_block.geometry().center().y()
+                        x_top = fixed_block.geometry().right()
+                        y_bottom = target_y
+                        x_bottom = target_x
+                        
+                if fixed_block:
+                    is_reversed = y_top > y_bottom
+                    
+                    base_offset = 40
+                    lane_width = 40
+                    offset = base_offset + current_loop["lane"] * lane_width
+                    x_turn = max(x_top, x_bottom) + offset
+                    
+                    if is_reversed:
+                        preview_pen = QPen(QColor(209, 52, 56, 120), 2, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    else:
+                        preview_pen = QPen(QColor(0, 120, 212, 120), 2, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    
+                    painter.setPen(preview_pen)
+                    painter.drawLine(x_bottom, y_bottom, x_turn, y_bottom)
+                    painter.drawLine(x_turn, y_bottom, x_turn, y_top)
+                    painter.drawLine(x_turn, y_top, x_top, y_top)
+                    
+                    arrow_size = 14
+                    if not is_reversed:
+                        painter.drawLine(x_top, y_top, x_top + arrow_size, y_top - arrow_size)
+                        painter.drawLine(x_top, y_top, x_top + arrow_size, y_top + arrow_size)
+                    else:
+                        painter.drawLine(x_bottom, y_bottom, x_bottom + arrow_size, y_bottom - arrow_size)
+                        painter.drawLine(x_bottom, y_bottom, x_bottom + arrow_size, y_bottom + arrow_size)
