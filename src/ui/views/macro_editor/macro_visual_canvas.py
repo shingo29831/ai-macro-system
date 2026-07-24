@@ -1,3 +1,4 @@
+# src/ui/views/macro_editor/macro_visual_canvas.py
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMenu
 from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QCursor
@@ -37,24 +38,25 @@ class MacroVisualCanvas(QWidget):
         # 先頭の追加ボタン
         self.main_layout.addWidget(self._create_add_button(0))
         
-        current_loop_start = None
+        current_loop_depth = 0
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
             if method == "loop_start":
-                current_loop_start = cmd
+                current_loop_depth += 1
                 continue
             elif method == "loop_end":
-                current_loop_start = None
+                current_loop_depth = max(0, current_loop_depth - 1)
                 continue
                 
-            block = ActionBlockWidget(cmd, i, self.workflow_dir, current_loop_start)
+            is_in_loop = current_loop_depth > 0
+            block = ActionBlockWidget(cmd, i, self.workflow_dir, is_in_loop)
             block.delete_requested.connect(self._on_delete_requested)
             block.content_changed.connect(self.commands_changed.emit)
             
             self.main_layout.addWidget(block)
             self.blocks.append(block)
             
-            # ブロック間の追加ボタン（余白確保のためマージンを設定）
+            # ブロック間の追加ボタン
             add_btn = self._create_add_button(i + 1)
             add_btn.setStyleSheet("QPushButton { border: none; color: #0078d4; font-size: 18px; font-weight: bold; margin-top: 30px; margin-bottom: 30px; } QPushButton:hover { background-color: #e1dfdd; border-radius: 12px; }")
             self.main_layout.addWidget(add_btn)
@@ -130,8 +132,7 @@ class MacroVisualCanvas(QWidget):
                 args = cmd.get("args", {})
                 loop_stack.append({
                     "start_action_idx": action_idx,
-                    "loop_count": args.get("loop_count", 1),
-                    "loop_variables": args.get("loop_variables", {})
+                    "loop_count": args.get("loop_count", 1)
                 })
             elif method == "loop_end":
                 if loop_stack:
@@ -224,19 +225,8 @@ class MacroVisualCanvas(QWidget):
             text = f"{loop['loop_count']}回"
             text_y = (y_top + y_bottom) / 2
             
-            vars_text = ""
-            if loop.get("loop_variables"):
-                vars_text = "\n".join([f"{k}: {v}" for k, v in loop["loop_variables"].items()])
-            
             if loop["direction"] == "right":
                 painter.drawText(x_turn + 8, text_y, text)
-                if vars_text:
-                    for idx, line in enumerate(vars_text.split("\n")):
-                        painter.drawText(x_turn + 8, text_y + 15 + (idx * 15), line)
             else:
                 text_width = fm.horizontalAdvance(text)
                 painter.drawText(x_turn - text_width - 8, text_y, text)
-                if vars_text:
-                    for idx, line in enumerate(vars_text.split("\n")):
-                        line_width = fm.horizontalAdvance(line)
-                        painter.drawText(x_turn - line_width - 8, text_y + 15 + (idx * 15), line)

@@ -1,3 +1,4 @@
+# src/ui/views/main_window.py
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -33,6 +34,7 @@ from ui.views.progress_dialog import ProgressDialog
 from ui.views.record_dialog import RecordDialog
 from ui.views.running_dialog import RunningDialog
 from ui.views.settings_dialog import SettingsDialog
+from ui.views.macro_editor.macro_editor_dialog import MacroEditorScreen
 
 
 class MainScreen(QWidget):
@@ -185,9 +187,6 @@ class MainScreen(QWidget):
 
     def _setup_table(self):
         self.table_macros.setShowGrid(False)
-        # self.table_macros.setEditTriggers(
-        #     QAbstractItemView.EditTrigger.NoEditTriggers
-        # )
         self.table_macros.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -305,12 +304,10 @@ class SettingScreen(QWidget):
 
         self.setObjectName("SettingScreen")
 
-        # 画面全体のメインレイアウト（縦並び）
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(40, 40, 40, 40)
         main_layout.setSpacing(25)
 
-        # ラベル
         self.title_label = SubtitleLabel("設定画面", self)
         main_layout.addWidget(self.title_label)
 
@@ -318,17 +315,14 @@ class SettingScreen(QWidget):
         mode_layout.setSpacing(10)
 
         mode_title = BodyLabel("AI 接続先設定", self)
-        # テーマ対応
         font_mode = mode_title.font()
         font_mode.setBold(True)
         mode_title.setFont(font_mode)
         mode_layout.addWidget(mode_title)
 
-        # ラジオボタンの作成
         self.local_ai_radio = RadioButton("ローカルAI", self)
         self.cloud_ai_radio = RadioButton("クラウドAI", self)
         
-        # デフォではローカルAIにチェック
         self.local_ai_radio.setChecked(True)
 
         self.mode_group = QButtonGroup(self)
@@ -339,7 +333,6 @@ class SettingScreen(QWidget):
         mode_layout.addWidget(self.cloud_ai_radio)
         
         main_layout.addLayout(mode_layout)
-        
         
         server_layout = QGridLayout()
         server_layout.setVerticalSpacing(15)
@@ -356,7 +349,6 @@ class SettingScreen(QWidget):
         server_layout.addWidget(llm_title, 0, 0)
         server_layout.addWidget(self.llm_host_input, 0, 1)
         
-        
         vision_title = BodyLabel("画面解析 サーバ設定", self)
         font_vision = vision_title.font()
         font_vision.setBold(True)
@@ -372,7 +364,6 @@ class SettingScreen(QWidget):
         main_layout.addLayout(server_layout)
         main_layout.addStretch(1)
         
-        
         bottom_layout = QHBoxLayout()
         
         self.test_button = PushButton(FluentIcon.SYNC, "接続テスト", self)
@@ -385,8 +376,6 @@ class SettingScreen(QWidget):
         bottom_layout.addWidget(self.save_button)
         
         main_layout.addLayout(bottom_layout)
-        
-        # self.cancel_button.clicked.connect()
         
         self.test_button.clicked.connect(self.connect_test)
         
@@ -418,6 +407,7 @@ class MainWindow(FluentWindow):
 
         self.home_screen = MainScreen(self.viewmodel, self)
         self.settings_screen = SettingScreen(self)
+        self.macro_editor_screen = MacroEditorScreen(self)
 
         self.home_screen.start_record_requested.connect(
             self.open_record_dialog
@@ -445,6 +435,12 @@ class MainWindow(FluentWindow):
             FluentIcon.SETTING,
             "設定",
         )
+        
+        self.stackedWidget.addWidget(self.macro_editor_screen)
+
+        self.macro_editor_screen.saved.connect(self._on_macro_saved)
+        self.macro_editor_screen.canceled.connect(self._on_macro_edit_canceled)
+        self.macro_editor_screen.run_requested.connect(self._on_macro_run_requested)
 
         self.viewmodel.execution_finished.connect(
             self._on_execution_finished
@@ -531,11 +527,8 @@ class MainWindow(FluentWindow):
         from core.recorder.screen_capturer import get_macros_root
         workflow_dir = get_macros_root() / workflow_id
         
-        from ui.views.macro_editor.macro_editor_dialog import MacroEditorDialog
-        dialog = MacroEditorDialog(macro_name, commands, workflow_dir, is_temporary=False, parent=self)
-        if dialog.exec():
-            self.viewmodel.save_macro_commands(macro_name, dialog.get_commands())
-            QMessageBox.information(self, "保存完了", "マクロを保存しました。")
+        self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False)
+        self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     def open_macro_editor_for_run(self):
         macro_name = self.viewmodel._selected_macro
@@ -546,11 +539,23 @@ class MainWindow(FluentWindow):
         from core.recorder.screen_capturer import get_macros_root
         workflow_dir = get_macros_root() / workflow_id
         
-        from ui.views.macro_editor.macro_editor_dialog import MacroEditorDialog
-        dialog = MacroEditorDialog(macro_name, commands, workflow_dir, is_temporary=True, parent=self)
-        if dialog.exec():
-            temp_commands = dialog.get_commands()
-            self.open_running_dialog(temp_commands)
+        self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=True)
+        self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
+
+    @Slot(str, list)
+    def _on_macro_saved(self, macro_name: str, commands: list):
+        self.viewmodel.save_macro_commands(macro_name, commands)
+        QMessageBox.information(self, "保存完了", "マクロを保存しました。")
+        self.stackedWidget.setCurrentWidget(self.home_screen)
+
+    @Slot()
+    def _on_macro_edit_canceled(self):
+        self.stackedWidget.setCurrentWidget(self.home_screen)
+
+    @Slot(list)
+    def _on_macro_run_requested(self, temp_commands: list):
+        self.stackedWidget.setCurrentWidget(self.home_screen)
+        self.open_running_dialog(temp_commands)
 
     def open_running_dialog(self, temp_commands=None):
         try:

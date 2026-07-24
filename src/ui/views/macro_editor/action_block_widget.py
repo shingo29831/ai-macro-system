@@ -1,3 +1,4 @@
+# src/ui/views/macro_editor/action_block_widget.py
 import json
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
@@ -9,12 +10,12 @@ class ActionBlockWidget(QFrame):
     delete_requested = Signal(int)
     content_changed = Signal()
 
-    def __init__(self, command: dict, cmd_index: int, workflow_dir: Path, loop_start_cmd: dict = None, parent=None):
+    def __init__(self, command: dict, cmd_index: int, workflow_dir: Path, is_in_loop: bool = False, parent=None):
         super().__init__(parent)
         self.command = command
         self.cmd_index = cmd_index
         self.workflow_dir = workflow_dir
-        self.loop_start_cmd = loop_start_cmd
+        self.is_in_loop = is_in_loop
         
         self.method = command.get("method", "")
         self.args = command.get("args", {})
@@ -42,7 +43,7 @@ class ActionBlockWidget(QFrame):
         self.main_layout.setContentsMargins(16, 16, 16, 16)
         self.main_layout.setSpacing(12)
         
-        # 1. ヘッダー（アクション名と削除ボタン）
+        # 1. ヘッダー（アクション名のみ、削除ボタンは詳細へ移動）
         header_layout = QHBoxLayout()
         title_label = QLabel(self._get_title())
         font = title_label.font()
@@ -52,12 +53,6 @@ class ActionBlockWidget(QFrame):
         title_label.setStyleSheet("color: #333333;")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        
-        delete_btn = QPushButton("✕")
-        delete_btn.setFixedSize(24, 24)
-        delete_btn.setStyleSheet("QPushButton { border: none; color: #d13438; font-weight: bold; } QPushButton:hover { background-color: #fde7e9; border-radius: 12px; }")
-        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.cmd_index))
-        header_layout.addWidget(delete_btn)
         
         self.main_layout.addLayout(header_layout)
         
@@ -108,18 +103,17 @@ class ActionBlockWidget(QFrame):
             self.y_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
             self.edit_layout.addRow("Y座標:", self.y_spin)
             
-            if self.loop_start_cmd:
-                loop_vars = self.loop_start_cmd.setdefault("args", {}).setdefault("loop_variables", {})
+            if self.is_in_loop:
                 self.dx_spin = QSpinBox()
                 self.dx_spin.setRange(-999, 999)
-                self.dx_spin.setValue(loop_vars.get("x_offset", 0))
-                self.dx_spin.valueChanged.connect(lambda v: self._update_loop_var("x_offset", v))
+                self.dx_spin.setValue(self.args.get("x_offset", 0))
+                self.dx_spin.valueChanged.connect(lambda v: self._update_arg("x_offset", v))
                 self.edit_layout.addRow("X差分(ループ):", self.dx_spin)
                 
                 self.dy_spin = QSpinBox()
                 self.dy_spin.setRange(-999, 999)
-                self.dy_spin.setValue(loop_vars.get("y_offset", 0))
-                self.dy_spin.valueChanged.connect(lambda v: self._update_loop_var("y_offset", v))
+                self.dy_spin.setValue(self.args.get("y_offset", 0))
+                self.dy_spin.valueChanged.connect(lambda v: self._update_arg("y_offset", v))
                 self.edit_layout.addRow("Y差分(ループ):", self.dy_spin)
                 
         elif self.method == "type_text":
@@ -127,7 +121,7 @@ class ActionBlockWidget(QFrame):
             self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
             self.edit_layout.addRow("テキスト:", self.text_edit)
             
-            if self.loop_start_cmd:
+            if self.is_in_loop:
                 seq_val = self.args.setdefault("sequence_value", {"start": 1, "step": 1})
                 self.seq_start_spin = QSpinBox()
                 self.seq_start_spin.setValue(seq_val.get("start", 1))
@@ -146,13 +140,15 @@ class ActionBlockWidget(QFrame):
             self.duration_spin.valueChanged.connect(lambda v: self._update_arg("duration", v))
             self.edit_layout.addRow("待機(秒):", self.duration_spin)
 
+        # 詳細フォーム内に削除ボタンを配置
+        delete_btn = QPushButton("このアクションを削除")
+        delete_btn.setStyleSheet("QPushButton { color: #d13438; font-weight: bold; padding: 4px; }")
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.cmd_index))
+        self.edit_layout.addRow("", delete_btn)
+
     def _update_arg(self, key, value):
         self.args[key] = value
         self.info_label.setText(self._get_info_text())
-        self.content_changed.emit()
-
-    def _update_loop_var(self, key, value):
-        self.loop_start_cmd["args"]["loop_variables"][key] = value
         self.content_changed.emit()
         
     def _update_seq_var(self, key, value):
