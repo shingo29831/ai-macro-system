@@ -1,10 +1,60 @@
 # src/ui/views/macro_editor/macro_visual_canvas.py
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QSpinBox, QLabel
 from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPoint
 
 from .action_block_widget import ActionBlockWidget
+
+class LoopCountWidget(QFrame):
+    count_changed = Signal(int, int) # loop_start_idx, new_count
+
+    def __init__(self, loop_start_idx: int, initial_count: int, parent=None):
+        super().__init__(parent)
+        self.loop_start_idx = loop_start_idx
+        
+        self.setObjectName("LoopCountWidget")
+        self.setStyleSheet("""
+            #LoopCountWidget {
+                background-color: #ffffff;
+                border: 2px solid #0078d4;
+                border-radius: 6px;
+            }
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        
+        self.spin_box = QSpinBox()
+        self.spin_box.setRange(1, 9999)
+        self.spin_box.setValue(initial_count)
+        self.spin_box.setStyleSheet("""
+            QSpinBox {
+                border: none;
+                background: transparent;
+                font-size: 13px;
+                font-weight: bold;
+                color: #0078d4;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 0px;
+            }
+        """)
+        self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.spin_box.setFixedWidth(40)
+        self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        
+        label = QLabel("回")
+        label.setStyleSheet("color: #333333; font-weight: bold; font-size: 13px;")
+        
+        layout.addWidget(self.spin_box)
+        layout.addWidget(label)
+        
+        self.spin_box.valueChanged.connect(self._on_value_changed)
+        
+    def _on_value_changed(self, val):
+        self.count_changed.emit(self.loop_start_idx, val)
+
 
 class MacroVisualCanvas(QWidget):
     commands_changed = Signal()
@@ -15,6 +65,7 @@ class MacroVisualCanvas(QWidget):
         self.workflow_dir = workflow_dir
         self.blocks = []
         self.loops = []
+        self.loop_widgets = []
         
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
@@ -33,7 +84,9 @@ class MacroVisualCanvas(QWidget):
             if widget:
                 widget.deleteLater()
                 
-        self.blocks.clear()
+        for w in self.loop_widgets:
+            w.deleteLater()
+        self.loop_widgets.clear()
         
         current_loop_depth = 0
         for i, cmd in enumerate(self.commands):
@@ -52,8 +105,23 @@ class MacroVisualCanvas(QWidget):
             
             self.main_layout.addWidget(block)
             self.blocks.append(block)
+
+        for loop in self.loops:
+            w = LoopCountWidget(loop["loop_start_idx"], loop["loop_count"], self)
+            w.count_changed.connect(self._on_loop_count_changed)
+            w.show()
+            self.loop_widgets.append(w)
             
         self.update()
+
+    def _on_loop_count_changed(self, loop_start_idx: int, new_count: int):
+        if 0 <= loop_start_idx < len(self.commands):
+            cmd = self.commands[loop_start_idx]
+            if cmd.get("method") == "loop_start":
+                if "args" not in cmd:
+                    cmd["args"] = {}
+                cmd["args"]["loop_count"] = new_count
+                self.commands_changed.emit()
 
     def get_block_widget(self, index: int) -> QWidget:
         for block in self.blocks:
@@ -183,11 +251,7 @@ class MacroVisualCanvas(QWidget):
         loop_pen = QPen(QColor("#0078d4"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(loop_pen)
         
-        font = painter.font()
-        font.setBold(True)
-        painter.setFont(font)
-        
-        for loop in self.loops:
+        for i, loop in enumerate(self.loops):
             start_idx = loop["start_action_idx"]
             end_idx = loop["end_action_idx"]
             
@@ -217,7 +281,10 @@ class MacroVisualCanvas(QWidget):
             painter.drawLine(x_end, y_end, x_end + arrow_size, y_end - arrow_size)
             painter.drawLine(x_end, y_end, x_end + arrow_size, y_end + arrow_size)
             
-            text = f"{loop['loop_count']}回"
-            text_y = (y_start + y_end) / 2
-            
-            painter.drawText(x_turn + 8, text_y, text)
+            if i < len(self.loop_widgets):
+                w = self.loop_widgets[i]
+                w.adjustSize()
+                target_x = x_turn + 8
+                target_y = int((y_start + y_end) / 2 - w.height() / 2)
+                if w.pos() != QPoint(target_x, target_y):
+                    w.move(target_x, target_y)
