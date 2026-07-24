@@ -1,7 +1,7 @@
 # src/ui/views/macro_editor/macro_editor_dialog.py
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                               QScrollArea, QLabel, QStackedWidget, QFrame, QScrollArea)
+                               QScrollArea, QLabel, QStackedWidget, QFrame, QScrollArea, QMessageBox)
 from PySide6.QtCore import Signal, Qt, QMimeData
 from PySide6.QtGui import QDrag, QMouseEvent
 from qfluentwidgets import TransparentToolButton, FluentIcon
@@ -323,7 +323,30 @@ class MacroEditorScreen(QWidget):
         if block_widget:
             self.scroll_area.ensureWidgetVisible(block_widget, 50, 50)
         
+    def _validate_loops(self) -> bool:
+        stack = []
+        for i, cmd in enumerate(self.commands):
+            method = cmd.get("method")
+            if method == "loop_start":
+                stack.append(i)
+            elif method == "loop_end":
+                if not stack:
+                    return False
+                start_idx = stack.pop()
+                has_action = False
+                for j in range(start_idx + 1, i):
+                    if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
+                        has_action = True
+                        break
+                if not has_action:
+                    return False
+        return len(stack) == 0
+
     def _on_save_clicked(self):
+        if not self._validate_loops():
+            QMessageBox.warning(self, "保存エラー", "ループの構造が不正です。\nループの開始と終了の順序が逆転しているか、ループ内にアクションが存在しません。")
+            return
+            
         if self.is_temporary:
             self.run_requested.emit(self.commands)
         else:

@@ -1,10 +1,38 @@
 # src/ui/views/macro_editor/macro_visual_canvas.py
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QSpinBox, QLabel
-from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QDrag
+from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QDrag, QPainterPath
 from PySide6.QtCore import Qt, Signal, QPoint, QMimeData
 
 from .action_block_widget import ActionBlockWidget
+
+class WarningWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(24, 24)
+        self.setToolTip("ループの開始と終了が逆転しています。\n矢印線が逆転しないように注意してください。")
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 三角形の描画
+        path = QPainterPath()
+        path.moveTo(12, 2)
+        path.lineTo(22, 20)
+        path.lineTo(2, 20)
+        path.closeSubpath()
+        
+        painter.setBrush(QColor("#ffcc00"))
+        painter.setPen(QPen(QColor("#d13438"), 2))
+        painter.drawPath(path)
+        
+        # ビックリマークの描画
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#d13438"))
+        painter.drawRect(11, 8, 2, 6)
+        painter.drawRect(11, 16, 2, 2)
+
 
 class LoopCountWidget(QFrame):
     count_changed = Signal(int, int) # loop_start_idx, new_count
@@ -66,12 +94,13 @@ class MacroVisualCanvas(QWidget):
         self.blocks = []
         self.loops = []
         self.loop_widgets = []
+        self.warning_widgets = []
         
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.main_layout.setContentsMargins(100, 40, 100, 40)
-        self.main_layout.setSpacing(40) # ブロック間の間隔
+        self.main_layout.setSpacing(40)
         
         self.rebuild()
         
@@ -88,19 +117,27 @@ class MacroVisualCanvas(QWidget):
             w.deleteLater()
         self.loop_widgets.clear()
         
+        for w in self.warning_widgets:
+            if w:
+                w.deleteLater()
+        self.warning_widgets.clear()
+        
         self.blocks.clear()
         
-        current_loop_depth = 0
+        in_loop_set = set()
+        for loop in self.loops:
+            if not loop.get("is_reversed"):
+                start = loop["loop_start_idx"]
+                end = loop["loop_end_idx"]
+                for j in range(start + 1, end):
+                    in_loop_set.add(j)
+        
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
-            if method == "loop_start":
-                current_loop_depth += 1
-                continue
-            elif method == "loop_end":
-                current_loop_depth = max(0, current_loop_depth - 1)
+            if method in ["loop_start", "loop_end"]:
                 continue
                 
-            is_in_loop = current_loop_depth > 0
+            is_in_loop = i in in_loop_set
             block = ActionBlockWidget(cmd, i, self.workflow_dir, is_in_loop)
             block.delete_requested.connect(self._on_delete_requested)
             block.content_changed.connect(self.commands_changed.emit)
@@ -110,9 +147,26 @@ class MacroVisualCanvas(QWidget):
 
         for loop in self.loops:
             w = LoopCountWidget(loop["loop_start_idx"], loop["loop_count"], self)
+            if loop.get("is_reversed"):
+                w.setStyleSheet("""
+                    #LoopCountWidget {
+                        background-color: #ffffff;
+                        border: 2px solid #d13438;
+                        border-radius: 6px;
+                    }
+                """)
+                w.spin_box.setStyleSheet(w.spin_box.styleSheet().replace("#0078d4", "#d13438"))
+                
             w.count_changed.connect(self._on_loop_count_changed)
             w.show()
             self.loop_widgets.append(w)
+            
+            if loop.get("is_reversed"):
+                warn_w = WarningWidget(self)
+                warn_w.show()
+                self.warning_widgets.append(warn_w)
+            else:
+                self.warning_widgets.append(None)
             
         self.update()
 
@@ -158,14 +212,21 @@ class MacroVisualCanvas(QWidget):
             if not start_block or not end_block:
                 continue
                 
-            x_start = end_block.geometry().right()
-            y_start = end_block.geometry().center().y()
+            x_top = start_block.geometry().right()
+            y_top = start_block.geometry().center().y()
             
-            x_end = start_block.geometry().right()
-            y_end = start_block.geometry().center().y()
+            x_bottom = end_block.geometry().right()
+            y_bottom = end_block.geometry().center().y()
             
-            # 終了地点ハンドル (下側)
-            if (pos.x() - x_start)**2 + (pos.y() - y_start)**2 < 100: # 半径10
+            if not loop.get("is_reversed", False):
+                start_handle_pos = QPoint(x_top, y_top)
+                end_handle_pos = QPoint(x_bottom, y_bottom)
+            else:
+                start_handle_pos = QPoint(x_bottom, y_bottom)
+                end_handle_pos = QPoint(x_top, y_top)
+            
+            # 終了地点ハンドル
+            if (pos.x() - end_handle_pos.x())**2 + (pos.y() - end_handle_pos.y())**2 < 100:
                 drag = QDrag(self)
                 mime_data = QMimeData()
                 mime_data.setText(f"loop_handle:end:{loop['loop_end_idx']}")
@@ -173,8 +234,8 @@ class MacroVisualCanvas(QWidget):
                 drag.exec_(Qt.DropAction.MoveAction)
                 return
                 
-            # 開始地点ハンドル (上側・矢先)
-            if (pos.x() - x_end)**2 + (pos.y() - y_end)**2 < 100:
+            # 開始地点ハンドル
+            if (pos.x() - start_handle_pos.x())**2 + (pos.y() - start_handle_pos.y())**2 < 100:
                 drag = QDrag(self)
                 mime_data = QMimeData()
                 mime_data.setText(f"loop_handle:start:{loop['loop_start_idx']}")
@@ -228,38 +289,80 @@ class MacroVisualCanvas(QWidget):
         self.commands_changed.emit()
         self.rebuild()
 
-    def _analyze_loops(self):
-        self.loops = []
-        loop_stack = []
+    def _ensure_loop_ids(self):
+        stack = []
+        loop_counter = 0
         
+        for cmd in self.commands:
+            if "loop_id" in cmd:
+                try:
+                    num = int(cmd["loop_id"].split("_")[1])
+                    loop_counter = max(loop_counter, num + 1)
+                except:
+                    pass
+
+        for cmd in self.commands:
+            if cmd.get("method") == "loop_start":
+                if "loop_id" not in cmd:
+                    cmd["loop_id"] = f"loop_{loop_counter}"
+                    loop_counter += 1
+                stack.append(cmd["loop_id"])
+            elif cmd.get("method") == "loop_end":
+                if "loop_id" not in cmd:
+                    if stack:
+                        cmd["loop_id"] = stack.pop()
+                    else:
+                        cmd["loop_id"] = f"loop_{loop_counter}_orphan"
+                        loop_counter += 1
+                else:
+                    if stack and stack[-1] == cmd["loop_id"]:
+                        stack.pop()
+
+    def _analyze_loops(self):
+        self._ensure_loop_ids()
+        
+        loop_dict = {}
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
-            if method == "loop_start":
-                args = cmd.get("args", {})
-                loop_stack.append({
-                    "loop_start_idx": i,
-                    "loop_count": args.get("loop_count", 1)
-                })
-            elif method == "loop_end":
-                if loop_stack:
-                    loop_info = loop_stack.pop()
-                    loop_info["loop_end_idx"] = i
-                    
-                    start_idx = -1
-                    end_idx = -1
-                    
-                    for j in range(loop_info["loop_start_idx"] + 1, i):
-                        if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
-                            if start_idx == -1:
-                                start_idx = j
-                            end_idx = j
-                            
-                    if start_idx != -1 and end_idx != -1:
-                        loop_info["start_action_idx"] = start_idx
-                        loop_info["end_action_idx"] = end_idx
-                        loop_info["size"] = end_idx - start_idx
-                        self.loops.append(loop_info)
+            if method in ["loop_start", "loop_end"]:
+                loop_id = cmd.get("loop_id")
+                if not loop_id:
+                    continue
+                if loop_id not in loop_dict:
+                    loop_dict[loop_id] = {"loop_count": 1}
                 
+                if method == "loop_start":
+                    loop_dict[loop_id]["loop_start_idx"] = i
+                    loop_dict[loop_id]["loop_count"] = cmd.get("args", {}).get("loop_count", 1)
+                else:
+                    loop_dict[loop_id]["loop_end_idx"] = i
+
+        self.loops = []
+        for loop_id, info in loop_dict.items():
+            if "loop_start_idx" in info and "loop_end_idx" in info:
+                start_idx = info["loop_start_idx"]
+                end_idx = info["loop_end_idx"]
+                
+                is_reversed = start_idx > end_idx
+                
+                top_idx = min(start_idx, end_idx)
+                bottom_idx = max(start_idx, end_idx)
+                
+                first_action_idx = -1
+                last_action_idx = -1
+                for j in range(top_idx + 1, bottom_idx):
+                    if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
+                        if first_action_idx == -1:
+                            first_action_idx = j
+                        last_action_idx = j
+                        
+                if first_action_idx != -1 and last_action_idx != -1:
+                    info["start_action_idx"] = first_action_idx
+                    info["end_action_idx"] = last_action_idx
+                    info["size"] = last_action_idx - first_action_idx
+                    info["is_reversed"] = is_reversed
+                    self.loops.append(info)
+                    
         self.loops.sort(key=lambda x: x["size"], reverse=True)
         right_loops = []
         
@@ -298,12 +401,10 @@ class MacroVisualCanvas(QWidget):
             painter.drawLine(x, y2, x - arrow_size, y2 - arrow_size)
             painter.drawLine(x, y2, x + arrow_size, y2 - arrow_size)
 
-        loop_pen = QPen(QColor("#0078d4"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(loop_pen)
-        
         for i, loop in enumerate(self.loops):
             start_idx = loop["start_action_idx"]
             end_idx = loop["end_action_idx"]
+            is_reversed = loop.get("is_reversed", False)
             
             start_block = self.get_block_widget(start_idx)
             end_block = self.get_block_widget(end_idx)
@@ -311,37 +412,60 @@ class MacroVisualCanvas(QWidget):
             if not start_block or not end_block:
                 continue
             
-            x_start = end_block.geometry().right()
-            y_start = end_block.geometry().center().y()
+            x_top = start_block.geometry().right()
+            y_top = start_block.geometry().center().y()
             
-            x_end = start_block.geometry().right()
-            y_end = start_block.geometry().center().y()
+            x_bottom = end_block.geometry().right()
+            y_bottom = end_block.geometry().center().y()
             
             base_offset = 40
             lane_width = 40
             offset = base_offset + loop["lane"] * lane_width
             
-            x_turn = max(x_start, x_end) + offset
+            x_turn = max(x_top, x_bottom) + offset
+            
+            if is_reversed:
+                loop_pen = QPen(QColor("#d13438"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            else:
+                loop_pen = QPen(QColor("#0078d4"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(loop_pen)
                 
-            painter.drawLine(x_start, y_start, x_turn, y_start)
-            painter.drawLine(x_turn, y_start, x_turn, y_end)
-            painter.drawLine(x_turn, y_end, x_end, y_end)
+            painter.drawLine(x_bottom, y_bottom, x_turn, y_bottom)
+            painter.drawLine(x_turn, y_bottom, x_turn, y_top)
+            painter.drawLine(x_turn, y_top, x_top, y_top)
             
             arrow_size = 14
-            painter.drawLine(x_end, y_end, x_end + arrow_size, y_end - arrow_size)
-            painter.drawLine(x_end, y_end, x_end + arrow_size, y_end + arrow_size)
-            
-            # ハンドルの描画
             handle_radius = 4
             painter.setBrush(QColor("#ffffff"))
-            painter.setPen(QPen(QColor("#0078d4"), 2))
-            painter.drawEllipse(QPoint(x_start, y_start), handle_radius, handle_radius)
-            painter.drawEllipse(QPoint(x_end, y_end), handle_radius, handle_radius)
+            
+            if not is_reversed:
+                painter.drawLine(x_top, y_top, x_top + arrow_size, y_top - arrow_size)
+                painter.drawLine(x_top, y_top, x_top + arrow_size, y_top + arrow_size)
+                
+                painter.setPen(QPen(QColor("#0078d4"), 2))
+                painter.drawEllipse(QPoint(x_bottom, y_bottom), handle_radius, handle_radius)
+                painter.drawEllipse(QPoint(x_top, y_top), handle_radius, handle_radius)
+            else:
+                painter.drawLine(x_bottom, y_bottom, x_bottom + arrow_size, y_bottom - arrow_size)
+                painter.drawLine(x_bottom, y_bottom, x_bottom + arrow_size, y_bottom + arrow_size)
+                
+                painter.setPen(QPen(QColor("#d13438"), 2))
+                painter.drawEllipse(QPoint(x_top, y_top), handle_radius, handle_radius)
+                painter.drawEllipse(QPoint(x_bottom, y_bottom), handle_radius, handle_radius)
             
             if i < len(self.loop_widgets):
                 w = self.loop_widgets[i]
                 w.adjustSize()
                 target_x = x_turn + 8
-                target_y = int((y_start + y_end) / 2 - w.height() / 2)
+                target_y = int((y_top + y_bottom) / 2 - w.height() / 2)
                 if w.pos() != QPoint(target_x, target_y):
                     w.move(target_x, target_y)
+                    
+            if i < len(self.warning_widgets) and self.warning_widgets[i]:
+                warn_w = self.warning_widgets[i]
+                warn_w.adjustSize()
+                w = self.loop_widgets[i]
+                warn_x = target_x + w.width() + 4
+                warn_y = int((y_top + y_bottom) / 2 - warn_w.height() / 2)
+                if warn_w.pos() != QPoint(warn_x, warn_y):
+                    warn_w.move(warn_x, warn_y)
