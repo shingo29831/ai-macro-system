@@ -29,6 +29,7 @@ class ToolItemWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         label = QLabel(label_text)
+        label.setStyleSheet("color: #333333;")
         font = label.font()
         font.setBold(True)
         label.setFont(font)
@@ -204,6 +205,7 @@ class MacroEditorScreen(QWidget):
         
         self.btn_cancel = QPushButton("キャンセル")
         self.btn_cancel.setFixedSize(100, 32)
+        self.btn_cancel.setStyleSheet("color: #333333; background-color: #f3f2f1; border: 1px solid #d0d0d0; border-radius: 4px;")
         self.btn_cancel.clicked.connect(self.canceled.emit)
         footer_layout.addWidget(self.btn_cancel)
         

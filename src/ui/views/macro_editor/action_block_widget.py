@@ -83,6 +83,12 @@ class ActionBlockWidget(QFrame):
         
         # 4. インライン編集フォーム（初期状態は非表示）
         self.edit_container = QWidget()
+        self.edit_container.setStyleSheet("""
+            QLabel, QSpinBox, QLineEdit, QDoubleSpinBox {
+                color: #333333;
+                background-color: #ffffff;
+            }
+        """)
         self.edit_layout = QFormLayout(self.edit_container)
         self.edit_layout.setContentsMargins(0, 10, 0, 0)
         self._build_edit_form()
