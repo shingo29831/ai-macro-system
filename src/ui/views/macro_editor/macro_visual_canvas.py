@@ -195,9 +195,46 @@ class MacroVisualCanvas(QWidget):
         }
         return templates.get(action_type, {"method": action_type, "args": {}})
 
+    def _validate_loops(self) -> bool:
+        loop_dict = {}
+        for i, cmd in enumerate(self.commands):
+            method = cmd.get("method")
+            if method in ["loop_start", "loop_end"]:
+                loop_id = cmd.get("loop_id")
+                if not loop_id:
+                    continue
+                if loop_id not in loop_dict:
+                    loop_dict[loop_id] = {}
+                if method == "loop_start":
+                    loop_dict[loop_id]["start"] = i
+                else:
+                    loop_dict[loop_id]["end"] = i
+                    
+        for loop_id, info in loop_dict.items():
+            if "start" in info and "end" in info:
+                top_idx = min(info["start"], info["end"])
+                bottom_idx = max(info["start"], info["end"])
+                
+                has_action = False
+                for j in range(top_idx + 1, bottom_idx):
+                    if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
+                        has_action = True
+                        break
+                if not has_action:
+                    return False
+        return True
+
     def _on_delete_requested(self, cmd_index: int):
         if 0 <= cmd_index < len(self.commands):
+            import copy
+            backup_commands = copy.deepcopy(self.commands)
+            
             self.commands.pop(cmd_index)
+            
+            if not self._validate_loops():
+                self.commands = backup_commands
+                return
+                
             self.commands_changed.emit()
             self.rebuild()
 
@@ -218,6 +255,12 @@ class MacroVisualCanvas(QWidget):
             
             x_bottom = end_block.geometry().right()
             y_bottom = end_block.geometry().center().y()
+            
+            if start_idx == end_idx:
+                y_top = start_block.geometry().top() + 15
+                y_bottom = start_block.geometry().bottom() - 15
+                if loop.get("is_reversed", False):
+                    y_top, y_bottom = y_bottom, y_top
             
             if not loop.get("is_reversed", False):
                 start_handle_pos = QPoint(x_top, y_top)
@@ -295,6 +338,9 @@ class MacroVisualCanvas(QWidget):
                 target_idx = block.cmd_index
                 break
                 
+        import copy
+        backup_commands = copy.deepcopy(self.commands)
+        
         if mime_text.startswith("action_block:"):
             source_idx = int(mime_text.split(":")[1])
             if source_idx == target_idx or source_idx == target_idx - 1:
@@ -308,7 +354,6 @@ class MacroVisualCanvas(QWidget):
         elif mime_text.startswith("new_action:"):
             action_type = mime_text.split(":")[1]
             cmd_template = self._get_template_for_action(action_type)
-            import copy
             self.commands.insert(target_idx, copy.deepcopy(cmd_template))
             
         elif mime_text.startswith("loop_handle:"):
@@ -320,6 +365,10 @@ class MacroVisualCanvas(QWidget):
                 if target_idx > cmd_idx:
                     target_idx -= 1
                 self.commands.insert(target_idx, cmd)
+                
+        if not self._validate_loops():
+            self.commands = backup_commands
+            return
             
         self.commands_changed.emit()
         self.rebuild()
@@ -453,6 +502,10 @@ class MacroVisualCanvas(QWidget):
             x_bottom = end_block.geometry().right()
             y_bottom = end_block.geometry().center().y()
             
+            if start_idx == end_idx:
+                y_top = start_block.geometry().top() + 15
+                y_bottom = start_block.geometry().bottom() - 15
+            
             base_offset = 40
             lane_width = 40
             offset = base_offset + loop["lane"] * lane_width
@@ -534,20 +587,35 @@ class MacroVisualCanvas(QWidget):
                         target_x = 0
                 
                 fixed_block = None
+                fixed_idx = -1
                 if handle_type == "start":
-                    fixed_block = self.get_block_widget(current_loop["end_action_idx"])
+                    fixed_idx = current_loop["end_action_idx"]
+                    fixed_block = self.get_block_widget(fixed_idx)
                     if fixed_block:
-                        y_top = target_y
-                        x_top = target_x
-                        y_bottom = fixed_block.geometry().center().y()
-                        x_bottom = fixed_block.geometry().right()
+                        if target_idx == fixed_idx:
+                            y_top = target_block.geometry().top() + 15
+                            y_bottom = target_block.geometry().bottom() - 15
+                            x_top = target_x
+                            x_bottom = target_x
+                        else:
+                            y_top = target_y
+                            x_top = target_x
+                            y_bottom = fixed_block.geometry().center().y()
+                            x_bottom = fixed_block.geometry().right()
                 else:
-                    fixed_block = self.get_block_widget(current_loop["start_action_idx"])
+                    fixed_idx = current_loop["start_action_idx"]
+                    fixed_block = self.get_block_widget(fixed_idx)
                     if fixed_block:
-                        y_top = fixed_block.geometry().center().y()
-                        x_top = fixed_block.geometry().right()
-                        y_bottom = target_y
-                        x_bottom = target_x
+                        if target_idx == fixed_idx:
+                            y_top = target_block.geometry().top() + 15
+                            y_bottom = target_block.geometry().bottom() - 15
+                            x_top = target_x
+                            x_bottom = target_x
+                        else:
+                            y_top = fixed_block.geometry().center().y()
+                            x_top = fixed_block.geometry().right()
+                            y_bottom = target_y
+                            x_bottom = target_x
                         
                 if fixed_block:
                     is_reversed = y_top > y_bottom
