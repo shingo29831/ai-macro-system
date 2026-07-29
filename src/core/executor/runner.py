@@ -25,7 +25,11 @@ _stop_requested = False
 
 set_dpi_awareness()
 
-def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
+class WorkflowStoppedException(Exception):
+    """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
+    pass
+
+def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp_commands: list[dict] = None):
     global _is_running, _stop_requested
     _is_running = True
     _stop_requested = False
@@ -34,6 +38,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     mouse = MouseController()
     keyboard = KeyboardController()
+
+    def _check_stop():
+        if _stop_requested:
+            raise WorkflowStoppedException("Execution aborted by user emergency stop.")
 
     _pressed_keys_for_stop = set()
 
@@ -99,11 +107,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         executable_macro_path = target_dir / "executable_macro.json"
         variables_path = target_dir / "variables.json"
         
-        if not executable_macro_path.exists():
+        macro_data = {}
+        if executable_macro_path.exists():
+            with open(executable_macro_path, 'r', encoding='utf-8') as f:
+                macro_data = json.load(f)
+        elif temp_commands is None:
             raise FileNotFoundError(f"Missing executable_macro.json in {target_dir}")
-            
-        with open(executable_macro_path, 'r', encoding='utf-8') as f:
-            macro_data = json.load(f)
 
         variables = {}
         if variables_path.exists():
@@ -113,7 +122,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             except Exception as e:
                 logger.warning(f"[{workflow_id}] Failed to load variables.json: {e}")
             
-        commands = macro_data.get("commands", [])
+        if temp_commands is not None:
+            commands = temp_commands
+        else:
+            commands = macro_data.get("commands", [])
+            
         macro_needs_save = False
         excel_app_cache = None
         
@@ -142,6 +155,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     args.get("launch_cmd", "")
                 )
                 time.sleep(1.0)
+                _check_stop()
                 
                 import cv2
                 import numpy as np
@@ -150,6 +164,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 logger.info(f"[{workflow_id}] Buffering initial frames to detect dynamic regions (e.g., videos)...")
                 initial_frames = []
                 for _ in range(5):
+                    _check_stop()
                     img_pil, curr_monitor = take_screenshot()
                     img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2GRAY)
                     initial_frames.append(img_cv)
@@ -177,6 +192,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
 
                 last_win_args = args
                 for i, cmd in enumerate(commands):
+                    _check_stop()
                     if cmd.get("method") == "activate_window":
                         last_win_args = cmd.get("args", {})
                     
@@ -238,10 +254,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
         loop_stack = []
         
         while i < len(commands):
+            _check_stop()
             cmd = commands[i]
-            if _stop_requested:
-                logger.warning(f"[{workflow_id}] Execution aborted by user emergency stop.")
-                break
                 
             method = cmd.get("method")
             args = cmd.get("args", {}).copy()
@@ -317,8 +331,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, 
                         workflow_id, status_callback, i, timeout=10.0, check_cancel_callback=lambda: _stop_requested
                     )
+                    _check_stop()
                     step_log["match_info"] = match_info
                     update_ui(step_msg, False)
+            
+            _check_stop()
             
             if raw_event_id and target_id and method in ["click", "move"]:
                 needs_recovery = False
@@ -331,6 +348,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                     import numpy as np
 
                     current_img_pil, _ = take_screenshot()
+                    _check_stop()
 
                     if crop_image_path.exists():
                         current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
@@ -366,10 +384,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         needs_recovery = False
 
                     if needs_recovery:
+                        _check_stop()
                         if status_callback:
                             status_callback("自己修復中...", True)
                             
                         recovery_result = attempt_recovery(workflow_id, target_id)
+                        _check_stop()
                         
                         step_log["recovery_info"] = recovery_result
                         if recovery_result.get("success"):
@@ -413,11 +433,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                 duration = args.get("duration", 0.0)
                 sleep_intervals = int(duration * 10)
                 for _ in range(sleep_intervals):
-                    if _stop_requested:
-                        break
+                    _check_stop()
                     time.sleep(0.1)
                 remainder = duration - (sleep_intervals * 0.1)
-                if remainder > 0 and not _stop_requested:
+                if remainder > 0:
+                    _check_stop()
                     time.sleep(remainder)
                     
             elif method == "activate_window":
@@ -589,8 +609,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
                         if not skip_physical:
                             set_ime_state(text)
                             for char in text:
-                                if _stop_requested:
-                                    break
+                                _check_stop()
                                 keyboard.type(char)
                                 time.sleep(0.03)
                             time.sleep(0.2)
@@ -630,20 +649,20 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None):
             execution_log["steps"].append(step_log)
             i += 1
                 
-        if not _stop_requested:
-            if macro_needs_save:
-                try:
-                    with open(executable_macro_path, 'w', encoding='utf-8') as f:
-                        json.dump(macro_data, f, indent=4, ensure_ascii=False)
-                    logger.info(f"[{workflow_id}] Successfully saved healed coordinates to executable_macro.json for future runs.")
-                except Exception as e:
-                    logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
+        if macro_needs_save and temp_commands is None:
+            try:
+                with open(executable_macro_path, 'w', encoding='utf-8') as f:
+                    json.dump(macro_data, f, indent=4, ensure_ascii=False)
+                logger.info(f"[{workflow_id}] Successfully saved healed coordinates to executable_macro.json for future runs.")
+            except Exception as e:
+                logger.error(f"[{workflow_id}] Failed to save healed macro to file: {e}")
 
-            execution_log["status"] = "success"
-            logger.info(f"[{workflow_id}] Macro execution finished successfully.")
-        else:
-            execution_log["status"] = "stopped"
+        execution_log["status"] = "success"
+        logger.info(f"[{workflow_id}] Macro execution finished successfully.")
         
+    except WorkflowStoppedException as e:
+        execution_log["status"] = "stopped"
+        logger.warning(f"[{workflow_id}] {e}")
     except Exception as e:
         execution_log["status"] = "failed"
         execution_log["error"] = str(e)
