@@ -34,6 +34,19 @@ def build_and_save_macro(
     prev_window_name = None
     prev_win_rect = None
     
+    window_alias_map = {}
+    app_alias_counters = {}
+
+    def get_window_alias(title, rect):
+        app_name = title.split("—")[-1].split("-")[-1].strip()
+        if not app_name:
+            app_name = "App"
+        key = (title, rect)
+        if key not in window_alias_map:
+            app_alias_counters[app_name] = app_alias_counters.get(app_name, 0) + 1
+            window_alias_map[key] = f"{app_name}{app_alias_counters[app_name]}"
+        return window_alias_map[key]
+    
     for info in temp_workflow_info:
         if check_cancel_callback and check_cancel_callback():
             raise InterruptedError("Generation cancelled by user")
@@ -105,7 +118,8 @@ def build_and_save_macro(
                     "y": win_y,
                     "width": win_w,
                     "height": win_h,
-                    "launch_cmd": command_line
+                    "launch_cmd": command_line,
+                    "window_alias": get_window_alias(current_window, current_win_rect)
                 }, ensure_ascii=False)
 
                 workflow_steps.append(WorkflowStep(
@@ -283,7 +297,8 @@ def build_and_save_macro(
                             "height": win_h,
                             "launch_cmd": launch_cmd,
                             "target_id": target_id_for_healer,
-                            "raw_event_id": raw_event_id
+                            "raw_event_id": raw_event_id,
+                            "window_alias": win_info.get("window_alias")
                         }
                     })
                 except Exception as e:

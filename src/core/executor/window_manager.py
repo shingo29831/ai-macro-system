@@ -67,7 +67,74 @@ def set_ime_state(text: str):
     except Exception as e:
         logger.warning(f"Failed to set IME state: {e}")
 
-def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, launch_cmd: str = ""):
+def get_open_windows_info():
+    if platform.system() != "Windows":
+        return []
+    
+    import ctypes
+    import win32gui
+    import win32ui
+    from PIL import Image
+    
+    windows_info = []
+    
+    def enum_windows_proc(hwnd, lParam):
+        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowTextLength(hwnd) > 0:
+            title = win32gui.GetWindowText(hwnd)
+            ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中...", "実行中", "実行中...", "Program Manager"]
+            if not any(ignored in title for ignored in ignored_titles):
+                rect = win32gui.GetWindowRect(hwnd)
+                w = rect[2] - rect[0]
+                h = rect[3] - rect[1]
+                if w > 0 and h > 0:
+                    windows_info.append({
+                        "hwnd": hwnd,
+                        "title": title,
+                        "rect": rect
+                    })
+        return True
+
+    win32gui.EnumWindows(enum_windows_proc, 0)
+    
+    for info in windows_info:
+        hwnd = info["hwnd"]
+        try:
+            left, top, right, bottom = info["rect"]
+            width = right - left
+            height = bottom - top
+            
+            hwndDC = win32gui.GetWindowDC(hwnd)
+            mfcDC  = win32ui.CreateDCFromHandle(hwndDC)
+            saveDC = mfcDC.CreateCompatibleDC()
+            
+            saveBitMap = win32ui.CreateBitmap()
+            saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+            saveDC.SelectObject(saveBitMap)
+            
+            ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 3)
+            
+            bmpinfo = saveBitMap.GetInfo()
+            bmpstr = saveBitMap.GetBitmapBits(True)
+            
+            img = Image.frombuffer(
+                'RGB',
+                (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+                bmpstr, 'raw', 'BGRX', 0, 1
+            )
+            
+            img.thumbnail((200, 200))
+            info["thumbnail"] = img
+            
+            win32gui.DeleteObject(saveBitMap.GetHandle())
+            saveDC.DeleteDC()
+            mfcDC.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwndDC)
+        except Exception:
+            info["thumbnail"] = None
+            
+    return windows_info
+
+def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, launch_cmd: str = "", mapped_hwnd: int = None):
     global _browser_activated_once
     if not window_title or platform.system() != "Windows":
         return
@@ -85,19 +152,28 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     browser_names = ["firefox", "chrome", "edge", "brave", "opera"]
     is_target_browser = any(b in app_name.lower() for b in browser_names)
     
-    safe_title = re.escape(window_title)
-    
     windows = []
-    for _ in range(10):
-        all_matched = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
-        if all_matched:
-            if is_target_browser:
-                windows = all_matched
-            else:
-                windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
-        if windows:
-            break
-        time.sleep(0.5)
+    if mapped_hwnd:
+        try:
+            app = pywinauto.Application(backend="uia").connect(handle=mapped_hwnd)
+            win = app.window(handle=mapped_hwnd)
+            if win.exists():
+                windows = [win]
+        except Exception as e:
+            logger.warning(f"Failed to connect to mapped_hwnd {mapped_hwnd}: {e}")
+
+    if not windows:
+        safe_title = re.escape(window_title)
+        for _ in range(10):
+            all_matched = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+            if all_matched:
+                if is_target_browser:
+                    windows = all_matched
+                else:
+                    windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
+            if windows:
+                break
+            time.sleep(0.5)
     
     if not windows and app_name:
         safe_app_name = re.escape(app_name)

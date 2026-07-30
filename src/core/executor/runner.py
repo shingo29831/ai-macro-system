@@ -152,7 +152,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     args.get("width", 0),
                     args.get("height", 0),
                     workflow_id,
-                    args.get("launch_cmd", "")
+                    args.get("launch_cmd", ""),
+                    args.get("mapped_hwnd")
                 )
                 time.sleep(1.0)
                 _check_stop()
@@ -229,7 +230,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         args.get("width", 0),
                         args.get("height", 0),
                         workflow_id,
-                        args.get("launch_cmd", "")
+                        args.get("launch_cmd", ""),
+                        args.get("mapped_hwnd")
                     )
                     time.sleep(0.5)
             elif not screen_matched and is_browser_target:
@@ -454,30 +456,42 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
+                mapped_hwnd = args.get("mapped_hwnd")
                 
-                activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd)
+                activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:
                 if last_win_args:
-                    window_title = last_win_args.get("window_title", "")
-                    app_name = window_title.split("—")[-1].split("-")[-1].strip()
-                    if app_name and platform.system() == "Windows":
+                    mapped_hwnd = last_win_args.get("mapped_hwnd")
+                    if platform.system() == "Windows":
                         hwnd = ctypes.windll.user32.GetForegroundWindow()
-                        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                        buff = ctypes.create_unicode_buffer(length + 1)
-                        ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-                        current_fg_title = buff.value
+                        needs_activation = False
                         
-                        if app_name.lower() not in current_fg_title.lower():
-                            logger.info(f"[{workflow_id}] Window '{app_name}' is not in foreground. Activating...")
+                        if mapped_hwnd:
+                            if hwnd != mapped_hwnd:
+                                needs_activation = True
+                        else:
+                            window_title = last_win_args.get("window_title", "")
+                            app_name = window_title.split("—")[-1].split("-")[-1].strip()
+                            if app_name:
+                                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                                buff = ctypes.create_unicode_buffer(length + 1)
+                                ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                                current_fg_title = buff.value
+                                if app_name.lower() not in current_fg_title.lower():
+                                    needs_activation = True
+                                    
+                        if needs_activation:
+                            logger.info(f"[{workflow_id}] Target window is not in foreground. Activating...")
                             activate_and_restore_window(
-                                window_title,
+                                last_win_args.get("window_title", ""),
                                 last_win_args.get("x", 0),
                                 last_win_args.get("y", 0),
                                 last_win_args.get("width", 0),
                                 last_win_args.get("height", 0),
                                 workflow_id,
-                                last_win_args.get("launch_cmd", "")
+                                last_win_args.get("launch_cmd", ""),
+                                mapped_hwnd
                             )
 
                 if method == "click":

@@ -62,6 +62,8 @@ class ActivateWindowArgs(BaseModel):
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+    window_alias: Optional[str] = None
+    mapped_hwnd: Optional[int] = None
 
 class ActivateWindowCommand(BaseModel):
     method: Literal["activate_window"] = "activate_window"
