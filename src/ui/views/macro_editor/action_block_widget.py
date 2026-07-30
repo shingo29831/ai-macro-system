@@ -1,4 +1,3 @@
-# src/ui/views/macro_editor/action_block_widget.py
 import json
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
@@ -135,6 +134,9 @@ class ActionBlockWidget(QFrame):
         self.main_layout.addWidget(self.edit_container)
         
     def _build_edit_form(self):
+        if "seq_vars" not in self.args:
+            self.args["seq_vars"] = {}
+
         if self.method in ["click", "move"]:
             self.x_spin = QSpinBox()
             self.x_spin.setRange(-9999, 9999)
@@ -149,16 +151,18 @@ class ActionBlockWidget(QFrame):
             self.edit_layout.addRow("Y座標:", self.y_spin)
             
             if self.is_in_loop:
+                x_seq = self.args["seq_vars"].setdefault("x", {"start": self.args.get("x", 0), "step": 0})
                 self.dx_spin = QSpinBox()
                 self.dx_spin.setRange(-999, 999)
-                self.dx_spin.setValue(self.args.get("x_offset", 0))
-                self.dx_spin.valueChanged.connect(lambda v: self._update_arg("x_offset", v))
+                self.dx_spin.setValue(x_seq.get("step", 0))
+                self.dx_spin.valueChanged.connect(lambda v: self._update_seq_var("x", "step", v))
                 self.edit_layout.addRow("X差分(ループ):", self.dx_spin)
                 
+                y_seq = self.args["seq_vars"].setdefault("y", {"start": self.args.get("y", 0), "step": 0})
                 self.dy_spin = QSpinBox()
                 self.dy_spin.setRange(-999, 999)
-                self.dy_spin.setValue(self.args.get("y_offset", 0))
-                self.dy_spin.valueChanged.connect(lambda v: self._update_arg("y_offset", v))
+                self.dy_spin.setValue(y_seq.get("step", 0))
+                self.dy_spin.valueChanged.connect(lambda v: self._update_seq_var("y", "step", v))
                 self.edit_layout.addRow("Y差分(ループ):", self.dy_spin)
                 
         elif self.method == "type_text":
@@ -167,15 +171,17 @@ class ActionBlockWidget(QFrame):
             self.edit_layout.addRow("テキスト:", self.text_edit)
             
             if self.is_in_loop:
-                seq_val = self.args.setdefault("sequence_value", {"start": 1, "step": 1})
+                text_seq = self.args["seq_vars"].setdefault("text", {"start": 1, "step": 1})
                 self.seq_start_spin = QSpinBox()
-                self.seq_start_spin.setValue(seq_val.get("start", 1))
-                self.seq_start_spin.valueChanged.connect(lambda v: self._update_seq_var("start", v))
+                self.seq_start_spin.setRange(-99999, 99999)
+                self.seq_start_spin.setValue(text_seq.get("start", 1))
+                self.seq_start_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "start", v))
                 self.edit_layout.addRow("連番開始:", self.seq_start_spin)
                 
                 self.seq_step_spin = QSpinBox()
-                self.seq_step_spin.setValue(seq_val.get("step", 1))
-                self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("step", v))
+                self.seq_step_spin.setRange(-99999, 99999)
+                self.seq_step_spin.setValue(text_seq.get("step", 1))
+                self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "step", v))
                 self.edit_layout.addRow("ステップ:", self.seq_step_spin)
                 
         elif self.method == "wait":
@@ -196,8 +202,12 @@ class ActionBlockWidget(QFrame):
         self.info_label.setText(self._get_info_text())
         self.content_changed.emit()
         
-    def _update_seq_var(self, key, value):
-        self.args["sequence_value"][key] = value
+    def _update_seq_var(self, target_key, param_key, value):
+        if "seq_vars" not in self.args:
+            self.args["seq_vars"] = {}
+        if target_key not in self.args["seq_vars"]:
+            self.args["seq_vars"][target_key] = {}
+        self.args["seq_vars"][target_key][param_key] = value
         self.content_changed.emit()
 
     def mousePressEvent(self, event: QMouseEvent):

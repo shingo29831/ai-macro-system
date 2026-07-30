@@ -13,6 +13,7 @@ from typing import List, Union, Literal, Optional
 
 class WaitArgs(BaseModel):
     duration: float = Field(..., description="Seconds to wait before next command.")
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class WaitCommand(BaseModel):
     method: Literal["wait"] = "wait"
@@ -25,6 +26,7 @@ class ClickArgs(BaseModel):
     clicks: Optional[int] = 1
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class ClickCommand(BaseModel):
     method: Literal["click"] = "click"
@@ -34,6 +36,7 @@ class TypeTextArgs(BaseModel):
     text: str = Field(..., description="Text string to type.")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class TypeTextCommand(BaseModel):
     method: Literal["type_text"] = "type_text"
@@ -43,6 +46,7 @@ class PressKeyArgs(BaseModel):
     key: str = Field(..., description="Special key name (e.g., enter, esc, tab).")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class PressKeyCommand(BaseModel):
     method: Literal["press_key"] = "press_key"
@@ -57,6 +61,7 @@ class ActivateWindowArgs(BaseModel):
     launch_cmd: str = ""
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class ActivateWindowCommand(BaseModel):
     method: Literal["activate_window"] = "activate_window"
@@ -67,6 +72,7 @@ class MoveArgs(BaseModel):
     y: int
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class MoveCommand(BaseModel):
     method: Literal["move"] = "move"
@@ -77,6 +83,7 @@ class ScrollArgs(BaseModel):
     dy: float
     x: int
     y: int
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class ScrollCommand(BaseModel):
     method: Literal["scroll"] = "scroll"

@@ -260,15 +260,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             method = cmd.get("method")
             args = cmd.get("args", {}).copy()
             
-            if loop_stack and method in ["click", "move", "activate_window"]:
+            if loop_stack:
                 current_loop = loop_stack[-1]
                 iteration = current_loop["current_iteration"]
-                variables = current_loop["variables"]
                 
-                if "y_offset" in variables and "y" in args:
-                    args["y"] += variables["y_offset"] * iteration
-                if "x_offset" in variables and "x" in args:
-                    args["x"] += variables["x_offset"] * iteration
+                seq_vars = args.get("seq_vars", {})
+                for key, seq_info in seq_vars.items():
+                    if isinstance(seq_info, dict) and "start" in seq_info and "step" in seq_info:
+                        start_val = seq_info["start"]
+                        step_val = seq_info["step"]
+                        if key == "text":
+                            args[key] = str(start_val + step_val * iteration)
+                        else:
+                            args[key] = start_val + step_val * iteration
             
             step_log = {
                 "step_index": i,
@@ -570,16 +574,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         
                 elif method == "type_text":
                     text = args.get("text", "")
-                    seq_val = args.get("sequence_value")
                     excel_cell = args.get("excel_cell")
                     
-                    if seq_val and loop_stack:
-                        current_loop = loop_stack[-1]
-                        iteration = current_loop["current_iteration"]
-                        start_val = seq_val.get("start", 1)
-                        step_val = seq_val.get("step", 1)
-                        text = str(start_val + step_val * iteration)
-                        
                     if text:
                         for key, val in variables.items():
                             placeholder = f"{{{{{key}}}}}"
