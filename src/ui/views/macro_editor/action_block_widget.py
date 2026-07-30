@@ -142,47 +142,41 @@ class ActionBlockWidget(QFrame):
             self.x_spin.setRange(-9999, 9999)
             self.x_spin.setValue(self.args.get("x", 0))
             self.x_spin.valueChanged.connect(lambda v: self._update_arg("x", v))
-            self.edit_layout.addRow("X座標:", self.x_spin)
+            self.edit_layout.addRow("X座標(初期値):", self.x_spin)
             
             self.y_spin = QSpinBox()
             self.y_spin.setRange(-9999, 9999)
             self.y_spin.setValue(self.args.get("y", 0))
             self.y_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
-            self.edit_layout.addRow("Y座標:", self.y_spin)
+            self.edit_layout.addRow("Y座標(初期値):", self.y_spin)
             
             if self.is_in_loop:
-                x_seq = self.args["seq_vars"].setdefault("x", {"start": self.args.get("x", 0), "step": 0})
+                x_seq = self.args["seq_vars"].setdefault("x", {"step": 0})
                 self.dx_spin = QSpinBox()
                 self.dx_spin.setRange(-999, 999)
                 self.dx_spin.setValue(x_seq.get("step", 0))
                 self.dx_spin.valueChanged.connect(lambda v: self._update_seq_var("x", "step", v))
-                self.edit_layout.addRow("X差分(ループ):", self.dx_spin)
+                self.edit_layout.addRow("X差分(ループ毎):", self.dx_spin)
                 
-                y_seq = self.args["seq_vars"].setdefault("y", {"start": self.args.get("y", 0), "step": 0})
+                y_seq = self.args["seq_vars"].setdefault("y", {"step": 0})
                 self.dy_spin = QSpinBox()
                 self.dy_spin.setRange(-999, 999)
                 self.dy_spin.setValue(y_seq.get("step", 0))
                 self.dy_spin.valueChanged.connect(lambda v: self._update_seq_var("y", "step", v))
-                self.edit_layout.addRow("Y差分(ループ):", self.dy_spin)
+                self.edit_layout.addRow("Y差分(ループ毎):", self.dy_spin)
                 
         elif self.method == "type_text":
             self.text_edit = QLineEdit(self.args.get("text", ""))
             self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
-            self.edit_layout.addRow("テキスト:", self.text_edit)
+            self.edit_layout.addRow("テキスト(初期値):", self.text_edit)
             
             if self.is_in_loop:
-                text_seq = self.args["seq_vars"].setdefault("text", {"start": 1, "step": 1})
-                self.seq_start_spin = QSpinBox()
-                self.seq_start_spin.setRange(-99999, 99999)
-                self.seq_start_spin.setValue(text_seq.get("start", 1))
-                self.seq_start_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "start", v))
-                self.edit_layout.addRow("連番開始:", self.seq_start_spin)
-                
+                text_seq = self.args["seq_vars"].setdefault("text", {"step": 1})
                 self.seq_step_spin = QSpinBox()
                 self.seq_step_spin.setRange(-99999, 99999)
                 self.seq_step_spin.setValue(text_seq.get("step", 1))
                 self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "step", v))
-                self.edit_layout.addRow("ステップ:", self.seq_step_spin)
+                self.edit_layout.addRow("テキスト加算(ループ毎):", self.seq_step_spin)
                 
         elif self.method == "wait":
             self.duration_spin = QDoubleSpinBox()

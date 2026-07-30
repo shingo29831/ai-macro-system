@@ -266,13 +266,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 
                 seq_vars = args.get("seq_vars", {})
                 for key, seq_info in seq_vars.items():
-                    if isinstance(seq_info, dict) and "start" in seq_info and "step" in seq_info:
-                        start_val = seq_info["start"]
+                    if isinstance(seq_info, dict) and "step" in seq_info:
                         step_val = seq_info["step"]
-                        if key == "text":
-                            args[key] = str(start_val + step_val * iteration)
-                        else:
-                            args[key] = start_val + step_val * iteration
+                        if key in args:
+                            if key == "text":
+                                try:
+                                    start_val = int(args[key])
+                                    args[key] = str(start_val + step_val * iteration)
+                                except ValueError:
+                                    pass
+                            else:
+                                args[key] = args[key] + step_val * iteration
             
             step_log = {
                 "step_index": i,
@@ -294,12 +298,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
 
             if method == "loop_start":
                 loop_count = args.get("loop_count", 10)
-                loop_variables = args.get("loop_variables", {})
                 loop_stack.append({
                     "start_index": i,
                     "total_count": loop_count,
-                    "current_iteration": 0,
-                    "variables": loop_variables
+                    "current_iteration": 0
                 })
                 i += 1
                 continue

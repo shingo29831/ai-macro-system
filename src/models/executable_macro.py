@@ -91,7 +91,6 @@ class ScrollCommand(BaseModel):
 
 class LoopStartArgs(BaseModel):
     loop_count: int = Field(default=1, description="Number of times to repeat the loop.")
-    loop_variables: Optional[dict] = Field(default_factory=dict, description="Variables to change in each iteration (e.g., x_offset, y_offset).")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
 
