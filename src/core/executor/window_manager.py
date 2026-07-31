@@ -153,7 +153,9 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     is_target_browser = any(b in app_name.lower() for b in browser_names)
     
     windows = []
-    if mapped_hwnd:
+    force_new = (mapped_hwnd == -1)
+    
+    if mapped_hwnd and not force_new:
         try:
             app = pywinauto.Application(backend="uia").connect(handle=mapped_hwnd)
             win = app.window(handle=mapped_hwnd)
@@ -162,7 +164,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
         except Exception as e:
             logger.warning(f"Failed to connect to mapped_hwnd {mapped_hwnd}: {e}")
 
-    if not windows:
+    if not windows and not force_new:
         safe_title = re.escape(window_title)
         for _ in range(10):
             all_matched = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)

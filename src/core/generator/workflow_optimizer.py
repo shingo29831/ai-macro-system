@@ -40,8 +40,11 @@ def optimize_workflow_events(
                         val = val[:-2]
                     
                     is_duplicate = False
+                    current_window = info.get("window_name", "")
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
+                        if prev_info.get("window_name", "") != current_window:
+                            break
                         if prev_info["raw_action"] == "type_text":
                             if prev_info.get("excel_cell") == cell and prev_info.get("semantic_role") == val:
                                 is_duplicate = True
@@ -54,6 +57,8 @@ def optimize_workflow_events(
                         insert_idx = len(cleaned_workflow_info)
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
+                            if prev_info.get("window_name", "") != current_window:
+                                break
                             if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                                 break
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
@@ -83,8 +88,11 @@ def optimize_workflow_events(
                     cell = match.group(1).replace("$", "")
                     
                     is_duplicate = False
+                    current_window = info.get("window_name", "")
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
+                        if prev_info.get("window_name", "") != current_window:
+                            break
                         if prev_info["raw_action"] == "click" and prev_info.get("excel_dest_cell"):
                             if prev_info.get("excel_dest_cell") == cell:
                                 is_duplicate = True
@@ -100,6 +108,8 @@ def optimize_workflow_events(
                         has_nav_key = False
                         for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                             prev_info = cleaned_workflow_info[i]
+                            if prev_info.get("window_name", "") != current_window:
+                                break
                             if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                                 break
                             if prev_info["raw_action"] in ["click", "move"]:

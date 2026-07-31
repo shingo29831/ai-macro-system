@@ -39,23 +39,25 @@ from PySide6.QtWidgets import QDialog, QComboBox, QScrollArea
 from PySide6.QtGui import QImage, QPixmap
 from core.executor.window_manager import get_open_windows_info
 
-class WindowMappingDialog(QDialog):
+from qfluentwidgets import MessageBoxBase
+
+class WindowMappingDialog(MessageBoxBase):
     def __init__(self, aliases, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ウィンドウの紐付け")
-        self.resize(600, 400)
+        self.titleLabel.setText("ウィンドウの紐付け")
         self.aliases = aliases
         self.mapping = {}
         
         self.open_windows = get_open_windows_info()
         
-        layout = QVBoxLayout(self)
-        layout.addWidget(SubtitleLabel("実行するウィンドウを選択してください"))
-        layout.addWidget(BodyLabel("選択しない場合は新規で起動します。"))
+        self.viewLayout.addWidget(SubtitleLabel("実行するウィンドウを選択してください"))
+        self.viewLayout.addWidget(BodyLabel("選択しない場合は新規で起動します。"))
         
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
         scroll_widget = QWidget()
+        scroll_widget.setStyleSheet("QWidget { background-color: transparent; }")
         scroll_layout = QVBoxLayout(scroll_widget)
         
         self.combos = {}
@@ -65,9 +67,19 @@ class WindowMappingDialog(QDialog):
             row_layout.addWidget(BodyLabel(alias))
             
             combo = QComboBox()
-            combo.addItem("新規起動 (選択しない)", None)
-            for win in self.open_windows:
+            combo.addItem("新規起動 (選択しない)", -1)
+            
+            best_match_idx = 0
+            app_name = alias.split("—")[-1].split("-")[-1].strip().lower()
+            
+            for i, win in enumerate(self.open_windows):
                 combo.addItem(win["title"], win["hwnd"])
+                win_title_lower = win["title"].lower()
+                
+                if alias.lower() in win_title_lower:
+                    best_match_idx = i + 1
+                elif app_name and app_name in win_title_lower and best_match_idx == 0:
+                    best_match_idx = i + 1
                 
             self.combos[alias] = combo
             row_layout.addWidget(combo)
@@ -79,7 +91,7 @@ class WindowMappingDialog(QDialog):
             
             def on_combo_changed(idx, lbl=thumb_label, cb=combo):
                 hwnd = cb.itemData(idx)
-                if hwnd:
+                if hwnd and hwnd != -1:
                     for w in self.open_windows:
                         if w["hwnd"] == hwnd and w.get("thumbnail"):
                             img = w["thumbnail"]
@@ -91,23 +103,18 @@ class WindowMappingDialog(QDialog):
                 lbl.setText("画像なし")
                 
             combo.currentIndexChanged.connect(on_combo_changed)
-            on_combo_changed(0)
+            
+            if best_match_idx > 0:
+                combo.setCurrentIndex(best_match_idx)
+            else:
+                on_combo_changed(0)
             
             scroll_layout.addLayout(row_layout)
             
         scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
+        self.viewLayout.addWidget(scroll)
         
-        btn_layout = QHBoxLayout()
-        ok_btn = PrimaryPushButton("確定")
-        ok_btn.clicked.connect(self.accept)
-        cancel_btn = PushButton("キャンセル")
-        cancel_btn.clicked.connect(self.reject)
-        
-        btn_layout.addStretch()
-        btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(ok_btn)
-        layout.addLayout(btn_layout)
+        self.widget.setMinimumSize(600, 400)
         
     def get_mapping(self):
         for alias, combo in self.combos.items():
@@ -615,6 +622,14 @@ class MainWindow(FluentWindow):
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
         
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
+        from core.recorder.screen_capturer import get_macros_root
+        workflow_dir = get_macros_root() / workflow_id
+        
+        self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=True)
+        self.navigationInterface.hide()
+        self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
+        
         aliases = set()
         for cmd in commands:
             if cmd.get("method") == "activate_window":
@@ -624,7 +639,7 @@ class MainWindow(FluentWindow):
                     
         if aliases:
             dialog = WindowMappingDialog(list(aliases), self)
-            if dialog.exec() == QDialog.Accepted:
+            if dialog.exec():
                 mapping = dialog.get_mapping()
                 for cmd in commands:
                     if cmd.get("method") == "activate_window":
@@ -632,15 +647,8 @@ class MainWindow(FluentWindow):
                         if alias and alias in mapping:
                             cmd["args"]["mapped_hwnd"] = mapping[alias]
             else:
+                self._on_macro_edit_canceled()
                 return
-                
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
-        from core.recorder.screen_capturer import get_macros_root
-        workflow_dir = get_macros_root() / workflow_id
-        
-        self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=True)
-        self.navigationInterface.hide()
-        self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     @Slot(str, list)
     def _on_macro_saved(self, macro_name: str, commands: list):
