@@ -226,16 +226,27 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 launch_cmd = "start excel"
             
         if launch_cmd:
+            before_hwnds = set(w.handle for w in desktop.windows(visible_only=True))
+            
             creationflags = 0x08000000
             use_shell = launch_cmd.startswith("start ")
             subprocess.Popen(launch_cmd, shell=use_shell, creationflags=creationflags)
             is_newly_launched = True
             
-            for _ in range(10):
-                time.sleep(1.0)
-                windows = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
-                if windows:
-                    break
+            safe_app_name = re.escape(app_name)
+            for _ in range(20):
+                time.sleep(0.5)
+                current_windows = desktop.windows(visible_only=True)
+                new_windows = [w for w in current_windows if w.handle not in before_hwnds]
+                
+                if new_windows:
+                    matched_new = [w for w in new_windows if re.search(f".*{safe_app_name}.*", w.window_text(), re.IGNORECASE)]
+                    if matched_new:
+                        windows = matched_new
+                        break
+                    else:
+                        windows = new_windows
+                        break
             
         is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
         if is_browser:
