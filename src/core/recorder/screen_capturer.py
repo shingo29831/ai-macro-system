@@ -94,20 +94,82 @@ def take_screenshot() -> tuple[Image.Image, dict]:
         return img, monitor
 
 
-def save_event_pre_image(event_no: str) -> str:
-    """現在の画面をキャプチャし、evt_{event_no}_pre.png として保存する"""
+def crop_image_to_window(img: Image.Image, monitor: dict, window_rect: dict) -> Image.Image:
+    """全画面画像から操作中ウィンドウ領域を切り抜く"""
+    screen_left = int(monitor.get("left", 0))
+    screen_top = int(monitor.get("top", 0))
+
+    left = int(window_rect.get("left", 0) - screen_left)
+    top = int(window_rect.get("top", 0) - screen_top)
+    right = int(window_rect.get("right", 0) - screen_left)
+    bottom = int(window_rect.get("bottom", 0) - screen_top)
+
+    left = max(0, min(img.width, left))
+    top = max(0, min(img.height, top))
+    right = max(0, min(img.width, right))
+    bottom = max(0, min(img.height, bottom))
+
+    if right - left < 10 or bottom - top < 10:
+        return img
+
+    return img.crop((left, top, right, bottom))
+
+
+def take_window_screenshot(window_info: dict | None = None) -> tuple[Image.Image, dict]:
+    """主画面から操作中ウィンドウのみを切り抜いたスクリーンショットとモニタ情報を取得する"""
+    full_img, monitor = take_screenshot()
+    if window_info is None:
+        try:
+            from core.recorder import window_inspector
+            window_info = window_inspector.get_foreground_window_info()
+        except Exception:
+            window_info = None
+
+    if window_info and "rect" in window_info:
+        win_img = crop_image_to_window(full_img, monitor, window_info["rect"])
+        return win_img, monitor
+
+    return full_img, monitor
+
+
+def save_event_pre_image(event_no: str, window_info: dict | None = None) -> str:
+    """現在の操作中ウィンドウをキャプチャし、evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
-    img, _ = take_screenshot()
+    img, _ = take_window_screenshot(window_info)
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
     return to_macro_relative_path(path)
 
 
-def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
-    """渡されたPIL画像を evt_{event_no}_pre.png として保存する"""
+def save_pre_image_from_pil(
+    event_no: str,
+    img: Image.Image,
+    window_info: dict | None = None,
+    monitor: dict | None = None,
+) -> str:
+    """渡されたPIL画像から操作中ウィンドウ領域を evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
     path = images_dir / f"evt_{event_no}_pre.png"
-    img.save(path)
+
+    if window_info is None:
+        try:
+            from core.recorder import window_inspector
+            window_info = window_inspector.get_foreground_window_info()
+        except Exception:
+            window_info = None
+
+    target_img = img
+    if window_info and "rect" in window_info:
+        if monitor is None:
+            with mss.MSS() as sct:
+                monitor = sct.monitors[0]
+        win_w = max(0, int(window_info["rect"].get("right", 0) - window_info["rect"].get("left", 0)))
+        win_h = max(0, int(window_info["rect"].get("bottom", 0) - window_info["rect"].get("top", 0)))
+        # Why: 渡された画像が全画面の場合のみウィンドウ領域で切り抜いて保存
+        if abs(img.width - win_w) > 20 or abs(img.height - win_h) > 20:
+            target_img = crop_image_to_window(img, monitor, window_info["rect"])
+
+    target_img.save(path)
     return to_macro_relative_path(path)
 def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -> dict | None:
     """
