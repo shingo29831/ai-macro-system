@@ -1,34 +1,35 @@
-# src/core/recorder/event_processor.py
-# @role: キューに積まれたUI操作イベントを非同期で取り出し、スクリーンショットの差分計算・切り抜き・ログ生成を行うワーカー。
+# Role: キューに積まれたキーボード入力・UIA・Officeイベントの非同期処理と、全体のワーカー起動・停止管理を担当する。
 
 import threading
-import time
 import traceback
 import queue
 from pathlib import Path
-from core.recorder import screen_capturer, process_monitor
+
+from core.recorder import screen_capturer, window_inspector
 from core.recorder.state import state
-from core.recorder.utils import now_datetime, mouse_button_to_string, make_combo_text, calculate_distance, serialize_ui_rect
-from core.recorder.log_builder import build_base_log, build_scroll_log
+from core.recorder.utils import now_datetime, make_combo_text
+from core.recorder.log_builder import build_base_log
 from core.recorder.app_inspectors.inspector_factory import InspectorFactory
 
-DOUBLE_CLICK_INTERVAL_SEC = 0.35
-DOUBLE_CLICK_MAX_DISTANCE = 8
-DRAG_MIN_DISTANCE = 12
-
-_scroll_lock = threading.Lock()
-_last_scroll_time = 0.0
-_last_scroll_dx = 0.0
-_last_scroll_dy = 0.0
-
-def calculate_and_update_diff(current_img) -> str:
-    with state.previous_screenshot_lock:
-        if state.previous_screenshot_img is None:
-            diff = "100%"
-        else:
-            diff = screen_capturer.calculate_diff_percent(state.previous_screenshot_img, current_img)
-        state.previous_screenshot_img = current_img.copy()
-    return diff
+# マウスイベント処理系を re-export して既存の外部参照互換性を完全保証
+from core.recorder.mouse_event_handler import (
+    DOUBLE_CLICK_INTERVAL_SEC,
+    DOUBLE_CLICK_MAX_DISTANCE,
+    DRAG_MIN_DISTANCE,
+    calculate_and_update_diff,
+    process_move_event,
+    process_click_event,
+    run_click_process_thread,
+    process_drag_event,
+    run_drag_process_thread,
+    is_same_click,
+    process_pending_single_click,
+    process_scroll_event,
+    handle_mouse_event,
+    mouse_event_worker,
+    start_mouse_event_worker,
+    stop_mouse_event_worker,
+)
 
 def _get_app_context(window_info: dict, x: int | None = None, y: int | None = None) -> dict | None:
     """該当アプリケーション専用のインスペクターがあれば、それを実行してコンテキストを取得する"""
@@ -154,28 +155,6 @@ def process_key_event(event: dict):
             _flush_typing_buffer("diff_exceeded")
 
 
-from core.recorder import screen_capturer, window_inspector
-from core.recorder.utils import now_datetime, make_combo_text
-from core.recorder.log_builder import build_base_log
-from core.recorder.mouse_event_handler import (
-    DOUBLE_CLICK_INTERVAL_SEC,
-    DOUBLE_CLICK_MAX_DISTANCE,
-    DRAG_MIN_DISTANCE,
-    calculate_and_update_diff,
-    process_move_event,
-    process_click_event,
-    run_click_process_thread,
-    process_drag_event,
-    run_drag_process_thread,
-    is_same_click,
-    process_pending_single_click,
-    process_scroll_event,
-    handle_mouse_event,
-    mouse_event_worker,
-    start_mouse_event_worker,
-    stop_mouse_event_worker,
-            _flush_typing_buffer("diff_exceeded")
-
 def process_uia_event(info: dict):
     """Tabキー押下時などに取得されたUIAの情報をログに記録する"""
     try:
@@ -229,282 +208,6 @@ def process_office_event(info: dict):
         print("Officeイベントの処理中にエラーが発生しました")
         traceback.print_exc()
 
-
-def process_move_event(event: dict):
-    try:
-        window_info = process_monitor.get_foreground_window_info()
-        if process_monitor.should_ignore_window(window_info.get("title")):
-            return
-
-        event_no = state.get_next_event_no()
-        dt = now_datetime()
-        x, y = int(event["x"]), int(event["y"])
-        
-        pre_full_img, pre_monitor = screen_capturer.take_screenshot()
-        pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
-        
-        diff_str = calculate_and_update_diff(pre_full_img)
-        diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
-
-        is_meaningless = diff_val < 0.1
-        macros_root = screen_capturer.get_macros_root()
-
-        if is_meaningless:
-            old_path = macros_root / pre_ref
-            if old_path.exists():
-                new_name = "delete_" + old_path.name
-                old_path.rename(old_path.with_name(new_name))
-                pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
-
-        app_context = _get_app_context(window_info, x=x, y=y)
-        log = build_base_log(event_no=event_no, dt=dt, input_type="mouse_move", content={"screen_coordinates": {"x": x, "y": y}}, window_info=window_info, cursor_x=x, cursor_y=y, app_specific_context=app_context)
-        ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
-
-        if ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(event_no=event_no, rect=ui_rect, full_img=pre_full_img, monitor=pre_monitor)
-        else:
-            crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor)
-
-        crop_ref = crop.get("ui_image_ref")
-        if not crop_ref:
-            crop_ref = "切り抜き失敗"
-
-        if is_meaningless and crop_ref != "切り抜き失敗":
-            old_crop_path = macros_root / crop_ref
-            if old_crop_path.exists():
-                new_crop_name = "delete_" + old_crop_path.name
-                old_crop_path.rename(old_crop_path.with_name(new_crop_name))
-                crop_ref = str(Path(crop_ref).parent / new_crop_name).replace("\\", "/")
-
-        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff_str}
-        state.append_log(log)
-        print(f"マウス移動ログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
-    except Exception:
-        print("マウス移動処理中にエラーが発生しました")
-        traceback.print_exc()
-
-def process_click_event(event: dict, input_type: str, click_count: int):
-    try:
-        if process_monitor.should_ignore_window(event["window_info"].get("title")):
-            return
-
-        event_no, dt = event["event_no"], event["datetime"]
-        x, y, button = int(event["x"]), int(event["y"]), event["button"]
-        pre_img, pre_monitor, pre_ref = event["pre_full_img"], event["pre_monitor"], event["pre_ref"]
-
-        app_context = _get_app_context(event["window_info"], x=x, y=y)
-        content = {"button": mouse_button_to_string(button), "click_count": int(click_count), "screen_coordinates": {"x": x, "y": y}}
-        log = build_base_log(event_no=event_no, dt=dt, input_type=input_type, content=content, window_info=event["window_info"], cursor_x=x, cursor_y=y, app_specific_context=app_context)
-        diff = calculate_and_update_diff(pre_img)
-
-        ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
-        if ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(event_no=event_no, rect=ui_rect, full_img=pre_img, monitor=pre_monitor)
-        else:
-            crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor)
-
-        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
-
-        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
-        state.append_log(log)
-        print(f"クリックログ追加: evt_{event_no}, type={input_type}, diff={diff}")
-    except Exception:
-        print("クリック処理中にエラーが発生しました")
-        traceback.print_exc()
-    finally:
-        state.is_click_processing = False
-
-def run_click_process_thread(event: dict, input_type: str, click_count: int):
-    if state.is_click_processing:
-        return
-    state.is_click_processing = True
-    threading.Thread(target=process_click_event, args=(event, input_type, click_count), daemon=True).start()
-
-def process_drag_event(event: dict):
-    try:
-        if process_monitor.should_ignore_window(event["window_info"].get("title")):
-            return
-
-        event_no = event["event_no"]
-        dt = event["datetime"]
-        start_x = int(event["x"])
-        start_y = int(event["y"])
-        end_x = int(event["drop_x"])
-        end_y = int(event["drop_y"])
-        button = event["button"]
-
-        pre_img = event["pre_full_img"]
-        pre_monitor = event["pre_monitor"]
-        pre_ref = event["pre_ref"]
-
-        source_window_name = event["window_info"].get("title", "")
-        drop_window = event.get("drop_window") or {}
-        target_window_name = drop_window.get("title", "")
-
-        source_ui_rect = process_monitor.get_ui_element_rect_at_point(start_x, start_y)
-
-        content = {
-            "button": mouse_button_to_string(button),
-            "start_screen_coordinates": {"x": start_x, "y": start_y},
-            "end_screen_coordinates": {"x": end_x, "y": end_y},
-            "drag_distance": round(float(event["drag_distance"]), 2),
-            "source_window_name": source_window_name,
-            "target_window_name": target_window_name,
-            "source_ui_rect": serialize_ui_rect(source_ui_rect),
-            "target_ui_rect": serialize_ui_rect(event.get("drop_ui_rect")),
-        }
-
-        app_context = _get_app_context(event["window_info"], x=start_x, y=start_y)
-        log = build_base_log(
-            event_no=event_no, dt=dt, input_type="mouse_drag", content=content,
-            window_info=event["window_info"], cursor_x=start_x, cursor_y=start_y,
-            app_specific_context=app_context
-        )
-
-        if source_ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(event_no=event_no, rect=source_ui_rect, full_img=pre_img, monitor=pre_monitor)
-        else:
-            crop = screen_capturer.save_ui_crop(event_no=event_no, click_x=start_x, click_y=start_y, full_img=pre_img, monitor=pre_monitor)
-
-        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
-        diff = calculate_and_update_diff(pre_img)
-
-        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
-        state.append_log(log)
-
-        print(f"ドラッグログ追加: evt_{event_no}, start=({start_x}, {start_y}), end=({end_x}, {end_y}), distance={event['drag_distance']:.1f}")
-
-    except Exception:
-        print("ドラッグ処理中にエラーが発生しました")
-        traceback.print_exc()
-    finally:
-        state.is_click_processing = False
-
-def run_drag_process_thread(event: dict):
-    if state.is_click_processing:
-        print("前のクリック/ドラッグ処理中のため、このドラッグは無視します")
-        return
-    state.is_click_processing = True
-    threading.Thread(target=process_drag_event, args=(event,), daemon=True).start()
-
-def is_same_click(first_event: dict | None, second_event: dict | None) -> bool:
-    if first_event is None or second_event is None: return False
-    if str(first_event["button"]) != str(second_event["button"]): return False
-    distance_sq = (int(first_event["x"]) - int(second_event["x"]))**2 + (int(first_event["y"]) - int(second_event["y"]))**2
-    return distance_sq <= DOUBLE_CLICK_MAX_DISTANCE**2
-
-def process_pending_single_click():
-    with state.pending_click_lock:
-        event = state.pending_click_event
-        state.pending_click_event = None
-        state.pending_click_timer = None
-    if event is not None:
-        run_click_process_thread(event, input_type="mouse_click", click_count=1)
-
-def process_scroll_event(event: dict):
-    try:
-        x = event["x"]
-        y = event["y"]
-        dx = event["dx"]
-        dy = event["dy"]
-        source = event.get("source", "unknown")
-        
-        point_window = process_monitor.get_window_title_at_point(x, y)
-        if process_monitor.should_ignore_window(point_window.get("title")):
-            return
-        
-        event_no = state.get_next_event_no()
-        log = build_scroll_log(event_no=event_no, dt=now_datetime(), x=int(x), y=int(y), dx=float(dx), dy=float(dy), point_window=point_window)
-        state.append_log(log)
-        print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
-    except Exception:
-        print("スクロール処理中にエラーが発生しました")
-        traceback.print_exc()
-
-def _handle_mouse_event(evt: dict):
-    evt_type = evt.get("type")
-    if evt_type in ["hover", "move"]:
-        process_move_event(evt)
-        return
-    elif evt_type == "scroll":
-        process_scroll_event(evt)
-        return
-
-    x, y, button, pressed = evt["x"], evt["y"], evt["button"], evt["pressed"]
-
-    if pressed:
-        try:
-            window_info = process_monitor.get_foreground_window_info()
-            if process_monitor.should_ignore_window(window_info.get("title")):
-                return
-
-            event_no, dt = state.get_next_event_no(), now_datetime()
-            pre_full_img, pre_monitor = screen_capturer.take_screenshot()
-            pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
-
-            with state.latest_mouse_down_lock:
-                state.latest_mouse_down_event = {"event_no": event_no, "datetime": dt, "x": int(x), "y": int(y), "button": button, "window_info": window_info, "pre_full_img": pre_full_img, "pre_monitor": pre_monitor, "pre_ref": pre_ref}
-            print(f"mouse down取得・画像保存: evt_{event_no}, x={x}, y={y}, button={button}")
-        except Exception:
-            print("mouse down取得中にエラーが発生しました")
-            traceback.print_exc()
-        return
-
-    with state.latest_mouse_down_lock:
-        current_event = state.latest_mouse_down_event
-        state.latest_mouse_down_event = None
-
-    if current_event is None: return
-
-    drag_distance = calculate_distance(current_event["x"], current_event["y"], x, y)
-
-    if drag_distance >= DRAG_MIN_DISTANCE:
-        with state.pending_click_lock:
-            previous_click = state.pending_click_event
-            if state.pending_click_timer:
-                state.pending_click_timer.cancel()
-            state.pending_click_event = None
-            state.pending_click_timer = None
-
-        if previous_click is not None:
-            run_click_process_thread(previous_click, input_type="mouse_click", click_count=1)
-
-        drop_window = process_monitor.get_window_title_at_point(x, y)
-        drop_ui_rect = process_monitor.get_ui_element_rect_at_point(x, y)
-
-        drag_event = {
-            **current_event,
-            "drop_x": x,
-            "drop_y": y,
-            "drag_distance": drag_distance,
-            "drop_window": drop_window,
-            "drop_ui_rect": drop_ui_rect,
-        }
-
-        run_drag_process_thread(drag_event)
-        return
-
-    previous_event_to_process = None
-
-    with state.pending_click_lock:
-        if state.pending_click_event is not None:
-            if is_same_click(state.pending_click_event, current_event):
-                first_event = state.pending_click_event
-                if state.pending_click_timer: state.pending_click_timer.cancel()
-                state.pending_click_event = None
-                state.pending_click_timer = None
-                run_click_process_thread(first_event, input_type="mouse_double_click", click_count=2)
-                return
-            previous_event_to_process = state.pending_click_event
-            if state.pending_click_timer: state.pending_click_timer.cancel()
-
-        state.pending_click_event = current_event
-        state.pending_click_timer = threading.Timer(DOUBLE_CLICK_INTERVAL_SEC, process_pending_single_click)
-        state.pending_click_timer.daemon = True
-        state.pending_click_timer.start()
-
-    if previous_event_to_process is not None:
-        run_click_process_thread(previous_event_to_process, input_type="mouse_click", click_count=1)
 
 # Workers
 def key_event_worker():

@@ -1,25 +1,12 @@
-# src/core/recorder/screen_capturer.py
-# @role: スクリーンショット取得・UI切り抜き・画像保存・スクリーンショット差分率計算を担当する。
-#
-# Crop:
-#   - クリック後に再スクリーンショットを撮らない。
-#   - os_hook.py から渡されたPre画像を元にUI切り抜きを作成する。
-#   - UIAでExplorerの行全体などが取れた場合でも、見えている内容だけに再トリミングする。
-#
-# Path:
-#   - JSONに書く画像パスは macrosフォルダ基準の相対パスで返す。
-#   - 例: wf_1/images/evt_001_pre.png
-#
-# Diff:
-#   - 前回スクリーンショットと今回スクリーンショットで、
-#     一定以上変化したピクセルの割合を%表記で返す。
+# Role: 全画面スクリーンショットの撮影、前回画面との差分率・変動率計算、および画像保存を担当する。
 
 from pathlib import Path
-
 import mss
 from PIL import Image
 import cv2
 import numpy as np
+
+# 既存モジュールからの直接呼出し互換性維持のため、分割先から公開シンボルを re-export
 from core.recorder.macro_path_manager import (
     get_macros_root,
     make_directory,
@@ -27,6 +14,7 @@ from core.recorder.macro_path_manager import (
     get_temp_dir,
     get_images_dir,
     to_macro_relative_path,
+)
 from core.recorder.ui_cropper import (
     AROUND_WIDTH,
     AROUND_HEIGHT,
@@ -50,114 +38,19 @@ from core.recorder.ui_cropper import (
     select_clicked_ui,
     crop_ui_element,
     save_ui_crop,
-
+)
 
 # =========================
-# 設定
+# 設定定数
 # =========================
-
-AROUND_WIDTH = 240
-AROUND_HEIGHT = 240
-
-MIN_UI_WIDTH = 20
-MIN_UI_HEIGHT = 15
-
-MAX_UI_WIDTH = 400
-MAX_UI_HEIGHT = 300
-
-PADDING = 8
 
 DIFF_PIXEL_THRESHOLD = 25
 
-# UIAで行全体が取れた時、見えているアイコン・文字部分だけに詰める設定
-ENABLE_VISIBLE_CONTENT_TRIM = True
-VISIBLE_TRIM_PADDING = 6
-VISIBLE_TRIM_THRESHOLD = 18
-
-# トリミング後がこれ未満なら失敗扱い
-MIN_TRIMMED_WIDTH = 8
-MIN_TRIMMED_HEIGHT = 8
-
-
 # =========================
-# 状態
+# 状態管理
 # =========================
 
-_current_macro_dir: Path | None = None
-_temp_dir: Path | None = None
-_images_dir: Path | None = None
 _last_screenshot_gray: np.ndarray | None = None
-
-
-# =========================
-# ディレクトリ管理
-# =========================
-
-def get_macros_root() -> Path:
-    return (Path(__file__).resolve().parent / "../../../macros").resolve()
-
-
-def make_directory() -> dict:
-    global _current_macro_dir
-    global _temp_dir
-    global _images_dir
-    global _last_screenshot_gray
-
-    macros_root = get_macros_root()
-    macros_root.mkdir(parents=True, exist_ok=True)
-
-    index = 1
-
-    while True:
-        macro_dir = macros_root / f"wf_{index}"
-        if not macro_dir.exists():
-            break
-        index += 1
-
-    temp_dir = macro_dir / "temp"
-    images_dir = macro_dir / "images"
-
-    temp_dir.mkdir(parents=True, exist_ok=False)
-    images_dir.mkdir(parents=True, exist_ok=False)
-
-    _current_macro_dir = macro_dir
-    _temp_dir = temp_dir
-    _images_dir = images_dir
-    _last_screenshot_gray = None
-
-    return {
-        "macro_name": macro_dir.name,
-        "macro_dir": str(macro_dir),
-        "temp_dir": str(temp_dir),
-        "images_dir": str(images_dir),
-    }
-
-
-def get_current_macro_dir() -> Path:
-    if _current_macro_dir is None:
-        raise RuntimeError("macro_dir が未作成です。start_recording() を先に呼んでください。")
-    return _current_macro_dir
-
-
-def get_temp_dir() -> Path:
-    if _temp_dir is None:
-        raise RuntimeError("temp_dir が未作成です。start_recording() を先に呼んでください。")
-    return _temp_dir
-
-
-def get_images_dir() -> Path:
-    if _images_dir is None:
-        raise RuntimeError("images_dir が未作成です。start_recording() を先に呼んでください。")
-    return _images_dir
-
-
-def to_macro_relative_path(path: Path) -> str:
-    macros_root = get_macros_root()
-    try:
-        relative = path.resolve().relative_to(macros_root.resolve())
-        return relative.as_posix()
-    except Exception:
-        return path.name
 
 
 # =========================
