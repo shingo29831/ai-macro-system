@@ -184,7 +184,21 @@ def build_and_save_macro(
                 "ui_type": info.get("ui_type", "unknown")
             }
         
-        if raw_action == "click":
+        if raw_action == "excel_action" or raw_type == "excel_action":
+            cmd = "EXCEL_ACTION"
+            intent = f"EXCEL_{info.get('action', 'ACTION').upper()}"
+            desc = f"Execute Excel action: {info.get('action')}"
+            params = ActionParameters(
+                excel_action=info.get("action"),
+                excel_file_path=info.get("file_path"),
+                excel_sheet=info.get("sheet_name"),
+                excel_range=info.get("range_address") or info.get("cell"),
+                excel_cell=info.get("cell"),
+                excel_value=info.get("value"),
+                excel_variable_name=info.get("variable_name"),
+                excel_macro_name=info.get("macro_name")
+            )
+        elif raw_action == "click":
             cmd = "MOUSE_CLICK"
             intent = "CLICK_UI_ELEMENT"
             desc = f"Click on the {final_semantic_role} element."
@@ -431,6 +445,22 @@ def build_and_save_macro(
             raw_commands_data.append({
                 "method": "loop_end",
                 "args": {}
+            })
+        elif cmd_type == "EXCEL_ACTION":
+            raw_commands_data.append({
+                "method": "excel_action",
+                "args": {
+                    "action": params.excel_action,
+                    "file_path": params.excel_file_path,
+                    "sheet_name": params.excel_sheet,
+                    "cell": params.excel_cell,
+                    "range_address": params.excel_range,
+                    "value": params.excel_value,
+                    "variable_name": params.excel_variable_name,
+                    "macro_name": params.excel_macro_name,
+                    "target_id": target_id_for_healer,
+                    "raw_event_id": raw_event_id
+                }
             })
 
     commands_data = []

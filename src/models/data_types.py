@@ -119,6 +119,13 @@ class UniversalSelector(BaseModel):
     absolute_coordinates: Optional[Coordinates] = Field(None, description="絶対座標")
 
 class ActionParameters(BaseModel):
+    excel_action: Optional[str] = None
+    excel_file_path: Optional[str] = None
+    excel_sheet: Optional[str] = None
+    excel_range: Optional[str] = None
+    excel_value: Optional[object] = None
+    excel_variable_name: Optional[str] = None
+    excel_macro_name: Optional[str] = None
     target: Optional[UniversalSelector] = None
     destination: Optional[UniversalSelector] = None
     button: Optional[str] = None

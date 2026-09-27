@@ -9,7 +9,7 @@
 #   - なし
 
 from pydantic import BaseModel, Field
-from typing import List, Union, Literal, Optional
+from typing import List, Union, Literal, Optional, Any
 
 class WaitArgs(BaseModel):
     duration: float = Field(..., description="Seconds to wait before next command.")
@@ -108,6 +108,29 @@ class LoopEndCommand(BaseModel):
     method: Literal["loop_end"] = "loop_end"
     args: Optional[LoopEndArgs] = Field(default_factory=LoopEndArgs)
 
+class ExcelArgs(BaseModel):
+    action: Literal[
+        "open_workbook", "save_workbook", "close_workbook",
+        "read_cell", "write_cell", "read_range", "write_range",
+        "select_sheet", "add_sheet", "insert_row", "delete_row",
+        "clear_range", "run_macro"
+    ] = Field(..., description="Excel RPA action type.")
+    file_path: Optional[str] = Field(default=None, description="Workbook path.")
+    sheet_name: Optional[str] = Field(default=None, description="Target worksheet name.")
+    cell: Optional[str] = Field(default=None, description="Target cell (e.g. A1).")
+    range_address: Optional[str] = Field(default=None, description="Target range (e.g. A1:C10).")
+    value: Optional[Any] = Field(default=None, description="Value or data matrix.")
+    variable_name: Optional[str] = Field(default=None, description="Variable name to store output.")
+    macro_name: Optional[str] = Field(default=None, description="VBA macro name to run.")
+    close_save: Optional[bool] = Field(default=True, description="Save changes on workbook close.")
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+
+class ExcelCommand(BaseModel):
+    method: Literal["excel_action"] = "excel_action"
+    args: ExcelArgs
+
 MacroCommand = Union[
     WaitCommand, 
     ClickCommand, 
@@ -117,7 +140,8 @@ MacroCommand = Union[
     MoveCommand, 
     ScrollCommand,
     LoopStartCommand,
-    LoopEndCommand
+    LoopEndCommand,
+    ExcelCommand
 ]
 
 class ExecutableMacro(BaseModel):

@@ -109,6 +109,140 @@ def _get_excel_application(hwnd: int = None, expected_title: str = ""):
         pass
     return None
 
+def _execute_excel_action(args: dict, variables: dict, excel_app, last_win_args: dict, workflow_id: str):
+    if platform.system() != "Windows":
+        logger.warning(f"[{workflow_id}] Excel COM automation is only supported on Windows.")
+        return excel_app, None
+
+    import win32com.client
+    import win32gui
+
+    action = args.get("action", "")
+    file_path = args.get("file_path")
+    sheet_name = args.get("sheet_name")
+    cell = args.get("cell")
+    range_addr = args.get("range_address") or cell
+    value = args.get("value")
+    var_name = args.get("variable_name")
+    macro_name = args.get("macro_name")
+    close_save = args.get("close_save", True)
+
+    if isinstance(value, str):
+        for k, v in variables.items():
+            value = value.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
+
+    if excel_app is None:
+        target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or win32gui.GetForegroundWindow()
+        expected_t = last_win_args.get("window_title", "") if last_win_args else ""
+        excel_app = _get_excel_application(target_hwnd, expected_t)
+
+    if excel_app is None and action == "open_workbook":
+        excel_app = win32com.client.Dispatch("Excel.Application")
+        excel_app.Visible = True
+
+    if excel_app is None:
+        try:
+            excel_app = win32com.client.GetActiveObject("Excel.Application")
+            excel_app.Visible = True
+        except Exception:
+            excel_app = win32com.client.Dispatch("Excel.Application")
+            excel_app.Visible = True
+
+    # Why: Excel操作時にウィンドウを前面化し他アプリとの切り替えを可視化
+    try:
+        if hasattr(excel_app, "Hwnd") and excel_app.Hwnd:
+            ctypes.windll.user32.SetForegroundWindow(excel_app.Hwnd)
+    except Exception:
+        pass
+
+    wb = None
+    if file_path:
+        resolved_path = str(Path(file_path).resolve())
+        for open_wb in excel_app.Workbooks:
+            if open_wb.FullName.lower() == resolved_path.lower() or open_wb.Name.lower() == Path(file_path).name.lower():
+                wb = open_wb
+                break
+        if wb is None and action == "open_workbook":
+            wb = excel_app.Workbooks.Open(resolved_path)
+
+    if wb is None:
+        try:
+            wb = excel_app.ActiveWorkbook
+        except Exception:
+            wb = None
+
+    sheet = None
+    if wb:
+        if sheet_name:
+            try:
+                sheet = wb.Sheets(sheet_name)
+            except Exception:
+                sheet = wb.ActiveSheet
+        else:
+            try:
+                sheet = wb.ActiveSheet
+            except Exception:
+                pass
+
+    result = None
+    if action == "open_workbook":
+        if wb:
+            wb.Activate()
+            result = wb.Name
+    elif action == "save_workbook":
+        if wb:
+            if file_path and str(Path(file_path).resolve()).lower() != str(Path(wb.FullName).resolve()).lower():
+                wb.SaveAs(str(Path(file_path).resolve()))
+            else:
+                wb.Save()
+    elif action == "close_workbook":
+        if wb:
+            wb.Close(SaveChanges=close_save)
+    elif action == "select_sheet":
+        if sheet:
+            sheet.Activate()
+    elif action == "add_sheet":
+        if wb:
+            new_sheet = wb.Sheets.Add()
+            if sheet_name:
+                new_sheet.Name = sheet_name
+            new_sheet.Activate()
+    elif action == "read_cell":
+        if sheet and cell:
+            result = sheet.Range(cell).Value
+            if var_name:
+                variables[var_name] = result
+                logger.info(f"[{workflow_id}] Read Excel cell {cell} -> variables['{var_name}'] = {result}")
+    elif action == "write_cell":
+        if sheet and cell:
+            sheet.Range(cell).Value = value
+    elif action == "read_range":
+        if sheet and range_addr:
+            raw_vals = sheet.Range(range_addr).Value
+            result = [list(r) if isinstance(r, tuple) else r for r in raw_vals] if isinstance(raw_vals, tuple) else raw_vals
+            if var_name:
+                variables[var_name] = result
+                logger.info(f"[{workflow_id}] Read Excel range {range_addr} -> variables['{var_name}']")
+    elif action == "write_range":
+        if sheet and range_addr:
+            sheet.Range(range_addr).Value = value
+    elif action == "insert_row":
+        if sheet and cell:
+            sheet.Rows(cell).Insert()
+    elif action == "delete_row":
+        if sheet and cell:
+            sheet.Rows(cell).Delete()
+    elif action == "clear_range":
+        if sheet and range_addr:
+            sheet.Range(range_addr).ClearContents()
+    elif action == "run_macro":
+        if macro_name:
+            result = excel_app.Run(macro_name)
+    else:
+        logger.warning(f"[{workflow_id}] Unknown Excel action: {action}")
+
+    return excel_app, result
+
 
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp_commands: list[dict] = None):
     global _is_running, _stop_requested
@@ -415,7 +549,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_w = args.get("width", 0)
                 current_win_h = args.get("height", 0)
 
-            if method not in ["wait", "activate_window", "loop_start", "loop_end"] and raw_event_id:
+            if method not in ["wait", "activate_window", "loop_start", "loop_end", "excel_action"] and raw_event_id:
                 if force_skip_match_until_enter:
                     logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
                     if method == "press_key" and args.get("key") == "enter":
@@ -677,9 +811,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     
                     if text:
                         for key, val in variables.items():
-                            placeholder = f"{{{{{key}}}}}"
-                            if placeholder in text:
-                                text = text.replace(placeholder, str(val))
+                            text = text.replace(f"{{{{{key}}}}}", str(val)).replace(f"${{{key}}}", str(val))
                                 
                         skip_physical = False
                         if excel_cell and platform.system() == "Windows":
@@ -763,6 +895,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                     keyboard.release(key_str)
                         except Exception as e:
                             logger.warning(f"Failed to press key {key_str}: {e}")
+            elif method == "excel_action":
+                try:
+                    excel_app_cache, excel_res = _execute_excel_action(
+                        args, variables, excel_app_cache, last_win_args, workflow_id
+                    )
+                    step_log["excel_result"] = excel_res
+                except Exception as e:
+                    logger.error(f"[{workflow_id}] Excel action execution failed: {e}")
+                    raise
             else:
                 logger.warning(f"Unknown method: {method}")
                 
