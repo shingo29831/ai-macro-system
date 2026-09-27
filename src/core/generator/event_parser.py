@@ -25,12 +25,12 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         
     window_name = log_entry.get("WindowName") or "Unknown Window"
     command_line = log_entry.get("WindowCommandLine", "")
-    system_windows = [
-        "python", "unknown window", "検索", "スタート", "start", "search",
-        "taskbar", "タスクバー", "cortana", "ジャンプ リスト", "マクロ生成中",
-        "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"
-    ]
-    if not window_name.strip() or any(sw in window_name.lower() for sw in system_windows):
+    # Why: 「Google 検索」等のWebページタイトルがシステム検索窓と誤爆除外されるのを防止
+    w_lower = window_name.lower().strip()
+    is_browser = any(b in w_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
+    system_exact = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
+    system_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
+    if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
         return None
         
     event_no = log_entry.get("EventNo", f"{i+1:03d}")

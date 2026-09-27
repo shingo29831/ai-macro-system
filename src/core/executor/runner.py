@@ -377,10 +377,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     for cmd in commands:
                         if cmd.get("method") == "activate_window":
                             cmd_args = cmd.setdefault("args", {})
-                            # Why: 同一エイリアスまたは同一アプリ名のウィンドウのみHWNDを共有し他アプリ誤爆を防止
-                            if first_alias and cmd_args.get("window_alias") == first_alias:
-                                cmd_args["mapped_hwnd"] = activated_hwnd
-                            elif not first_alias and cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower() == app_name:
+                            # Why: 同一アプリであればエイリアス差異に関わらずHWNDを共有し2重起動を防止
+                            cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
+                            if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
                                 cmd_args["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
                 _check_stop()

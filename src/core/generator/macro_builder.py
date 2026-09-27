@@ -31,9 +31,10 @@ def build_and_save_macro(
     screen_size = Size(width=1920, height=1080)
     
     import re
+    # Why: Web検索ページ（Google 検索等）がシェル検索窓として誤除外されるのを防止
+    system_exact_windows = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
     system_window_keywords = [
-        "python", "unknown window", "検索", "スタート", "start", "search",
-        "taskbar", "タスクバー", "cortana", "ジャンプ リスト", "マクロ生成中",
+        "python", "unknown window", "マクロ生成中",
         "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"
     ]
 
@@ -54,16 +55,10 @@ def build_and_save_macro(
     def get_window_alias(title, rect):
         app_name = extract_app_name(title)
         app_key = app_name.lower()
-        # 同一アプリかつ座標が近いウィンドウは同一エイリアスを共有
+        # Why: 同一アプリのウィンドウ移動時（マルチモニタ間等）もエイリアスを共有し2重起動を防止
         for (reg_app, reg_rect), alias in window_alias_map.items():
             if reg_app == app_key:
-                if rect and reg_rect:
-                    rx, ry, rw, rh = reg_rect
-                    x, y, w, h = rect
-                    if abs(x - rx) <= 20 and abs(y - ry) <= 20 and abs(w - rw) <= 20 and abs(h - rh) <= 20:
-                        return alias
-                elif not rect and not reg_rect:
-                    return alias
+                return alias
         app_alias_counters[app_name] = app_alias_counters.get(app_name, 0) + 1
         new_alias = f"{app_name}{app_alias_counters[app_name]}"
         window_alias_map[(app_key, rect)] = new_alias
@@ -116,8 +111,13 @@ def build_and_save_macro(
             continue
 
         if current_window != "Unknown":
-            # 自システムの操作画面への切り替えはアクティブ化対象から除外
-            if any(sw in current_window.lower() for sw in system_window_keywords):
+            # Why: ブラウザ等の検索結果ページを保護し自作UI・シェル検索のみ除外
+            cw_lower = current_window.lower().strip()
+            is_browser_win = any(b in cw_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
+            if not is_browser_win:
+                if cw_lower in system_exact_windows or any(sw in cw_lower for sw in system_window_keywords):
+                    continue
+            elif any(sw in cw_lower for sw in system_window_keywords):
                 continue
 
             win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
@@ -142,9 +142,10 @@ def build_and_save_macro(
             needs_activation = False
             if prev_window_name is None:
                 needs_activation = True
-            elif is_same_app and not rect_changed:
+            elif is_same_app:
+                # Why: 同一アプリ移動時は別アクティベートを挿入せずリサイズ/移動のみ委譲
                 needs_activation = False
-            elif current_window != prev_window_name or rect_changed:
+            elif current_window != prev_window_name:
                 needs_activation = True
                     
             if needs_activation:
@@ -355,23 +356,28 @@ def build_and_save_macro(
                 except Exception as e:
                     logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
         elif cmd_type == "MOUSE_CLICK":
+            # Why: UIA相対座標が欠落していても絶対座標フォールバックでクリック脱落を完全防止
+            click_x = info.get("cursor_x", 0)
+            click_y = info.get("cursor_y", 0)
             if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                 win_c = integ_evt.window.coordinates
                 rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
-                cmd_args = {
-                    "x": win_c.x + rel_c.x,
-                    "y": win_c.y + rel_c.y,
-                    "button": params.button or "left",
-                    "clicks": 1,
-                    "target_id": target_id_for_healer,
-                    "raw_event_id": raw_event_id
-                }
-                if params.excel_dest_cell:
-                    cmd_args["excel_dest_cell"] = params.excel_dest_cell
-                raw_commands_data.append({
-                    "method": "click",
-                    "args": cmd_args
-                })
+                click_x = win_c.x + rel_c.x
+                click_y = win_c.y + rel_c.y
+            cmd_args = {
+                "x": click_x,
+                "y": click_y,
+                "button": params.button or "left",
+                "clicks": 1,
+                "target_id": target_id_for_healer,
+                "raw_event_id": raw_event_id
+            }
+            if params.excel_dest_cell:
+                cmd_args["excel_dest_cell"] = params.excel_dest_cell
+            raw_commands_data.append({
+                "method": "click",
+                "args": cmd_args
+            })
         elif cmd_type == "MOUSE_MOVE":
             if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                 win_c = integ_evt.window.coordinates

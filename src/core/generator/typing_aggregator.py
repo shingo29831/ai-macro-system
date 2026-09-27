@@ -469,8 +469,9 @@ class TypingSessionAggregator:
                         best_ratio = ratio
                         best_candidate = cand
                 
-                if best_ratio >= 0.25:
-                    uia_rescued_text = best_candidate
+                # Why: 漢字変換時はひらがな入力との類似度が低くてもTab補完/IME候補を救出
+                if best_ratio >= 0.25 or any_ime_active or has_suggest_selection:
+                    uia_rescued_text = best_candidate if (best_candidate and best_ratio >= 0.25) else uia_candidates[0]
             else:
                 uia_rescued_text = uia_candidates[0]
 
@@ -491,16 +492,15 @@ class TypingSessionAggregator:
             else:
                 similarity = difflib.SequenceMatcher(None, fb_lower, uia_lower).ratio()
 
+        # Why: IME変換やTab補完（サジェスト確定）時はUIA確定テキストを最優先採用
         if confirmed_queries:
             final_text = confirmed_queries[0]
+        elif (any_ime_active or has_suggest_selection) and uia_rescued_text:
+            final_text = uia_rescued_text
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
-            # UIAのテキストが実際のキー入力と全く異なる（類似度が低い）場合は、UIAの誤取得とみなしてキー入力を優先する
-            if fallback_text and uia_rescued_text and similarity < 0.2:
-                final_text = fallback_text
-            else:
-                final_text = uia_rescued_text if uia_rescued_text else fallback_text
+            final_text = uia_rescued_text if uia_rescued_text else fallback_text
 
         if final_text:
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
