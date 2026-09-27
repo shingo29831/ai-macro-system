@@ -373,9 +373,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 )
                 if activated_hwnd:
                     args["mapped_hwnd"] = activated_hwnd
+                    first_alias = args.get("window_alias")
                     for cmd in commands:
                         if cmd.get("method") == "activate_window":
-                            cmd.setdefault("args", {})["mapped_hwnd"] = activated_hwnd
+                            cmd_args = cmd.setdefault("args", {})
+                            # Why: 同一エイリアスまたは同一アプリ名のウィンドウのみHWNDを共有し他アプリ誤爆を防止
+                            if first_alias and cmd_args.get("window_alias") == first_alias:
+                                cmd_args["mapped_hwnd"] = activated_hwnd
+                            elif not first_alias and cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower() == app_name:
+                                cmd_args["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
                 _check_stop()
                 
@@ -680,12 +686,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
                 mapped_hwnd = args.get("mapped_hwnd")
+                current_alias = args.get("window_alias")
                 
                 # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
                 act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
                 if act_hwnd:
                     args["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
+                    if current_alias:
+                        for future_cmd in commands[i+1:]:
+                            if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
+                                future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:
                 if last_win_args:

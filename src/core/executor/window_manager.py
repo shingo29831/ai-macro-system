@@ -216,7 +216,17 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             app = pywinauto.Application(backend="uia").connect(handle=mapped_hwnd)
             win = app.window(handle=mapped_hwnd)
             if win.exists():
-                windows = [win]
+                # Why: 渡されたHWNDが目的のアプリ名と一致するか検証し異種アプリの誤リサイズを防止
+                actual_text = win.window_text().lower()
+                target_app_lower = app_name.lower()
+                if is_target_browser:
+                    is_valid = any(b in actual_text for b in SUPPORTED_BROWSERS)
+                else:
+                    is_valid = (target_app_lower in actual_text) or not any(b in actual_text for b in SUPPORTED_BROWSERS)
+                if is_valid:
+                    windows = [win]
+                else:
+                    logger.warning(f"mapped_hwnd {mapped_hwnd} ({actual_text}) does not match target app '{app_name}'. Re-searching...")
         except Exception as e:
             logger.warning(f"Failed to connect to mapped_hwnd {mapped_hwnd}: {e}")
 
