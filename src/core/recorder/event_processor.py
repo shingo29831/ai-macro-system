@@ -251,7 +251,7 @@ def mouse_event_worker():
             continue
             
         try:
-            _handle_mouse_event(event)
+            handle_mouse_event(event)
         except Exception:
             traceback.print_exc()
         finally:
