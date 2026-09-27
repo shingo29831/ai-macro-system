@@ -554,7 +554,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_w = args.get("width", 0)
                 current_win_h = args.get("height", 0)
 
-            if method not in ["wait", "activate_window", "loop_start", "loop_end", "excel_action"] and raw_event_id:
+            if method not in ["wait", "activate_window", "loop_start", "loop_end", "excel_action", "browser_action"] and raw_event_id:
                 if force_skip_match_until_enter:
                     logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
                     if method == "press_key" and args.get("key") == "enter":
@@ -913,6 +913,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     step_log["excel_result"] = excel_res
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Excel action execution failed: {e}")
+                    raise
+            elif method == "browser_action":
+                try:
+                    from core.executor.browser_controller import BrowserController
+                    controller = BrowserController.get_instance()
+                    browser_res = controller.execute_action(
+                        args, variables, last_win_args, workflow_id
+                    )
+                    step_log["browser_result"] = browser_res
+                except Exception as e:
+                    logger.error(f"[{workflow_id}] Browser action execution failed: {e}")
                     raise
             else:
                 logger.warning(f"Unknown method: {method}")

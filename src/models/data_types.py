@@ -117,6 +117,10 @@ class UniversalSelector(BaseModel):
     text_contains: Optional[str] = Field(None, description="含むべきテキスト")
     image_template: Optional[str] = Field(None, description="画像テンプレートのパス")
     absolute_coordinates: Optional[Coordinates] = Field(None, description="絶対座標")
+    css_selector: Optional[str] = Field(None, description="Web用CSSセレクタ")
+    xpath: Optional[str] = Field(None, description="Web用XPath")
+    dom_attributes: Optional[dict] = Field(default_factory=dict, description="HTML属性値一覧")
+    url_pattern: Optional[str] = Field(None, description="対象ページのURLパターン")
 
 class ActionParameters(BaseModel):
     excel_action: Optional[str] = None
@@ -126,6 +130,13 @@ class ActionParameters(BaseModel):
     excel_value: Optional[object] = None
     excel_variable_name: Optional[str] = None
     excel_macro_name: Optional[str] = None
+    browser_action: Optional[str] = Field(None, description="ブラウザアクション種別")
+    browser_url: Optional[str] = Field(None, description="移動先URL")
+    browser_selector: Optional[str] = Field(None, description="要素セレクタ (CSS/XPath)")
+    browser_selector_type: Optional[str] = Field(None, description="セレクタ種別 (css, xpath, text, auto)")
+    browser_value: Optional[object] = Field(None, description="設定値や入力文字")
+    browser_attribute: Optional[str] = Field(None, description="取得対象の属性名")
+    browser_script: Optional[str] = Field(None, description="実行JavaScript")
     target: Optional[UniversalSelector] = None
     destination: Optional[UniversalSelector] = None
     button: Optional[str] = None

@@ -130,7 +130,33 @@ class BrowserInspector(BaseInspector):
             result["text"] = extracted_text
             result["value"] = extracted_text
 
-            # 4. URL判定
+            # 4. DOM/CSSセレクタ・XPathの自動推定
+            if primary_elem:
+                try:
+                    auto_id = getattr(primary_elem.element_info, "automation_id", "") or ""
+                    class_name = getattr(primary_elem.element_info, "class_name", "") or ""
+                    ctrl_type = (getattr(primary_elem.element_info, "control_type", "") or "").lower()
+                    
+                    tag_map = {"button": "button", "edit": "input", "hyperlink": "a", "combobox": "select", "checkbox": "input[type='checkbox']"}
+                    tag = tag_map.get(ctrl_type, "div")
+                    
+                    if auto_id:
+                        result["css_selector"] = f"#{auto_id}"
+                        result["xpath"] = f"//*[@id='{auto_id}']"
+                    elif class_name and not class_name.startswith("Chrome_"):
+                        first_class = class_name.split()[0]
+                        result["css_selector"] = f"{tag}.{first_class}"
+                        result["xpath"] = f"//{tag}[contains(@class, '{first_class}')]"
+                    elif extracted_text:
+                        result["css_selector"] = f"{tag}:has-text('{extracted_text[:20]}')"
+                        result["xpath"] = f"//{tag}[contains(text(), '{extracted_text[:20]}')]"
+                    else:
+                        result["css_selector"] = tag
+                        result["xpath"] = f"//{tag}"
+                except Exception as e:
+                    log_debug(f"セレクタ推定中にエラー: {e}")
+
+            # 5. URL判定
             if extracted_text and (extracted_text.startswith("http://") or extracted_text.startswith("https://") or "www." in extracted_text):
                 result["url"] = extracted_text
                 log_debug(f"URLとして識別: '{extracted_text}'")
