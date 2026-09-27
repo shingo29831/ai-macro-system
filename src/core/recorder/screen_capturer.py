@@ -20,6 +20,36 @@ import mss
 from PIL import Image
 import cv2
 import numpy as np
+from core.recorder.macro_path_manager import (
+    get_macros_root,
+    make_directory,
+    get_current_macro_dir,
+    get_temp_dir,
+    get_images_dir,
+    to_macro_relative_path,
+from core.recorder.ui_cropper import (
+    AROUND_WIDTH,
+    AROUND_HEIGHT,
+    MIN_UI_WIDTH,
+    MIN_UI_HEIGHT,
+    MAX_UI_WIDTH,
+    MAX_UI_HEIGHT,
+    PADDING,
+    ENABLE_VISIBLE_CONTENT_TRIM,
+    VISIBLE_TRIM_PADDING,
+    VISIBLE_TRIM_THRESHOLD,
+    MIN_TRIMMED_WIDTH,
+    MIN_TRIMMED_HEIGHT,
+    save_diff_crop,
+    trim_crop_to_visible_content,
+    is_trimmed_image_valid,
+    save_ui_crop_by_rect,
+    crop_around_click,
+    detect_ui_contours,
+    contains_point,
+    select_clicked_ui,
+    crop_ui_element,
+    save_ui_crop,
 
 
 # =========================
@@ -135,6 +165,7 @@ def to_macro_relative_path(path: Path) -> str:
 # =========================
 
 def calculate_diff_ratio(current_img: Image.Image) -> float:
+    """連続する画面キャプチャ間のピクセル変動比率 (0.0〜1.0) を計算する"""
     global _last_screenshot_gray
 
     current_gray = cv2.cvtColor(np.array(current_img), cv2.COLOR_RGB2GRAY)
@@ -162,6 +193,7 @@ def calculate_diff_ratio(current_img: Image.Image) -> float:
 # =========================
 
 def take_screenshot() -> tuple[Image.Image, dict]:
+    """mss を使用して主画面全体のスクリーンショットとモニタ情報を取得する"""
     with mss.MSS() as sct:
         monitor = sct.monitors[0]
         screenshot = sct.grab(monitor)
@@ -170,6 +202,7 @@ def take_screenshot() -> tuple[Image.Image, dict]:
 
 
 def save_event_pre_image(event_no: str) -> str:
+    """現在の画面をキャプチャし、evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
     img, _ = take_screenshot()
     path = images_dir / f"evt_{event_no}_pre.png"
@@ -178,12 +211,11 @@ def save_event_pre_image(event_no: str) -> str:
 
 
 def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
+    """渡されたPIL画像を evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
     return to_macro_relative_path(path)
-
-
 def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -> dict | None:
     """
     キー入力前後の画像(pre_img, post_img)から変化した領域（文字が増減した箇所）を抽出し、
@@ -254,6 +286,7 @@ def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -
 # =========================
 
 def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.Image) -> str:
+    """2枚の画像間の平均ピクセル変化率をパーセント表記文字列（例: '12.34%'）で計算する"""
     if previous_img is None:
         return "100%"
 
@@ -273,7 +306,6 @@ def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.
     total_pixels = pixel_diff.size
 
     percent = float(changed_pixels / total_pixels * 100.0)
-
     return f"{percent:.2f}%"
 
 

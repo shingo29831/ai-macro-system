@@ -101,9 +101,7 @@ def relaunch_as_admin():
         return
 
     script_path = str(Path(__file__).resolve())
-    params = " ".join(
-        [f'"{script_path}"'] + [f'"{arg}"' for arg in sys.argv[1:]]
-    )
+    params = " ".join([f'"{script_path}"'] + [f'"{arg}"' for arg in sys.argv[1:]])
 
     result = ctypes.windll.shell32.ShellExecuteW(
         None,
@@ -111,7 +109,7 @@ def relaunch_as_admin():
         sys.executable,
         params,
         None,
-        1
+        1,
     )
 
     if result <= 32:
@@ -412,6 +410,13 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
     finally:
         try:
             import pythoncom
+from core.recorder.window_inspector import (
+    IGNORED_WINDOW_TITLES,
+    should_ignore_window,
+    get_foreground_window_info,
+    build_recording_window_fields,
+    get_window_title_at_point,
+    get_ui_element_rect_at_point,
             pythoncom.CoUninitialize()
         except Exception:
             pass
@@ -500,10 +505,8 @@ def extract_etw_process_data(event) -> dict | None:
 
 def on_etw_process_start(event):
     process_data = extract_etw_process_data(event)
-
     if process_data is None:
         return
-
     add_process_event(process_data)
 
 
@@ -529,7 +532,6 @@ def psutil_process_monitor_worker():
             for pid in new_pids:
                 try:
                     proc = psutil.Process(pid)
-
                     app_name = proc.name() or ""
                     if not app_name:
                         continue
@@ -557,7 +559,6 @@ def psutil_process_monitor_worker():
                         "source": "psutil_process_polling",
                         "raw": None,
                     }
-
                     add_process_event(process_data)
 
                 except Exception:
@@ -580,21 +581,20 @@ def etw_process_monitor_worker():
 
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
-
         return
 
     try:
         providers = [
             etw.ProviderInfo(
                 "Microsoft-Windows-Kernel-Process",
-                etw.GUID("{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}")
+                etw.GUID("{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"),
             )
         ]
 
         _etw_job = etw.ETW(
             providers=providers,
             event_callback=on_etw_process_start,
-            task_name_filters="PROCESSSTART"
+            task_name_filters="PROCESSSTART",
         )
 
         _etw_job.start()
@@ -606,14 +606,12 @@ def etw_process_monitor_worker():
     except PermissionError:
         print("ETWが権限不足で開始できませんでした。psutil監視に切り替えます。")
         traceback.print_exc()
-
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
 
     except Exception:
         print("ETW監視中にエラーが発生しました。psutil監視に切り替えます。")
         traceback.print_exc()
-
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
 
@@ -637,18 +635,11 @@ def start_process_monitors():
         relaunch_as_admin()
 
     if ENABLE_ETW_PROCESS_MONITOR:
-        thread = threading.Thread(
-            target=etw_process_monitor_worker,
-            daemon=True
-        )
+        thread = threading.Thread(target=etw_process_monitor_worker, daemon=True)
         thread.start()
         _monitor_threads.append(thread)
-
     elif ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
-        thread = threading.Thread(
-            target=psutil_process_monitor_worker,
-            daemon=True
-        )
+        thread = threading.Thread(target=psutil_process_monitor_worker, daemon=True)
         thread.start()
         _monitor_threads.append(thread)
 
