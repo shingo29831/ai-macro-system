@@ -187,6 +187,10 @@ class MacroSummary(BaseModel):
     heals: str = Field(..., description="自己修復の発動回数などのテキスト表現")
     heal_level: str = Field(..., description="自己修復のレベル（none, low, mid, high 等）")
     last_run: str = Field(..., description="最終実行日時のフォーマット済み文字列")
+    created_at: str = Field("-", description="作成日時のフォーマット済み文字列")
+    updated_at: str = Field("-", description="最終更新日時のフォーマット済み文字列")
+    created_timestamp: float = Field(0.0, description="作成日時のUnixタイムスタンプ")
+    updated_timestamp: float = Field(0.0, description="最終更新日時のUnixタイムスタンプ")
 
 
 # ====================================================================

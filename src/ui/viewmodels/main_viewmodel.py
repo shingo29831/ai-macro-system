@@ -54,6 +54,9 @@ class MainViewModel(QObject):
             logger.error(f"Failed to update running dialog status: {e}")
 
     def load_macros(self):
+        import re
+        from datetime import datetime
+
         try:
             from core.recorder.screen_capturer import get_macros_root
             macros_root = get_macros_root()
@@ -63,29 +66,50 @@ class MainViewModel(QObject):
         
         macros = []
         self._macro_id_map.clear()
+
+        # 数値混在文字列を人間が自然に感じる順序(1, 2, 10)で整列
+        def natural_sort_key(s: str):
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(s))]
         
         try:
             if macros_root.exists() and macros_root.is_dir():
-                for wf_dir in sorted(macros_root.glob("wf_*")):
-                    if not wf_dir.is_dir():
-                        continue
-                    
+                macro_dirs = [d for d in macros_root.glob("wf_*") if d.is_dir()]
+                macro_dirs.sort(key=lambda d: natural_sort_key(d.name))
+
+                for wf_dir in macro_dirs:
                     workflow_id = wf_dir.name
-                    macro_name = f"マクロ {workflow_id}"
+                    # 非ITユーザーが直感的に識別できるよう「マクロ 1」形式で表記
+                    if workflow_id.startswith("wf_") and workflow_id[3:].isdigit():
+                        macro_name = f"マクロ {workflow_id[3:]}"
+                    else:
+                        macro_name = f"マクロ {workflow_id}"
                     
+                    if macro_name in self._macro_id_map:
+                        macro_name = f"マクロ {workflow_id}"
+
+                    stat = wf_dir.stat()
+                    created_ts = getattr(stat, 'st_birthtime', stat.st_ctime)
+                    updated_ts = stat.st_mtime
+
+                    # フォルダ内重要ファイルの最新更新日時を反映
+                    for f_name in ("executable_macro.json", "workflow.json", "integrated.json"):
+                        target_file = wf_dir / f_name
+                        if target_file.exists():
+                            try:
+                                f_mtime = target_file.stat().st_mtime
+                                if f_mtime > updated_ts:
+                                    updated_ts = f_mtime
+                            except OSError:
+                                pass
+
+                    created_at_str = datetime.fromtimestamp(created_ts).strftime("%Y/%m/%d %H:%M")
+                    updated_at_str = datetime.fromtimestamp(updated_ts).strftime("%Y/%m/%d %H:%M")
+
                     status = 'success'
                     status_text = '待機中'
                     heals = '0回'
                     heal_level = 'none'
                     last_run = '-'
-                    
-                    integrated_json = wf_dir / "integrated.json"
-                    if integrated_json.exists():
-                        try:
-                            with open(integrated_json, "r", encoding="utf-8") as f:
-                                pass
-                        except Exception as json_err:
-                            logger.warning(f"Failed to parse integrated.json for metadata in {workflow_id}: {json_err}")
                     
                     self._macro_id_map[macro_name] = workflow_id
                     
@@ -95,9 +119,15 @@ class MainViewModel(QObject):
                         status_text=status_text,
                         heals=heals,
                         heal_level=heal_level,
-                        last_run=last_run
+                        last_run=last_run,
+                        created_at=created_at_str,
+                        updated_at=updated_at_str,
+                        created_timestamp=created_ts,
+                        updated_timestamp=updated_ts
                     ))
             
+            # 初期一覧は直近で作業したものが上位に来る更新順降順
+            macros.sort(key=lambda m: m.updated_timestamp, reverse=True)
             self.macros_updated.emit(macros)
             logger.info(f"Successfully loaded {len(macros)} macros from storage.")
         except Exception as e:
