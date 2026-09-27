@@ -1,4 +1,4 @@
-# Role: OSレベルのウィンドウ操作、IME制御、システムウィンドウ判定を担当するモジュール
+# Role: マクロ実行時の対象ウィンドウの探索・自動起動・最前面化・サイズ復元および開いているウィンドウの一覧・サムネイル取得を担当する。
 
 import platform
 import ctypes
@@ -7,23 +7,35 @@ import time
 import subprocess
 import logging
 
+# 既存モジュールからの直接呼出し互換性維持のため、OS環境制御シンボルを re-export
+from core.executor.os_env_controller import set_dpi_awareness, set_ime_state
+
 logger = logging.getLogger(__name__)
 
+# =========================
+# 設定定数
+# =========================
+
+IGNORED_SYSTEM_WINDOW_TITLES = [
+    "記録中",
+    "停止中",
+    "AI Macro System",
+    "設定",
+    "AIマクロ生成中...",
+    "実行中",
+    "実行中...",
+]
+
+SYSTEM_WINDOW_KEYWORDS = ["program manager", "ジャンプ リスト", "taskbar", "cortana", "検索"]
+
+SUPPORTED_BROWSERS = ["firefox", "chrome", "edge", "brave", "opera"]
+
 _browser_activated_once = False
+
 
 def reset_browser_activation_flag():
     global _browser_activated_once
     _browser_activated_once = False
-
-def set_dpi_awareness():
-    if platform.system() == "Windows":
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
-            try:
-                ctypes.windll.user32.SetProcessDPIAware()
-            except Exception:
-                pass
 
 def get_system_window_rects():
     rects = []
@@ -42,8 +54,7 @@ def get_system_window_rects():
                 user32.GetWindowTextW(hwnd, buff, length + 1)
                 title = buff.value
                 
-                ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中...", "実行中", "実行中..."]
-                if any(ignored in title for ignored in ignored_titles):
+                if any(ignored in title for ignored in IGNORED_SYSTEM_WINDOW_TITLES):
                     rect = wintypes.RECT()
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                         rects.append((rect.left, rect.top, rect.right, rect.bottom))
@@ -53,19 +64,6 @@ def get_system_window_rects():
     user32.EnumWindows(EnumWindowsProc(enum_windows_proc), 0)
     return rects
 
-def set_ime_state(text: str):
-    if platform.system() != "Windows":
-        return
-    try:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
-        if default_ime_wnd:
-            WM_IME_CONTROL = 0x0283
-            IMC_SETOPENSTATUS = 0x0006
-            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
-            time.sleep(0.15)
-    except Exception as e:
-        logger.warning(f"Failed to set IME state: {e}")
 
 def get_open_windows_info():
     if platform.system() != "Windows":
@@ -81,8 +79,7 @@ def get_open_windows_info():
     def enum_windows_proc(hwnd, lParam):
         if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowTextLength(hwnd) > 0:
             title = win32gui.GetWindowText(hwnd)
-            ignored_titles = ["記録中", "停止中", "AI Macro System", "設定", "AIマクロ生成中...", "実行中", "実行中...", "Program Manager"]
-            if not any(ignored in title for ignored in ignored_titles):
+            if not any(ignored in title for ignored in IGNORED_SYSTEM_WINDOW_TITLES + ["Program Manager"]):
                 rect = win32gui.GetWindowRect(hwnd)
                 w = rect[2] - rect[0]
                 h = rect[3] - rect[1]
@@ -139,8 +136,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     if not window_title or platform.system() != "Windows":
         return
 
-    system_windows = ["program manager", "ジャンプ リスト", "taskbar", "cortana", "検索"]
-    is_system_window = any(sw in window_title.lower() for sw in system_windows)
+    is_system_window = any(sw in window_title.lower() for sw in SYSTEM_WINDOW_KEYWORDS)
     
     if is_system_window:
         return
@@ -149,8 +145,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     desktop = pywinauto.Desktop(backend="uia")
     
     app_name = window_title.split("—")[-1].split("-")[-1].strip()
-    browser_names = ["firefox", "chrome", "edge", "brave", "opera"]
-    is_target_browser = any(b in app_name.lower() for b in browser_names)
+    is_target_browser = any(b in app_name.lower() for b in SUPPORTED_BROWSERS)
     
     windows = []
     force_new = (mapped_hwnd == -1)
@@ -248,7 +243,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                         windows = new_windows
                         break
             
-        is_browser = any(b in lower_app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        is_browser = any(b in lower_app_name for b in SUPPORTED_BROWSERS)
         if is_browser:
             _browser_activated_once = True
             
