@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, List
 import traceback
 import logging
 import urllib.parse
-import re
+import ctypes
 from .base_inspector import BaseInspector
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class BrowserInspector(BaseInspector):
 
     @staticmethod
     def parse_url_details(raw_url: str) -> Dict[str, Any]:
-        """URL文字列からドメイン、パス、検索クエリ(q=等)を安全にパースする"""
+        """URL文字列からドメイン、パス、検索クエリ(q=等)を安全にデコード・パースする"""
         if not raw_url or not isinstance(raw_url, str):
             return {}
         text = raw_url.strip()
@@ -62,6 +62,7 @@ class BrowserInspector(BaseInspector):
             search_query = None
             for key in ["q", "query", "p", "wd", "word", "search_query", "text"]:
                 if key in query_dict and query_dict[key]:
+                    # Why: URLエンコード文字列(%E7%B9%94...)を日本語平文に確実に復元
                     search_query = urllib.parse.unquote_plus(query_dict[key][0])
                     break
 
@@ -77,34 +78,6 @@ class BrowserInspector(BaseInspector):
         except Exception:
             return {}
 
-    @classmethod
-    def fetch_page_preview(cls, url: str, timeout: float = 3.0) -> Dict[str, Any]:
-        """バックグラウンドでURLの軽量GETを行い、HTTPステータスとページタイトルを抽出する"""
-        if not url.startswith("http://") and not url.startswith("https://"):
-            return {}
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                status_code = resp.status
-                title = ""
-                if "html" in content_type:
-                    chunk = resp.read(16384).decode("utf-8", errors="ignore")
-                    m = re.search(r"<title>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
-                    if m:
-                        title = m.group(1).strip()
-                return {
-                    "status_code": status_code,
-                    "content_type": content_type,
-                    "title": title
-                }
-        except Exception as e:
-            return {"error": str(e)}
-
     def get_address_bar_info(self, window_info: Dict[str, Any], desktop=None) -> Dict[str, Any]:
         """UIAを用いて主要ブラウザのアドレスバーから確定URLおよび検索クエリを取得する"""
         result = {"url": "", "query": None, "url_details": {}, "address_bar_text": ""}
@@ -113,22 +86,25 @@ class BrowserInspector(BaseInspector):
             if desktop is None:
                 desktop = pywinauto.Desktop(backend="uia")
 
-            handle = window_info.get("handle")
+            # Why: window_info内のキー名差異(hwnd / handle)とフォアグラウンドHWNDをフォールバック解決
+            hwnd = window_info.get("hwnd") or window_info.get("handle")
+            if not hwnd:
+                try:
+                    hwnd = ctypes.windll.user32.GetForegroundWindow()
+                except Exception:
+                    hwnd = None
+
             window = None
-            if handle:
+            if hwnd:
                 try:
-                    window = desktop.window(handle=int(handle))
-                except Exception:
-                    pass
-            if not window:
-                try:
-                    window = desktop.get_active()
-                except Exception:
-                    pass
+                    window = desktop.window(handle=int(hwnd))
+                except Exception as e:
+                    logger.debug(f"[BrowserInspector] HWNDからのウィンドウ特定失敗: {e}")
+
             if not window:
                 return result
 
-            # Why: Firefox(urlbar-input)やChromiumの定数IDが存在する場合は即座に解決
+            # Why: Firefox(urlbar-input)やChromiumの定数IDが存在する場合は即座に特定
             known_ids = ["urlbar-input", "address-edit-box", "view_1020"]
             for aid in known_ids:
                 try:
@@ -225,18 +201,10 @@ class BrowserInspector(BaseInspector):
                 except Exception as e:
                     log_debug(f"座標からの要素特定に失敗: {e}")
 
-            # 2. フォーカス要素の探索候補追加
-            try:
-                active_elem = desktop.get_active()
-                target_elements.append(("ActiveElement", active_elem))
-                log_debug("フォーカス要素を探索候補に追加しました")
-            except Exception as e:
-                log_debug(f"フォーカス要素の取得に失敗: {e}")
-
             extracted_text = ""
             primary_elem = None
 
-            # 3. メイン探索＆子孫ツリー探索
+            # 2. メイン探索＆子孫ツリー探索
             for source_name, elem in target_elements:
                 if not elem: continue
                 if primary_elem is None:
@@ -277,7 +245,7 @@ class BrowserInspector(BaseInspector):
             result["text"] = extracted_text
             result["value"] = extracted_text
 
-            # 4. DOM/CSSセレクタ推定
+            # 3. DOM/CSSセレクタ推定
             if primary_elem:
                 try:
                     auto_id = getattr(primary_elem.element_info, "automation_id", "") or ""
@@ -303,7 +271,7 @@ class BrowserInspector(BaseInspector):
                 except Exception as e:
                     log_debug(f"セレクタ推定中にエラー: {e}")
 
-            # 5. UIAアドレスバー探索による確定URL・検索クエリの取得
+            # 4. UIAアドレスバー探索による確定URL・検索クエリの取得
             addr_info = self.get_address_bar_info(window_info, desktop=desktop)
             if addr_info.get("url"):
                 result["url"] = addr_info["url"]
