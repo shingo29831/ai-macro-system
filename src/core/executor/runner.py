@@ -30,7 +30,7 @@ class WorkflowStoppedException(Exception):
     pass
 
 def _get_excel_application(hwnd: int = None, expected_title: str = ""):
-    if platform.system() != "Windows" or not hwnd:
+    if platform.system() != "Windows":
         return None
     try:
         import win32gui
@@ -38,34 +38,29 @@ def _get_excel_application(hwnd: int = None, expected_title: str = ""):
         import pythoncom
         import ctypes
 
-        current_title = win32gui.GetWindowText(hwnd)
-        if "excel" not in current_title.lower():
-            return None
-        if expected_title:
-            is_new = ("book" in expected_title.lower() or "ブック" in expected_title.lower())
-            if is_new and not ("book" in current_title.lower() or "ブック" in current_title.lower()):
-                return None
-
         excel7_hwnd = None
-        def enum_child(child, _):
-            nonlocal excel7_hwnd
-            try:
-                if win32gui.GetClassName(child) == "EXCEL7":
-                    excel7_hwnd = child
-            except Exception:
-                pass
-            return True
-
-        try:
-            if win32gui.GetClassName(hwnd) == "EXCEL7":
+        if hwnd:
+            # Why: タイトル文字列に依存せずウィンドウクラス名(XLMAIN/EXCEL7)でExcelを厳密判定
+            cls_name = win32gui.GetClassName(hwnd)
+            if cls_name == "EXCEL7":
                 excel7_hwnd = hwnd
-            else:
-                win32gui.EnumChildWindows(hwnd, enum_child, None)
-        except Exception:
-            pass
+            elif cls_name == "XLMAIN":
+                def enum_child(child, _):
+                    nonlocal excel7_hwnd
+                    try:
+                        if win32gui.GetClassName(child) == "EXCEL7":
+                            excel7_hwnd = child
+                            return False
+                    except Exception:
+                        pass
+                    return True
+                try:
+                    win32gui.EnumChildWindows(hwnd, enum_child, None)
+                except Exception:
+                    pass
 
-        target_hwnd = excel7_hwnd or hwnd
-        if target_hwnd:
+        # 1. EXCEL7 から直接 COM オブジェクトを取得
+        if excel7_hwnd:
             try:
                 iid = (ctypes.c_byte * 16)(
                     0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -73,7 +68,7 @@ def _get_excel_application(hwnd: int = None, expected_title: str = ""):
                 )
                 p_acc = ctypes.c_void_p()
                 hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(
-                    target_hwnd, -16, iid, ctypes.byref(p_acc)
+                    excel7_hwnd, -16, iid, ctypes.byref(p_acc)
                 )
                 if hr == 0 and p_acc.value:
                     pycom_dll = ctypes.PyDLL(pythoncom.__file__)
@@ -84,17 +79,24 @@ def _get_excel_application(hwnd: int = None, expected_title: str = ""):
                     if py_dispatch:
                         disp = win32com.client.Dispatch(py_dispatch)
                         app = getattr(disp, "Application", disp)
-                        # Why: 取得したCOMのActiveWorkbookが期待するブック種別と一致するか二重検証
-                        if expected_title and is_new:
-                            try:
-                                wb_name = app.ActiveWorkbook.Name
-                                if not ("book" in wb_name.lower() or "ブック" in wb_name.lower()):
-                                    return None
-                            except Exception:
-                                pass
-                        return app
+                        if app:
+                            return app
             except Exception:
                 pass
+
+        # 2. フォールバック: 対象ブック名を特定して取得
+        try:
+            excel = win32com.client.GetActiveObject("Excel.Application")
+            if excel:
+                if expected_title and ("book" in expected_title.lower() or "ブック" in expected_title.lower()):
+                    for wb in excel.Workbooks:
+                        if "book" in wb.Name.lower() or "ブック" in wb.Name.lower():
+                            wb.Activate()
+                            return excel
+                return excel
+        except Exception:
+            pass
+
     except Exception:
         pass
     return None
@@ -687,16 +689,32 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 excel_app_cache = None
                                 
                         if not skip_physical:
-                            # Why: EXCEL7子ウィンドウへフォーカスを当てて先頭文字の入力ドロップを防ぐ
+                            # Why: 物理入力時にEXCEL7ワークシート領域をクリックしてフォーカスを確実に確立
                             if platform.system() == "Windows":
                                 try:
                                     import win32gui
-                                    fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-                                    def _focus_excel7(child, _):
-                                        if win32gui.GetClassName(child) == "EXCEL7":
-                                            ctypes.windll.user32.SetFocus(child)
+                                    target_h = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
+                                    excel7_h = None
+                                    def _focus_ex7(c, _):
+                                        nonlocal excel7_h
+                                        if win32gui.GetClassName(c) == "EXCEL7":
+                                            excel7_h = c
+                                            return False
                                         return True
-                                    win32gui.EnumChildWindows(fg_hwnd, _focus_excel7, None)
+                                    if win32gui.GetClassName(target_h) == "EXCEL7":
+                                        excel7_h = target_h
+                                    else:
+                                        win32gui.EnumChildWindows(target_h, _focus_ex7, None)
+                                    if excel7_h:
+                                        ctypes.windll.user32.SetForegroundWindow(target_h)
+                                        rect = win32gui.GetWindowRect(excel7_h)
+                                        click_x = rect[0] + 50
+                                        click_y = rect[1] + 50
+                                        ctypes.windll.user32.SetCursorPos(click_x, click_y)
+                                        time.sleep(0.02)
+                                        ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
+                                        ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+                                        time.sleep(0.05)
                                 except Exception:
                                     pass
                             set_ime_state(text)
