@@ -9,7 +9,8 @@ except ImportError:
     psutil = None
 
 IGNORED_WINDOW_TITLES = [
-    '記録中', '停止中', 'AI Macro System', '設定', 'AIマクロ生成中...', 'AIマクロ生成中', 'マクロ生成中', '実行中', '実行中...', 'ウィンドウの紐付け'
+    '記録中', '停止中', 'AI Macro System', '設定', 'AIマクロ生成中...', 'AIマクロ生成中', 'マクロ生成中', '実行中', '実行中...', 'ウィンドウの紐付け',
+    'スナップ アシスト', 'スナップ', 'snap assist'
 ]
 
 def should_ignore_window(title: str | None) -> bool:
