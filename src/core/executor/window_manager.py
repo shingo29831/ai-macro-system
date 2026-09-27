@@ -26,7 +26,7 @@ IGNORED_SYSTEM_WINDOW_TITLES = [
     "実行中...",
 ]
 
-SYSTEM_WINDOW_KEYWORDS = ["program manager", "ジャンプ リスト", "taskbar", "cortana", "検索"]
+SYSTEM_WINDOW_KEYWORDS = ["program manager", "ジャンプ リスト", "taskbar", "cortana", "検索", "geforce overlay", "nvidia share", "overlay"]
 
 SUPPORTED_BROWSERS = ["firefox", "chrome", "edge", "brave", "opera"]
 
@@ -76,11 +76,69 @@ def get_open_windows_info():
     
     windows_info = []
     
+    DWMWA_CLOAKED = 14
+    GWL_EXSTYLE = -20
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_APPWINDOW = 0x00040000
+    WS_EX_TRANSPARENT = 0x00000020
+    WS_EX_LAYERED = 0x00080000
+    GW_OWNER = 4
+    GA_ROOTOWNER = 3
+
+    def is_user_visible_window(hwnd: int) -> bool:
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return False
+        if win32gui.GetWindowTextLength(hwnd) == 0:
+            return False
+
+        # 不可視オーバーレイやサスペンド窓をDWM属性で排除
+        cloaked = ctypes.c_int(0)
+        try:
+            hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+            )
+            if hr == 0 and cloaked.value != 0:
+                return False
+        except Exception:
+            pass
+
+        try:
+            ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        except Exception:
+            ex_style = 0
+
+        # ツールウィンドウおよび透明オーバーレイを除外
+        if (ex_style & WS_EX_TOOLWINDOW) and not (ex_style & WS_EX_APPWINDOW):
+            return False
+        if (ex_style & WS_EX_TRANSPARENT) and (ex_style & WS_EX_LAYERED):
+            return False
+
+        # 所有されている従属ウィンドウを除外
+        try:
+            owner = ctypes.windll.user32.GetWindow(hwnd, GW_OWNER)
+            if owner != 0 and not (ex_style & WS_EX_APPWINDOW):
+                return False
+        except Exception:
+            pass
+
+        # ポップアップチェーンを検証しAlt+Tab対象外を除外
+        try:
+            root_owner = ctypes.windll.user32.GetAncestor(hwnd, GA_ROOTOWNER)
+            if root_owner != 0 and root_owner != hwnd:
+                if ctypes.windll.user32.GetLastActivePopup(root_owner) != hwnd:
+                    return False
+        except Exception:
+            pass
+
+        return True
+
     def enum_windows_proc(hwnd, lParam):
-        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowTextLength(hwnd) > 0:
+        if is_user_visible_window(hwnd):
             title = win32gui.GetWindowText(hwnd)
             title_lower = title.lower()
-            system_ignored = IGNORED_SYSTEM_WINDOW_TITLES + ["Program Manager", "マクロ生成中", "aiマクロ生成中", "ウィンドウの紐付け"]
+            system_ignored = IGNORED_SYSTEM_WINDOW_TITLES + SYSTEM_WINDOW_KEYWORDS + [
+                "マクロ生成中", "aiマクロ生成中", "ウィンドウの紐付け"
+            ]
             if not any(ignored.lower() in title_lower for ignored in system_ignored):
                 rect = win32gui.GetWindowRect(hwnd)
                 w = rect[2] - rect[0]
