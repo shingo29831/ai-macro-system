@@ -1,5 +1,6 @@
-"""Module: @role: モーダル表示用のシステム接続設定ダイアログ。3択のAIモードと条件付き入力欄を提供する。"""
+"""Module: @role: モーダル表示用のシステム接続設定ダイアログ。settings_dialog.cssとテーマ色を完全同期。"""
 
+from pathlib import Path
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QDialog,
@@ -26,10 +27,11 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setObjectName("SettingsDialog")
         self.viewmodel = SettingsViewModel()
 
         self.setWindowTitle("AI 接続設定")
-        self.setFixedSize(540, 460)
+        self.setFixedSize(540, 480)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -42,15 +44,15 @@ class SettingsDialog(QDialog):
 
         self.rad_local = QRadioButton("このパソコンで動かす（ローカルAI）", mode_group)
         self.lbl_local_desc = QLabel("※追加の設定は不要です（社外にデータを送信せず安全に利用可能）", mode_group)
-        self.lbl_local_desc.setStyleSheet("color: #666666; margin-left: 20px;")
+        self.lbl_local_desc.setStyleSheet("color: #64748b; margin-left: 20px;")
 
         self.rad_cloud = QRadioButton("当社が提供するサーバーを使う（公式クラウドAI）", mode_group)
         self.lbl_cloud_desc = QLabel("※追加の設定は不要です（パソコンに負荷をかけず高速に処理可能）", mode_group)
-        self.lbl_cloud_desc.setStyleSheet("color: #666666; margin-left: 20px;")
+        self.lbl_cloud_desc.setStyleSheet("color: #64748b; margin-left: 20px;")
 
         self.rad_custom = QRadioButton("指定したサーバーを使う（社内サーバー・自前サーバー）", mode_group)
         self.lbl_custom_desc = QLabel("※社内SEやシステム管理者の指示に従って設定してください", mode_group)
-        self.lbl_custom_desc.setStyleSheet("color: #666666; margin-left: 20px;")
+        self.lbl_custom_desc.setStyleSheet("color: #64748b; margin-left: 20px;")
 
         mode_layout.addWidget(self.rad_local)
         mode_layout.addWidget(self.lbl_local_desc)
@@ -79,7 +81,17 @@ class SettingsDialog(QDialog):
 
         # 設定不要案内ラベル (ローカルまたはクラウド時)
         self.lbl_no_setting = QLabel("✓ アドレスやポートの指定は不要です。このまま保存できます。", self)
-        self.lbl_no_setting.setStyleSheet("color: #0078D4; font-weight: bold; margin: 8px 0;")
+        self.lbl_no_setting.setObjectName("lblNoSetting")
+        self.lbl_no_setting.setStyleSheet("""
+            QLabel#lblNoSetting {
+                background-color: #eff6ff;
+                color: #1d4ed8;
+                border: 1px solid #bfdbfe;
+                border-radius: 6px;
+                padding: 10px 14px;
+                font-weight: 500;
+            }
+        """)
         layout.addWidget(self.lbl_no_setting)
 
         layout.addStretch()
@@ -87,8 +99,13 @@ class SettingsDialog(QDialog):
         # アクションボタン
         btn_layout = QHBoxLayout()
         self.btn_test = QPushButton("接続テスト", self)
+        self.btn_test.setObjectName("btnTestConnection")
+
         self.btn_cancel = QPushButton("キャンセル", self)
+        self.btn_cancel.setObjectName("btnCancel")
+
         self.btn_save = QPushButton("保存", self)
+        self.btn_save.setObjectName("btnSave")
         self.btn_save.setDefault(True)
 
         btn_layout.addWidget(self.btn_test)
@@ -97,8 +114,19 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(self.btn_save)
         layout.addWidget(btn_layout)
 
+        self._load_stylesheet()
         self._bind_viewmodel()
         self.viewmodel.load_current_settings()
+
+    def _load_stylesheet(self):
+        """settings_dialog.css を読み込んで外観を共通化"""
+        css_path = Path(__file__).resolve().parent.parent / "resources" / "css" / "settings_dialog.css"
+        if css_path.exists():
+            try:
+                with open(css_path, "r", encoding="utf-8") as f:
+                    self.setStyleSheet(f.read())
+            except Exception:
+                pass
 
     def _bind_viewmodel(self):
         self.rad_local.toggled.connect(self._update_visibility)

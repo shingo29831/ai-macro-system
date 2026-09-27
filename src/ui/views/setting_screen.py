@@ -1,5 +1,6 @@
-"""Module: @role: AIに詳しくない一般ユーザーにも分かりやすい3択と、社内SE向けサーバー指定を切り替える設定画面ビュー。"""
+"""Module: @role: AIに詳しくない一般ユーザー向け3択UIと、アプリ全体テーマ（#f1f5f9 / #2563eb）に完全統合された設定画面ビュー。"""
 
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
@@ -10,9 +11,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QFrame,
+    QLabel,
 )
 from qfluentwidgets import (
-    SubtitleLabel,
+    TitleLabel,
     BodyLabel,
     CaptionLabel,
     StrongBodyLabel,
@@ -24,6 +26,7 @@ from qfluentwidgets import (
     FluentIcon,
     InfoBar,
     InfoBarPosition,
+    setThemeColor,
 )
 
 try:
@@ -38,9 +41,14 @@ class SettingScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SettingScreen")
+
+        # アプリ共通のプライマリブルーに統一
+        setThemeColor("#2563eb")
+
         self.viewmodel = SettingsViewModel()
 
         self._init_ui()
+        self._apply_theme_style()
         self._bind_viewmodel()
         self.viewmodel.load_current_settings()
 
@@ -49,25 +57,31 @@ class SettingScreen(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea(self)
+        scroll_area.setObjectName("settingScrollArea")
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
 
         container = QWidget()
+        container.setObjectName("settingContainer")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(36, 32, 36, 32)
+        layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(20)
 
-        # 画面ヘッダー
-        self.title_label = SubtitleLabel("AI 接続設定", container)
-        self.desc_label = CaptionLabel("画面の認識や操作手順の解析を行うAIの接続先を選択します。", container)
+        # 画面ヘッダー（MainScreenと視覚階層を完全統一）
+        self.title_label = TitleLabel("設定", container)
+        self.desc_label = QLabel("画面の認識やマクロ生成に必要なAIの接続方法を設定します。", container)
+        self.desc_label.setObjectName("lblPageDesc")
+
         layout.addWidget(self.title_label)
         layout.addWidget(self.desc_label)
+        layout.addSpacing(4)
 
         # 3つの接続先選択カード
         mode_card = CardWidget(container)
+        mode_card.setObjectName("settingCard")
         mode_card_layout = QVBoxLayout(mode_card)
-        mode_card_layout.setContentsMargins(20, 20, 20, 20)
-        mode_card_layout.setSpacing(16)
+        mode_card_layout.setContentsMargins(24, 20, 24, 24)
+        mode_card_layout.setSpacing(14)
 
         mode_header = StrongBodyLabel("AIの実行場所を選択してください", mode_card)
         mode_card_layout.addWidget(mode_header)
@@ -77,10 +91,10 @@ class SettingScreen(QWidget):
         # 選択肢1: このパソコンで動かす
         self.radio_local = RadioButton("このパソコンで動かす（ローカルAI）", mode_card)
         self.desc_local = CaptionLabel(
-            "お使いのパソコン内でAIを実行します。社外にデータを送信しないため機密情報も安全です。\n※追加の設定は不要です。",
+            "お使いのパソコン内でAIを実行します。外部へデータを送信しないため機密情報も安全です。\n※追加の設定は不要です。",
             mode_card
         )
-        self.desc_local.setStyleSheet("color: #666666; margin-left: 28px;")
+        self.desc_local.setObjectName("lblOptionHint")
         mode_card_layout.addWidget(self.radio_local)
         mode_card_layout.addWidget(self.desc_local)
 
@@ -90,7 +104,7 @@ class SettingScreen(QWidget):
             "高速・高精度な公式AIサーバーを利用します。パソコンへの負荷がなく快適に動作します。\n※追加の設定は不要です。",
             mode_card
         )
-        self.desc_cloud.setStyleSheet("color: #666666; margin-left: 28px;")
+        self.desc_cloud.setObjectName("lblOptionHint")
         mode_card_layout.addWidget(self.radio_cloud)
         mode_card_layout.addWidget(self.desc_cloud)
 
@@ -100,7 +114,7 @@ class SettingScreen(QWidget):
             "社内ネットワーク等に設置された専用サーバーへ接続します。社内SEやシステム管理者の指示に従って設定してください。",
             mode_card
         )
-        self.desc_custom.setStyleSheet("color: #666666; margin-left: 28px;")
+        self.desc_custom.setObjectName("lblOptionHint")
         mode_card_layout.addWidget(self.radio_custom)
         mode_card_layout.addWidget(self.desc_custom)
 
@@ -113,11 +127,12 @@ class SettingScreen(QWidget):
 
         # 社内SE向けサーバー指定カード (自前サーバー選択時のみ表示)
         self.custom_server_card = CardWidget(container)
+        self.custom_server_card.setObjectName("settingCard")
         custom_layout = QVBoxLayout(self.custom_server_card)
-        custom_layout.setContentsMargins(20, 20, 20, 20)
+        custom_layout.setContentsMargins(24, 20, 24, 24)
         custom_layout.setSpacing(14)
 
-        custom_header = StrongBodyLabel("社内サーバー接続設定（社内SE・管理者向け）", self.custom_server_card)
+        custom_header = StrongBodyLabel("社内サーバー接続設定（社内SE・システム管理者向け）", self.custom_server_card)
         custom_layout.addWidget(custom_header)
 
         grid_layout = QGridLayout()
@@ -128,14 +143,14 @@ class SettingScreen(QWidget):
         self.host_input = LineEdit(self.custom_server_card)
         self.host_input.setPlaceholderText("例: 192.168.1.100 または ai-server.company.local")
         host_hint = CaptionLabel("社内AIサーバーのIPアドレス、またはホスト名（ドメイン）を入力してください。", self.custom_server_card)
-        host_hint.setStyleSheet("color: #888888;")
+        host_hint.setObjectName("lblFieldHint")
 
         port_label = BodyLabel("ポート番号:", self.custom_server_card)
         self.port_input = LineEdit(self.custom_server_card)
         self.port_input.setPlaceholderText("8843")
         self.port_input.setText("8843")
         port_hint = CaptionLabel("※社内SEから特別な指定がない場合は「8843」のままで問題ありません。", self.custom_server_card)
-        port_hint.setStyleSheet("color: #888888;")
+        port_hint.setObjectName("lblFieldHint")
 
         grid_layout.addWidget(host_label, 0, 0)
         grid_layout.addWidget(self.host_input, 0, 1)
@@ -151,13 +166,14 @@ class SettingScreen(QWidget):
 
         # 設定不要の安心メッセージカード (ローカルまたはクラウド選択時に表示)
         self.no_config_card = CardWidget(container)
+        self.no_config_card.setObjectName("noConfigCard")
         no_config_layout = QHBoxLayout(self.no_config_card)
         no_config_layout.setContentsMargins(20, 16, 20, 16)
         no_config_text = BodyLabel(
             "✓ IPアドレスやドメインの設定は不要です。このまま「設定を保存」をクリックしてください。",
             self.no_config_card
         )
-        no_config_text.setStyleSheet("color: #0078D4; font-weight: 500;")
+        no_config_text.setObjectName("lblNoConfigText")
         no_config_layout.addWidget(no_config_text)
         layout.addWidget(self.no_config_card)
 
@@ -166,7 +182,12 @@ class SettingScreen(QWidget):
         # アクションボタンエリア
         bottom_layout = QHBoxLayout()
         self.test_button = PushButton(FluentIcon.SYNC, "接続テスト", container)
+        self.test_button.setObjectName("btnTestConnection")
+        self.test_button.setFixedSize(140, 40)
+
         self.save_button = PrimaryPushButton("設定を保存", container)
+        self.save_button.setObjectName("btnSave")
+        self.save_button.setFixedSize(140, 40)
 
         bottom_layout.addWidget(self.test_button)
         bottom_layout.addStretch(1)
@@ -176,8 +197,82 @@ class SettingScreen(QWidget):
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
-        # 初期表示トグル
         self._update_visibility()
+
+    def _apply_theme_style(self):
+        """アプリ全体の配色トークン（#f1f5f9 / #2563eb / #334155 / #64748b）を適用"""
+        self.setStyleSheet("""
+            QWidget#SettingScreen, QWidget#settingContainer {
+                background-color: #f1f5f9;
+                color: #334155;
+                font-family: "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+            }
+            QScrollArea#settingScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QLabel#lblPageDesc {
+                color: #64748b;
+                font-size: 13px;
+            }
+            CardWidget#settingCard {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 12px;
+            }
+            CardWidget#noConfigCard {
+                background-color: #eff6ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 10px;
+            }
+            QLabel#lblNoConfigText {
+                color: #1d4ed8;
+                font-weight: 500;
+            }
+            QLabel#lblOptionHint {
+                color: #64748b;
+                margin-left: 28px;
+            }
+            QLabel#lblFieldHint {
+                color: #64748b;
+                font-size: 11px;
+            }
+            QLineEdit {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 6px 10px;
+                color: #334155;
+            }
+            QLineEdit:focus {
+                border: 2px solid #2563eb;
+            }
+            QPushButton#btnTestConnection {
+                background-color: #e2e8f0;
+                color: #475569;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton#btnTestConnection:hover {
+                background-color: #cbd5e1;
+            }
+            QPushButton#btnSave {
+                background-color: #2563eb;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton#btnSave:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton#btnSave:pressed {
+                background-color: #1e40af;
+            }
+        """)
 
     def _bind_viewmodel(self):
         self.radio_local.toggled.connect(self._update_visibility)
