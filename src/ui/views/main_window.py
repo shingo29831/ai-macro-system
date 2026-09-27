@@ -32,9 +32,13 @@ __all__ = [
     "WindowThumbnailWidget",
 ]
 
-class MainWindow(FluentWindow):
-    """QFluentWidgets ベースのメインウィンドウ。"""
+try:
+    from src.core.recorder.macro_path_manager import get_macros_root
+except ImportError:
+    from core.recorder.macro_path_manager import get_macros_root
 
+
+class MainWindow(FluentWindow):
     def __init__(self, viewmodel: MainViewModel):
         super().__init__()
 
@@ -173,7 +177,7 @@ class MainWindow(FluentWindow):
         if not macro_name:
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
         workflow_dir = get_macros_root() / workflow_id
 
         self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False)
@@ -186,7 +190,7 @@ class MainWindow(FluentWindow):
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
 
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name)
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
         workflow_dir = get_macros_root() / workflow_id
 
         self.navigationInterface.hide()
