@@ -206,6 +206,67 @@ def optimize_workflow_events(
         
     temp_workflow_info = shell_cut_info
 
+    # Why: 起動直後の過渡的ウィンドウ移動・リサイズ操作を除去し最終調整後座標へ昇格
+    def _extract_app(title: str) -> str:
+        if not title: return ""
+        parts = re.split(r"[\-—–―]", title)
+        return parts[-1].strip().lower()
+
+    app_first_business_op = {}
+    app_final_rect = {}
+
+    for i, info in enumerate(temp_workflow_info):
+        app = _extract_app(info.get("window_name", ""))
+        if not app: continue
+        raw_act = info.get("raw_action", "")
+        raw_tp = str(info.get("raw_type", "")).lower()
+        role = str(info.get("semantic_role", "")).lower()
+        
+        is_business = False
+        if raw_act == "type_text" or "key" in raw_act:
+            if role not in ["win", "cmd"]:
+                is_business = True
+        elif raw_act == "click" and "drag" not in raw_tp:
+            cy = info.get("cursor_y", 0)
+            wy = info.get("win_y", 0)
+            if cy - wy > 45 or info.get("excel_cell") or info.get("excel_dest_cell"):
+                is_business = True
+
+        if is_business and app not in app_first_business_op:
+            app_first_business_op[app] = i
+
+        wx = info.get("win_x", 0)
+        wy = info.get("win_y", 0)
+        ww = info.get("win_w", 0)
+        wh = info.get("win_h", 0)
+        if ww > 0 and wh > 0:
+            app_final_rect[app] = (wx, wy, ww, wh)
+
+    layout_cleaned = []
+    for i, info in enumerate(temp_workflow_info):
+        app = _extract_app(info.get("window_name", ""))
+        first_op_idx = app_first_business_op.get(app, len(temp_workflow_info))
+        
+        if app in app_final_rect and i <= first_op_idx:
+            final_x, final_y, final_w, final_h = app_final_rect[app]
+            info["win_x"] = final_x
+            info["win_y"] = final_y
+            info["win_w"] = final_w
+            info["win_h"] = final_h
+
+        if i < first_op_idx:
+            raw_type = str(info.get("raw_type", "")).lower()
+            raw_act = str(info.get("raw_action", "")).lower()
+            cy = info.get("cursor_y", 0)
+            wy = info.get("win_y", 0)
+            if "drag" in raw_type or (raw_act == "click" and cy - wy <= 45):
+                logger.info(f"[{workflow_id}] Omitted window layout adjustment action (Event: {info.get('event_id')})")
+                continue
+
+        layout_cleaned.append(info)
+
+    temp_workflow_info = layout_cleaned
+
     optimized_workflow_info = []
     idx = 0
     while idx < len(temp_workflow_info):
