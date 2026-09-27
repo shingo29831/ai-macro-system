@@ -35,6 +35,7 @@ def _get_excel_application(hwnd: int = None):
     try:
         import win32gui
         import win32com.client
+        import pythoncom
         import ctypes
 
         if hwnd:
@@ -44,7 +45,6 @@ def _get_excel_application(hwnd: int = None):
                 try:
                     if win32gui.GetClassName(child) == "EXCEL7":
                         excel7_hwnd = child
-                        return False
                 except Exception:
                     pass
                 return True
@@ -60,20 +60,24 @@ def _get_excel_application(hwnd: int = None):
             target_hwnd = excel7_hwnd or hwnd
             if target_hwnd:
                 try:
-                    class GUID(ctypes.Structure):
-                        _fields_ = [
-                            ("Data1", ctypes.c_ulong),
-                            ("Data2", ctypes.c_ushort),
-                            ("Data3", ctypes.c_ushort),
-                            ("Data4", ctypes.c_ubyte * 8)
-                        ]
-                    iid = GUID(0x00020400, 0x0000, 0x0000, (ctypes.c_ubyte * 8)(0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46))
+                    iid = (ctypes.c_byte * 16)(
+                        0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+                    )
                     p_acc = ctypes.c_void_p()
                     # Why: ROT未登録の新規起動Excelでもウィンドウから直接COM参照を取得する
-                    hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(target_hwnd, -16, ctypes.byref(iid), ctypes.byref(p_acc))
+                    hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(
+                        target_hwnd, -16, iid, ctypes.byref(p_acc)
+                    )
                     if hr == 0 and p_acc.value:
-                        disp = win32com.client.Dispatch(p_acc.value)
-                        return disp.Application
+                        pycom_dll = ctypes.PyDLL(pythoncom.__file__)
+                        pycom_func = pycom_dll.PyCom_PyObjectFromIUnknown
+                        pycom_func.restype = ctypes.py_object
+                        pycom_func.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+                        py_dispatch = pycom_func(p_acc.value, ctypes.byref(iid), 0)
+                        if py_dispatch:
+                            disp = win32com.client.Dispatch(py_dispatch)
+                            return disp.Application
                 except Exception:
                     pass
 
@@ -662,6 +666,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 excel_app_cache = None
                                 
                         if not skip_physical:
+                            # Why: EXCEL7子ウィンドウへフォーカスを当てて先頭文字の入力ドロップを防ぐ
+                            if platform.system() == "Windows":
+                                try:
+                                    import win32gui
+                                    fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                                    def _focus_excel7(child, _):
+                                        if win32gui.GetClassName(child) == "EXCEL7":
+                                            ctypes.windll.user32.SetFocus(child)
+                                        return True
+                                    win32gui.EnumChildWindows(fg_hwnd, _focus_excel7, None)
+                                except Exception:
+                                    pass
                             set_ime_state(text)
                             for char in text:
                                 _check_stop()

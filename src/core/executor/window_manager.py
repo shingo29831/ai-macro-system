@@ -284,6 +284,15 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             user32.SetForegroundWindow(hwnd)
             user32.BringWindowToTop(hwnd)
             win.set_focus()
+
+            # Why: Excel親ウィンドウフォーカス後にEXCEL7子ウィンドウへ入力フォーカスを確立
+            if "excel" in app_name.lower():
+                import win32gui
+                def _restore_excel7_focus(child, _):
+                    if win32gui.GetClassName(child) == "EXCEL7":
+                        user32.SetFocus(child)
+                    return True
+                win32gui.EnumChildWindows(hwnd, _restore_excel7_focus, None)
         except Exception as e:
             logger.warning(f"Failed to set focus aggressively: {e}")
             try:
