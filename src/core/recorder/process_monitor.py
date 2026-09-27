@@ -263,6 +263,12 @@ def etw_process_monitor_worker():
             pass
 
 
+_etw_stop_event = threading.Event()
+_psutil_stop_event = threading.Event()
+_monitor_threads = []
+_etw_job = None
+
+
 def start_process_monitors():
     global _monitor_threads
 
