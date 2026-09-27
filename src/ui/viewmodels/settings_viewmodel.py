@@ -6,14 +6,24 @@ import threading
 from PySide6.QtCore import QObject, Signal, Slot
 from pydantic import SecretStr, ValidationError
 
-from src.models.data_types import (
-    AppConfig,
-    DEFAULT_CLOUD_HOST,
-    DEFAULT_LOCAL_HOST,
-    DEFAULT_LOCAL_LLM_PORT,
-    DEFAULT_LOCAL_CV_PORT,
-)
-from src.utils.config_manager import ConfigManager
+try:
+    from models.data_types import (
+        AppConfig,
+        DEFAULT_CLOUD_HOST,
+        DEFAULT_LOCAL_HOST,
+        DEFAULT_LOCAL_LLM_PORT,
+        DEFAULT_LOCAL_CV_PORT,
+    )
+    from utils.config_manager import ConfigManager
+except ModuleNotFoundError:
+    from src.models.data_types import (
+        AppConfig,
+        DEFAULT_CLOUD_HOST,
+        DEFAULT_LOCAL_HOST,
+        DEFAULT_LOCAL_LLM_PORT,
+        DEFAULT_LOCAL_CV_PORT,
+    )
+    from src.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 

@@ -26,7 +26,10 @@ from qfluentwidgets import (
     InfoBarPosition,
 )
 
-from src.ui.viewmodels.settings_viewmodel import SettingsViewModel
+try:
+    from ui.viewmodels.settings_viewmodel import SettingsViewModel
+except ModuleNotFoundError:
+    from src.ui.viewmodels.settings_viewmodel import SettingsViewModel
 
 
 class SettingScreen(QWidget):

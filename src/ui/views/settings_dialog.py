@@ -15,7 +15,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from src.ui.viewmodels.settings_viewmodel import SettingsViewModel
+try:
+    from ui.viewmodels.settings_viewmodel import SettingsViewModel
+except ModuleNotFoundError:
+    from src.ui.viewmodels.settings_viewmodel import SettingsViewModel
 
 
 class SettingsDialog(QDialog):
