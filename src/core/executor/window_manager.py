@@ -277,6 +277,9 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             
             user32.keybd_event(0x12, 0, 0, 0)
             user32.keybd_event(0x12, 0, 2, 0)
+            # Why: Alt押下によるOfficeリボンのキーヒント待機をEscで解除し入力阻害を防ぐ
+            user32.keybd_event(0x1B, 0, 0, 0)
+            user32.keybd_event(0x1B, 0, 2, 0)
             
             user32.SetForegroundWindow(hwnd)
             user32.BringWindowToTop(hwnd)

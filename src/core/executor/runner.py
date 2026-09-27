@@ -29,6 +29,63 @@ class WorkflowStoppedException(Exception):
     """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
     pass
 
+def _get_excel_application(hwnd: int = None):
+    if platform.system() != "Windows":
+        return None
+    try:
+        import win32gui
+        import win32com.client
+        import ctypes
+
+        if hwnd:
+            excel7_hwnd = None
+            def enum_child(child, _):
+                nonlocal excel7_hwnd
+                try:
+                    if win32gui.GetClassName(child) == "EXCEL7":
+                        excel7_hwnd = child
+                        return False
+                except Exception:
+                    pass
+                return True
+
+            try:
+                if win32gui.GetClassName(hwnd) == "EXCEL7":
+                    excel7_hwnd = hwnd
+                else:
+                    win32gui.EnumChildWindows(hwnd, enum_child, None)
+            except Exception:
+                pass
+
+            target_hwnd = excel7_hwnd or hwnd
+            if target_hwnd:
+                try:
+                    class GUID(ctypes.Structure):
+                        _fields_ = [
+                            ("Data1", ctypes.c_ulong),
+                            ("Data2", ctypes.c_ushort),
+                            ("Data3", ctypes.c_ushort),
+                            ("Data4", ctypes.c_ubyte * 8)
+                        ]
+                    iid = GUID(0x00020400, 0x0000, 0x0000, (ctypes.c_ubyte * 8)(0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46))
+                    p_acc = ctypes.c_void_p()
+                    # Why: ROT未登録の新規起動Excelでもウィンドウから直接COM参照を取得する
+                    hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(target_hwnd, -16, ctypes.byref(iid), ctypes.byref(p_acc))
+                    if hr == 0 and p_acc.value:
+                        disp = win32com.client.Dispatch(p_acc.value)
+                        return disp.Application
+                except Exception:
+                    pass
+
+        try:
+            return win32com.client.GetActiveObject("Excel.Application")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return None
+
+
 def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp_commands: list[dict] = None):
     global _is_running, _stop_requested
     _is_running = True
@@ -504,19 +561,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
-                            import win32com.client
                             if excel_app_cache is None:
-                                try:
-                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
-                                except Exception:
-                                    excel_app_cache = win32com.client.Dispatch("Excel.Application")
-                                    excel_app_cache.Visible = True
-                                if excel_app_cache.Workbooks.Count == 0:
-                                    excel_app_cache.Workbooks.Add()
-                            sheet = excel_app_cache.ActiveSheet
-                            sheet.Range(excel_dest_cell).Select()
-                            time.sleep(0.05)
-                            skip_physical = True
+                                target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
+                                excel_app_cache = _get_excel_application(target_hwnd)
+                            if excel_app_cache:
+                                sheet = excel_app_cache.ActiveSheet
+                                sheet.Range(excel_dest_cell).Select()
+                                time.sleep(0.05)
+                                skip_physical = True
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
@@ -540,19 +592,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
                         try:
-                            import win32com.client
                             if excel_app_cache is None:
-                                try:
-                                    excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
-                                except Exception:
-                                    excel_app_cache = win32com.client.Dispatch("Excel.Application")
-                                    excel_app_cache.Visible = True
-                                if excel_app_cache.Workbooks.Count == 0:
-                                    excel_app_cache.Workbooks.Add()
-                            sheet = excel_app_cache.ActiveSheet
-                            sheet.Range(excel_dest_cell).Select()
-                            time.sleep(0.05)
-                            skip_physical = True
+                                target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
+                                excel_app_cache = _get_excel_application(target_hwnd)
+                            if excel_app_cache:
+                                sheet = excel_app_cache.ActiveSheet
+                                sheet.Range(excel_dest_cell).Select()
+                                time.sleep(0.05)
+                                skip_physical = True
                         except Exception as e:
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
@@ -601,19 +648,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         skip_physical = False
                         if excel_cell and platform.system() == "Windows":
                             try:
-                                import win32com.client
                                 if excel_app_cache is None:
-                                    try:
-                                        excel_app_cache = win32com.client.GetActiveObject("Excel.Application")
-                                    except Exception:
-                                        excel_app_cache = win32com.client.Dispatch("Excel.Application")
-                                        excel_app_cache.Visible = True
-                                if excel_app_cache.Workbooks.Count == 0:
-                                    excel_app_cache.Workbooks.Add()
-                                sheet = excel_app_cache.ActiveSheet
-                                sheet.Range(excel_cell).Value = text
-                                time.sleep(0.05)
-                                skip_physical = True
+                                    target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
+                                    excel_app_cache = _get_excel_application(target_hwnd)
+                                if excel_app_cache:
+                                    sheet = excel_app_cache.ActiveSheet
+                                    sheet.Range(excel_cell).Select()
+                                    sheet.Range(excel_cell).Value = text
+                                    time.sleep(0.05)
+                                    skip_physical = True
                             except Exception as e:
                                 logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
                                 excel_app_cache = None
