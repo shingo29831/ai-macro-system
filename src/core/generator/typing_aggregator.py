@@ -1,3 +1,5 @@
+"""Module: @role: 一連のキー入力・IME入力・UIAイベントを時系列解析し、単一のテキスト入力やキー操作セッションとして集約する。"""
+
 import difflib
 import logging
 import urllib.parse

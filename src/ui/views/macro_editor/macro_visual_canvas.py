@@ -1,87 +1,12 @@
-# src/ui/views/macro_editor/macro_visual_canvas.py
+"""Module: @role: マクロアクションブロックを縦シークエンス状に配置し、実行フローやループ構造の矢印描画、ドラッグ＆ドロップによる並び替えを制御するキャンバス。"""
+
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QSpinBox, QLabel
-from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QDrag, QPainterPath
+from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtGui import QPainter, QPen, QColor, QDropEvent, QDragEnterEvent, QDrag
 from PySide6.QtCore import Qt, Signal, QPoint, QMimeData
 
 from .action_block_widget import ActionBlockWidget
-
-class WarningWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(24, 24)
-        self.setToolTip("ループの開始と終了が逆転しています。\n矢印線が逆転しないように注意してください。")
-        
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # 三角形の描画
-        path = QPainterPath()
-        path.moveTo(12, 2)
-        path.lineTo(22, 20)
-        path.lineTo(2, 20)
-        path.closeSubpath()
-        
-        painter.setBrush(QColor("#ffcc00"))
-        painter.setPen(QPen(QColor("#d13438"), 2))
-        painter.drawPath(path)
-        
-        # ビックリマークの描画
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#d13438"))
-        painter.drawRect(11, 8, 2, 6)
-        painter.drawRect(11, 16, 2, 2)
-
-
-class LoopCountWidget(QFrame):
-    count_changed = Signal(int, int) # loop_start_idx, new_count
-
-    def __init__(self, loop_start_idx: int, initial_count: int, parent=None):
-        super().__init__(parent)
-        self.loop_start_idx = loop_start_idx
-        
-        self.setObjectName("LoopCountWidget")
-        self.setStyleSheet("""
-            #LoopCountWidget {
-                background-color: #ffffff;
-                border: 2px solid #0078d4;
-                border-radius: 6px;
-            }
-        """)
-        
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        
-        self.spin_box = QSpinBox()
-        self.spin_box.setRange(1, 9999)
-        self.spin_box.setValue(initial_count)
-        self.spin_box.setStyleSheet("""
-            QSpinBox {
-                border: none;
-                background: transparent;
-                font-size: 13px;
-                font-weight: bold;
-                color: #0078d4;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 0px;
-            }
-        """)
-        self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        self.spin_box.setFixedWidth(40)
-        self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        
-        label = QLabel("回")
-        label.setStyleSheet("color: #333333; font-weight: bold; font-size: 13px;")
-        
-        layout.addWidget(self.spin_box)
-        layout.addWidget(label)
-        
-        self.spin_box.valueChanged.connect(self._on_value_changed)
-        
-    def _on_value_changed(self, val):
-        self.count_changed.emit(self.loop_start_idx, val)
+from .loop_widgets import LoopCountWidget, WarningWidget
 
 
 class MacroVisualCanvas(QWidget):
