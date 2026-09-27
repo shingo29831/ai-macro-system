@@ -309,24 +309,36 @@ class MainViewModel(QObject):
     def delete_macro(self, macro_name: str):
         if not macro_name:
             return
-            
-        workflow_id = self._macro_id_map.get(macro_name)
-        if not workflow_id:
-            logger.warning(f'Delete requested, but tracking map does not macro: {macro_name}')
+        self.delete_macros([macro_name])
+
+    @Slot(list)
+    def delete_macros(self, macro_names: list[str]):
+        """複数のマクロを一括で完全に削除する。"""
+        if not macro_names:
             return
-            
+
         try:
-            logger.info(f'Deleting macro: {macro_name} (Target ID: {workflow_id})')
-            
             from core.recorder.screen_capturer import get_macros_root
             macros_root = get_macros_root()
-            target_dir = macros_root / workflow_id
-            
-            if target_dir.exists() and target_dir.is_dir():
-                shutil.rmtree(target_dir)
-                logger.info(f"Physically deleted macro directory tree: {target_dir}")
-            
-            self.load_macros()
         except Exception as e:
-            logger.error(f'Failed to delete macro {macro_name} from workspace: {e}')
-            raise
+            logger.warning(f"Failed to call get_macros_root: {e}")
+            macros_root = Path(__file__).resolve().parent / "../../../macros"
+
+        deleted_count = 0
+        for macro_name in macro_names:
+            workflow_id = self._macro_id_map.get(macro_name)
+            if not workflow_id:
+                logger.warning(f'Delete requested, but tracking map does not contain macro: {macro_name}')
+                continue
+
+            try:
+                target_dir = macros_root / workflow_id
+                if target_dir.exists() and target_dir.is_dir():
+                    shutil.rmtree(target_dir)
+                    deleted_count += 1
+                    logger.info(f"Physically deleted macro directory tree: {target_dir}")
+            except Exception as e:
+                logger.error(f'Failed to delete macro {macro_name} from workspace: {e}')
+
+        logger.info(f"Successfully deleted {deleted_count} macros from storage.")
+        self.load_macros()

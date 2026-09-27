@@ -1,11 +1,10 @@
-"""Module: @role: ホーム画面。非ITユーザー向けのマクロ一覧表示・検索・自然順/日時並び替え・記録・実行制御を担当するビュー。"""
+"""Module: @role: ホーム画面。非ITユーザー向けのマクロ一覧表示・検索・並び替え・チェックボックス一括削除・実行制御を担当するビュー。"""
 
 import re
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QFrame,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -14,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from qfluentwidgets import (
+    CheckBox,
     ComboBox,
     PrimaryPushButton,
     PushButton,
@@ -33,6 +33,7 @@ class MainScreen(QWidget):
     start_record_requested = Signal()
     run_macro_requested = Signal()
     delete_macro_requested = Signal()
+    delete_macros_requested = Signal(list)
     edit_macro_requested = Signal()
 
     def __init__(self, viewmodel: MainViewModel, parent=None):
@@ -43,11 +44,17 @@ class MainScreen(QWidget):
 
         self._all_macros: list[MacroSummary] = []
         self._current_selected_name: str = ""
+        self._is_delete_mode: bool = False
 
         self.btn_start_record = None
         self.btn_run_selected = None
         self.btn_delete_selected = None
         self.btn_edit_selected = None
+
+        self.chk_select_all = None
+        self.btn_cancel_delete = None
+        self.btn_confirm_delete = None
+
         self.table_macros = None
         self.search_box = None
         self.sort_combo = None
@@ -83,7 +90,7 @@ class MainScreen(QWidget):
         main_layout.addWidget(page_description)
         main_layout.addSpacing(4)
 
-        # 録画エリア（不要な境界線を排したクリーンなレイアウト）
+        # 録画エリア（ボーダーラインのないクリーンなレイアウト）
         record_area = QHBoxLayout()
         record_area.setSpacing(16)
 
@@ -130,6 +137,7 @@ class MainScreen(QWidget):
         title_layout.addWidget(macro_list_title)
         title_layout.addWidget(self.lbl_count)
 
+        # 通常操作ボタン
         self.btn_edit_selected = PushButton("✎ 編集", self)
         self.btn_edit_selected.setFont(self._font(10))
         self.btn_edit_selected.setFixedSize(90, 36)
@@ -145,11 +153,38 @@ class MainScreen(QWidget):
         self.btn_run_selected.setFixedSize(110, 36)
         self.btn_run_selected.setEnabled(False)
 
+        # 一括削除モード用コントロール
+        self.chk_select_all = CheckBox("すべて選択", self)
+        self.chk_select_all.setFont(self._font(10))
+        self.chk_select_all.setVisible(False)
+
+        self.btn_cancel_delete = PushButton("キャンセル", self)
+        self.btn_cancel_delete.setFont(self._font(10))
+        self.btn_cancel_delete.setFixedSize(96, 36)
+        self.btn_cancel_delete.setVisible(False)
+
+        self.btn_confirm_delete = PrimaryPushButton("🗑 削除する (0件)", self)
+        self.btn_confirm_delete.setFont(self._font(10, bold=True))
+        self.btn_confirm_delete.setFixedSize(140, 36)
+        self.btn_confirm_delete.setStyleSheet(
+            "QPushButton { background-color: #ef4444; border-color: #ef4444; color: white; }"
+            "QPushButton:hover { background-color: #dc2626; }"
+        )
+        self.btn_confirm_delete.setVisible(False)
+        self.btn_confirm_delete.setEnabled(False)
+
         table_top_bar.addLayout(title_layout)
         table_top_bar.addStretch(1)
+
+        # 通常ボタングループ
         table_top_bar.addWidget(self.btn_edit_selected)
         table_top_bar.addWidget(self.btn_delete_selected)
         table_top_bar.addWidget(self.btn_run_selected)
+
+        # 一括削除ボタングループ
+        table_top_bar.addWidget(self.chk_select_all)
+        table_top_bar.addWidget(self.btn_cancel_delete)
+        table_top_bar.addWidget(self.btn_confirm_delete)
 
         main_layout.addLayout(table_top_bar)
 
@@ -191,10 +226,11 @@ class MainScreen(QWidget):
 
         main_layout.addLayout(control_bar)
 
-        # マクロテーブル
+        # マクロテーブル (列0: チェックボックス, 列1: マクロ名, 列2: 更新日時, 列3: 作成日時, 列4: 自己修復)
         self.table_macros = TableWidget(self)
-        self.table_macros.setColumnCount(4)
+        self.table_macros.setColumnCount(5)
         self.table_macros.setHorizontalHeaderLabels([
+            "選択",
             "マクロ名",
             "最終更新日時",
             "作成日時",
@@ -226,23 +262,35 @@ class MainScreen(QWidget):
         self.table_macros.verticalHeader().setDefaultSectionSize(50)
 
         header = self.table_macros.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
 
-        self.table_macros.setColumnWidth(1, 160)
+        self.table_macros.setColumnWidth(0, 56)
         self.table_macros.setColumnWidth(2, 160)
-        self.table_macros.setColumnWidth(3, 110)
+        self.table_macros.setColumnWidth(3, 160)
+        self.table_macros.setColumnWidth(4, 110)
+
+        # 通常時はチェックボックス列を隠す
+        self.table_macros.setColumnHidden(0, True)
 
     def _bind_viewmodel(self):
         self.btn_start_record.clicked.connect(self.start_record_requested.emit)
         self.btn_run_selected.clicked.connect(self.run_macro_requested.emit)
-        self.btn_delete_selected.clicked.connect(self.delete_macro_requested.emit)
         self.btn_edit_selected.clicked.connect(self.edit_macro_requested.emit)
+
+        # 削除ボタン押下で複数選択モードに移行
+        self.btn_delete_selected.clicked.connect(self._enter_delete_mode)
+        self.btn_cancel_delete.clicked.connect(self._exit_delete_mode)
+        self.btn_confirm_delete.clicked.connect(self._on_confirm_batch_delete)
+        self.chk_select_all.stateChanged.connect(self._on_select_all_changed)
 
         self.table_macros.itemSelectionChanged.connect(self._on_table_selection_changed)
         self.table_macros.itemDoubleClicked.connect(self._on_table_double_clicked)
+        self.table_macros.cellClicked.connect(self._on_cell_clicked)
+        self.table_macros.itemChanged.connect(self._on_table_item_changed)
 
         self.search_box.textChanged.connect(self._apply_filter_and_sort)
         self.sort_combo.currentTextChanged.connect(self._apply_filter_and_sort)
@@ -253,7 +301,10 @@ class MainScreen(QWidget):
     @Slot(list)
     def _on_macros_loaded(self, macros: list):
         self._all_macros = list(macros)
+        if self._is_delete_mode:
+            self._exit_delete_mode()
         self._apply_filter_and_sort()
+        self.btn_delete_selected.setEnabled(len(self._all_macros) > 0)
 
     def _natural_sort_key(self, text: str):
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(text))]
@@ -300,6 +351,7 @@ class MainScreen(QWidget):
         self._render_table(items)
 
     def _render_table(self, macros: list[MacroSummary]):
+        self.table_macros.blockSignals(True)
         self.table_macros.clearContents()
         self.table_macros.setRowCount(len(macros))
 
@@ -307,41 +359,161 @@ class MainScreen(QWidget):
         selected_row = -1
 
         for row, macro in enumerate(macros):
-            # マクロ名
+            # チェックボックス (列0)
+            chk_item = QTableWidgetItem()
+            chk_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
+            chk_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table_macros.setItem(row, 0, chk_item)
+
+            # マクロ名 (列1)
             name_item = QTableWidgetItem(f"  {macro.name}")
             name_item.setFont(self._font(10, bold=True))
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_macros.setItem(row, 0, name_item)
+            self.table_macros.setItem(row, 1, name_item)
 
-            # 最終更新日時
+            # 最終更新日時 (列2)
             updated_item = QTableWidgetItem(macro.updated_at)
             updated_item.setFont(item_font)
             updated_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             updated_item.setFlags(updated_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_macros.setItem(row, 1, updated_item)
+            self.table_macros.setItem(row, 2, updated_item)
 
-            # 作成日時
+            # 作成日時 (列3)
             created_item = QTableWidgetItem(macro.created_at)
             created_item.setFont(item_font)
             created_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             created_item.setFlags(created_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_macros.setItem(row, 2, created_item)
+            self.table_macros.setItem(row, 3, created_item)
 
-            # 自己修復回数
+            # 自己修復回数 (列4)
             heals_item = QTableWidgetItem(macro.heals)
             heals_item.setFont(item_font)
             heals_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             heals_item.setFlags(heals_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table_macros.setItem(row, 3, heals_item)
+            self.table_macros.setItem(row, 4, heals_item)
 
             if macro.name == self._current_selected_name:
                 selected_row = row
+
+        self.table_macros.blockSignals(False)
 
         if selected_row >= 0:
             self.table_macros.selectRow(selected_row)
         else:
             self.viewmodel.select_macro("")
+
+    @Slot()
+    def _enter_delete_mode(self):
+        """削除ボタン押下時にチェックボックス列と一括削除ツールバーを表示する"""
+        if not self._all_macros:
+            return
+
+        self._is_delete_mode = True
+        self.table_macros.setColumnHidden(0, False)
+
+        self.btn_edit_selected.setVisible(False)
+        self.btn_delete_selected.setVisible(False)
+        self.btn_run_selected.setVisible(False)
+
+        self.chk_select_all.setVisible(True)
+        self.btn_cancel_delete.setVisible(True)
+        self.btn_confirm_delete.setVisible(True)
+
+        # 既に選択中のマクロがあれば初期チェックを付与
+        if self._current_selected_name:
+            for row in range(self.table_macros.rowCount()):
+                name_item = self.table_macros.item(row, 1)
+                if name_item and name_item.text().strip() == self._current_selected_name:
+                    chk_item = self.table_macros.item(row, 0)
+                    if chk_item:
+                        chk_item.setCheckState(Qt.CheckState.Checked)
+                    break
+
+        self._update_batch_delete_status()
+
+    @Slot()
+    def _exit_delete_mode(self):
+        """一括削除モードを終了して通常の表示状態に戻す"""
+        self._is_delete_mode = False
+        self.table_macros.setColumnHidden(0, True)
+
+        self.chk_select_all.setVisible(False)
+        self.btn_cancel_delete.setVisible(False)
+        self.btn_confirm_delete.setVisible(False)
+
+        self.btn_edit_selected.setVisible(True)
+        self.btn_delete_selected.setVisible(True)
+        self.btn_run_selected.setVisible(True)
+
+        # 全チェックをクリア
+        self.table_macros.blockSignals(True)
+        for row in range(self.table_macros.rowCount()):
+            chk_item = self.table_macros.item(row, 0)
+            if chk_item:
+                chk_item.setCheckState(Qt.CheckState.Unchecked)
+        self.table_macros.blockSignals(False)
+
+        self.chk_select_all.blockSignals(True)
+        self.chk_select_all.setChecked(False)
+        self.chk_select_all.blockSignals(False)
+
+    @Slot(int)
+    def _on_select_all_changed(self, state: int):
+        target_state = Qt.CheckState.Checked if state == 2 else Qt.CheckState.Unchecked
+        self.table_macros.blockSignals(True)
+        for row in range(self.table_macros.rowCount()):
+            chk_item = self.table_macros.item(row, 0)
+            if chk_item:
+                chk_item.setCheckState(target_state)
+        self.table_macros.blockSignals(False)
+        self._update_batch_delete_status()
+
+    @Slot(int, int)
+    def _on_cell_clicked(self, row: int, column: int):
+        # 削除モード中は行全体のクリックでチェックボックスをトグル可能にする
+        if not self._is_delete_mode or column == 0:
+            return
+
+        chk_item = self.table_macros.item(row, 0)
+        if chk_item:
+            current = chk_item.checkState()
+            chk_item.setCheckState(
+                Qt.CheckState.Unchecked if current == Qt.CheckState.Checked else Qt.CheckState.Checked
+            )
+
+    @Slot(QTableWidgetItem)
+    def _on_table_item_changed(self, item: QTableWidgetItem):
+        if not self._is_delete_mode or item.column() != 0:
+            return
+        self._update_batch_delete_status()
+
+    def _get_checked_macro_names(self) -> list[str]:
+        checked = []
+        for row in range(self.table_macros.rowCount()):
+            chk = self.table_macros.item(row, 0)
+            name_item = self.table_macros.item(row, 1)
+            if chk and chk.checkState() == Qt.CheckState.Checked and name_item:
+                checked.append(name_item.text().strip())
+        return checked
+
+    def _update_batch_delete_status(self):
+        checked = self._get_checked_macro_names()
+        count = len(checked)
+        self.btn_confirm_delete.setText(f"🗑 削除する ({count}件)")
+        self.btn_confirm_delete.setEnabled(count > 0)
+
+        total = self.table_macros.rowCount()
+        self.chk_select_all.blockSignals(True)
+        self.chk_select_all.setChecked(total > 0 and count == total)
+        self.chk_select_all.blockSignals(False)
+
+    @Slot()
+    def _on_confirm_batch_delete(self):
+        checked = self._get_checked_macro_names()
+        if checked:
+            self.delete_macros_requested.emit(checked)
 
     @Slot()
     def _on_table_selection_changed(self):
@@ -352,7 +524,7 @@ class MainScreen(QWidget):
             return
 
         row = selected_items[0].row()
-        name_item = self.table_macros.item(row, 0)
+        name_item = self.table_macros.item(row, 1)
         if name_item:
             clean_name = name_item.text().strip()
             self._current_selected_name = clean_name
@@ -360,11 +532,11 @@ class MainScreen(QWidget):
 
     @Slot(QTableWidgetItem)
     def _on_table_double_clicked(self, item: QTableWidgetItem):
-        if item and self.btn_run_selected.isEnabled():
+        if not self._is_delete_mode and item and self.btn_run_selected.isEnabled():
             self.run_macro_requested.emit()
 
     @Slot(bool)
     def _update_control_buttons_state(self, can_run: bool):
         self.btn_run_selected.setEnabled(can_run)
-        self.btn_delete_selected.setEnabled(can_run)
         self.btn_edit_selected.setEnabled(can_run)
+        self.btn_delete_selected.setEnabled(len(self._all_macros) > 0)

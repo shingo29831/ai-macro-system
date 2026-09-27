@@ -75,6 +75,9 @@ class MainWindow(FluentWindow):
         self.home_screen.delete_macro_requested.connect(
             self._on_delete_selected_clicked
         )
+        self.home_screen.delete_macros_requested.connect(
+            self._on_delete_macros_requested
+        )
         self.settings_screen.open_settings_requested.connect(
             self.open_settings_dialog
         )
@@ -124,6 +127,31 @@ class MainWindow(FluentWindow):
 
         if result == QMessageBox.Yes:
             self.viewmodel.delete_macro(selected_macro_name)
+
+    @Slot(list)
+    def _on_delete_macros_requested(self, macro_names: list):
+        if not macro_names:
+            return
+
+        count = len(macro_names)
+        if count == 1:
+            msg = f"「{macro_names[0]}」を完全に削除してもよろしいですか？\nこの操作は元に戻せません。"
+        else:
+            preview = "、".join(f"「{name}」" for name in macro_names[:3])
+            if count > 3:
+                preview += f" ほか計{count}件"
+            msg = f"選択した {count} 件のマクロ（{preview}）を完全に削除してもよろしいですか？\nこの操作は元に戻せません。"
+
+        result = QMessageBox.question(
+            self,
+            "一括削除の確認",
+            msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if result == QMessageBox.Yes:
+            self.viewmodel.delete_macros(macro_names)
 
     @Slot()
     def _on_recording_stopped_by_shortcut(self):
