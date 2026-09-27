@@ -88,9 +88,17 @@ def _get_excel_application(hwnd: int = None, expected_title: str = ""):
         try:
             excel = win32com.client.GetActiveObject("Excel.Application")
             if excel:
-                if expected_title and ("book" in expected_title.lower() or "ブック" in expected_title.lower()):
+                actual_title = ""
+                if hwnd:
+                    try:
+                        actual_title = win32gui.GetWindowText(hwnd)
+                    except Exception:
+                        pass
+                target_search = actual_title if actual_title else expected_title
+                # Why: 操作対象ウィンドウの実タイトルから一致するWorkbookを特定して誤爆防止
+                if target_search:
                     for wb in excel.Workbooks:
-                        if "book" in wb.Name.lower() or "ブック" in wb.Name.lower():
+                        if wb.Name.lower() in target_search.lower():
                             wb.Activate()
                             return excel
                 return excel

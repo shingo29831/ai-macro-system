@@ -181,7 +181,8 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 break
             time.sleep(0.5)
     
-    if not windows and app_name:
+    before_hwnds = set()
+    if not windows and not force_new and app_name:
         safe_app_name = re.escape(app_name)
         is_generic_excel = ("excel" in app_name.lower()) and ("book" in window_title.lower() or "ブック" in window_title)
         
@@ -235,7 +236,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 launch_cmd = "start excel"
             
         if launch_cmd:
-            before_hwnds = set(w.handle for w in desktop.windows(visible_only=True))
+            before_hwnds.update(w.handle for w in desktop.windows(visible_only=True))
             
             creationflags = 0x08000000
             use_shell = launch_cmd.startswith("start ")
@@ -268,14 +269,17 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             try:
                 win.set_focus()
                 time.sleep(0.5)
-                from pynput.keyboard import Controller as KeyboardController, Key
-                keyboard = KeyboardController()
-                keyboard.press(Key.enter)
-                keyboard.release(Key.enter)
-                time.sleep(1.0)
-                all_matched = desktop.windows(title_re=f".*{re.escape(app_name)}.*", visible_only=True)
-                if all_matched:
-                    win = all_matched[0]
+                win_text = win.window_text()
+                # Why: タイトルにブック名が含まれていないスタート画面状態のみEnterで空白ブックを選択
+                if not ("book" in win_text.lower() or "ブック" in win_text.lower()):
+                    from pynput.keyboard import Controller as KeyboardController, Key
+                    keyboard = KeyboardController()
+                    keyboard.press(Key.enter)
+                    keyboard.release(Key.enter)
+                    time.sleep(1.0)
+                    newly_opened = [w for w in desktop.windows(title_re=f".*{re.escape(app_name)}.*", visible_only=True) if w.handle not in before_hwnds]
+                    if newly_opened:
+                        win = newly_opened[0]
             except Exception as e:
                 logger.warning(f"Failed to send Enter key to Excel start screen: {e}")
 
