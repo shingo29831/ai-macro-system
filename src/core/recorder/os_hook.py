@@ -18,6 +18,14 @@ _mouse_listener = None
 _keyboard_listener = None
 _key_hook_manager = None
 
+from . import macro_path_manager
+
+_mouse_listener = None
+_keyboard_listener = None
+_key_hook_manager = None
+_office_monitor_manager = None
+
+
 def set_shortcut_stop_callback(callback):
     state.shortcut_stop_callback = callback
 
@@ -34,7 +42,7 @@ def start_recording():
         return
 
     try:
-        state.recording_dirs = screen_capturer.make_directory()
+        state.recording_dirs = macro_path_manager.make_directory()
         state.input_logs = []
         state.event_index = 0
         state.previous_screenshot_img = None
@@ -72,9 +80,17 @@ def start_recording():
         state.is_recording = False
         state.is_stopping = False
         if _key_hook_manager:
-            _key_hook_manager.stop()
+            try:
+                _key_hook_manager.stop()
+            except Exception:
+                pass
+            _key_hook_manager = None
         if _office_monitor_manager:
-            _office_monitor_manager.stop()
+            try:
+                _office_monitor_manager.stop()
+            except Exception:
+                pass
+            _office_monitor_manager = None
         stop_native_scroll_hook()
         stop_mouse_event_worker()
         stop_key_event_worker()
@@ -84,7 +100,7 @@ def start_recording():
         raise
 
 def stop_recording():
-    global _mouse_listener, _keyboard_listener
+    global _mouse_listener, _keyboard_listener, _key_hook_manager, _office_monitor_manager
 
     if not state.is_recording:
         return
@@ -111,6 +127,12 @@ def stop_recording():
             if _keyboard_listener:
                 _keyboard_listener.stop()
                 _keyboard_listener = None
+            if _key_hook_manager:
+                _key_hook_manager.stop()
+                _key_hook_manager = None
+            if _office_monitor_manager:
+                _office_monitor_manager.stop()
+                _office_monitor_manager = None
         except Exception as e:
             print(f"リスナー停止中にエラー（無視して続行します）: {e}")
 
