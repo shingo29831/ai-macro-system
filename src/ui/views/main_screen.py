@@ -83,41 +83,36 @@ class MainScreen(QWidget):
         main_layout.addWidget(page_description)
         main_layout.addSpacing(4)
 
-        # 録画開始バナーカード
-        record_card = QFrame(self)
-        record_card.setStyleSheet(
-            "QFrame { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }"
-        )
-        record_card_layout = QHBoxLayout(record_card)
-        record_card_layout.setContentsMargins(20, 16, 20, 16)
-        record_card_layout.setSpacing(16)
+        # 録画エリア（不要な境界線を排したクリーンなレイアウト）
+        record_area = QHBoxLayout()
+        record_area.setSpacing(16)
 
         record_text_layout = QVBoxLayout()
         record_text_layout.setSpacing(4)
 
-        record_title = SubtitleLabel("新しいマクロを作成", record_card)
-        record_title.setFont(self._font(14, bold=True))
+        record_title = SubtitleLabel("新しいマクロを作成", self)
+        record_title.setFont(self._font(15, bold=True))
 
         record_description = QLabel(
             "マウスのクリックやキーボード入力を記録し、繰り返し使える自動マクロを生成します。",
-            record_card,
+            self,
         )
         record_description.setFont(self._font(10))
-        record_description.setStyleSheet("color: #64748b; border: none; background: transparent;")
+        record_description.setStyleSheet("color: #64748b;")
 
         record_text_layout.addWidget(record_title)
         record_text_layout.addWidget(record_description)
 
-        self.btn_start_record = PrimaryPushButton("●  記録を開始", record_card)
+        self.btn_start_record = PrimaryPushButton("●  記録を開始", self)
         self.btn_start_record.setFont(self._font(11, bold=True))
         self.btn_start_record.setFixedSize(200, 46)
 
-        record_card_layout.addLayout(record_text_layout)
-        record_card_layout.addStretch(1)
-        record_card_layout.addWidget(self.btn_start_record, alignment=Qt.AlignmentFlag.AlignVCenter)
+        record_area.addLayout(record_text_layout)
+        record_area.addStretch(1)
+        record_area.addWidget(self.btn_start_record, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        main_layout.addWidget(record_card)
-        main_layout.addSpacing(6)
+        main_layout.addLayout(record_area)
+        main_layout.addSpacing(10)
 
         # マクロ一覧タイトル＆アクションボタンバー
         table_top_bar = QHBoxLayout()
@@ -179,8 +174,8 @@ class MainScreen(QWidget):
             "更新が古い順",
             "作成が新しい順",
             "作成が古い順",
-            "マクロ名順 (1 → 10)",
-            "マクロ名順 (10 → 1)",
+            "マクロ名順",
+            "マクロ名順（降順）",
         ])
 
         hint_label = QLabel("※ ダブルクリックでも即時実行できます", self)
@@ -277,9 +272,9 @@ class MainScreen(QWidget):
             items.sort(key=lambda m: m.created_timestamp, reverse=True)
         elif sort_type == "作成が古い順":
             items.sort(key=lambda m: m.created_timestamp, reverse=False)
-        elif sort_type == "マクロ名順 (1 → 10)":
+        elif sort_type == "マクロ名順":
             items.sort(key=lambda m: self._natural_sort_key(m.name), reverse=False)
-        elif sort_type == "マクロ名順 (10 → 1)":
+        elif sort_type == "マクロ名順（降順）":
             items.sort(key=lambda m: self._natural_sort_key(m.name), reverse=True)
 
         total_count = len(self._all_macros)
