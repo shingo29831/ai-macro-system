@@ -1,6 +1,5 @@
-# Role: Windows APIおよびUI Automationを用いて、フォアグラウンドウィンドウやカーソル位置のUI要素矩形・テキスト情報を取得・診断する。
+"""Module: @role: Windows APIおよびUI Automationを用いて、フォアグラウンドウィンドウやカーソル位置のUI要素矩形・テキスト情報を取得・診断する。"""
 
-from pathlib import Path
 import ctypes
 from ctypes import wintypes
 
@@ -9,15 +8,6 @@ try:
 except ImportError:
     psutil = None
 
-# =========================
-# 設定定数
-# =========================
-
-IGNORED_WINDOW_TITLES = [
-    "記録中",
-    "停止中",
-    "AI Macro System",
-    "設定",
 IGNORED_WINDOW_TITLES = [
     '記録中', '停止中', 'AI Macro System', '設定', 'AIマクロ生成中...', 'AIマクロ生成中', 'マクロ生成中', '実行中', '実行中...', 'ウィンドウの紐付け'
 ]
@@ -31,7 +21,6 @@ def should_ignore_window(title: str | None) -> bool:
         if ignored.lower() in title_lower:
             return True
     return False
-
 
 def _empty_window_info(error: str) -> dict:
     return {
@@ -47,7 +36,6 @@ def _empty_window_info(error: str) -> dict:
         "coordinates": {"x": 0, "y": 0},
         "error": error,
     }
-
 
 def get_foreground_window_info() -> dict:
     """現在アクティブなフォアグラウンドウィンドウの属性・サイズ・所属プロセス情報を取得する"""
@@ -116,7 +104,6 @@ def get_foreground_window_info() -> dict:
     except Exception as e:
         return _empty_window_info(str(e))
 
-
 def build_recording_window_fields(
     window_info: dict,
     cursor_x: int | None = None,
@@ -147,7 +134,6 @@ def build_recording_window_fields(
         },
         "CursorCoordinates": cursor_coordinates,
     }
-
 
 def get_window_title_at_point(x: int, y: int) -> dict:
     """カーソル指定地点にあるウィンドウのタイトルおよび祖先ウィンドウ情報を取得する"""
@@ -210,7 +196,6 @@ def get_window_title_at_point(x: int, y: int) -> dict:
             "root_class_name": "",
             "error": str(e),
         }
-
 
 def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
     """
