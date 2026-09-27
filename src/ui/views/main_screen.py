@@ -23,8 +23,8 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from src.models.data_types import MacroSummary
-from src.ui.viewmodels.main_viewmodel import MainViewModel
+from models.data_types import MacroSummary
+from ui.viewmodels.main_viewmodel import MainViewModel
 
 
 class MainScreen(QWidget):
