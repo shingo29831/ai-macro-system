@@ -193,9 +193,27 @@ class MacroSummary(BaseModel):
 # 6.8. アプリケーション設定用データ構造 (config.json)
 # ====================================================================
 
+DEFAULT_LOCAL_HOST: str = "127.0.0.1"
+DEFAULT_LOCAL_LLM_PORT: str = "8844"
+DEFAULT_LOCAL_CV_PORT: str = "8843"
+DEFAULT_CLOUD_HOST: str = "cloud.aimacro-system.internal"
+DEFAULT_CLOUD_PORT: str = "8843"
+
+
 class AppConfig(BaseModel):
-    ai_mode: str = Field(default='local', description='AIの動作モード（local または cloud）')
-    
+    ai_mode: str = Field(
+        default='local',
+        description='AIの動作モード（local: このパソコン, custom: 社内・自前サーバー, cloud: 公式クラウド）'
+    )
+    custom_server_host: str = Field(
+        default='',
+        description='ユーザーが用意したサーバーのIPアドレスまたはドメイン名'
+    )
+    custom_server_port: str = Field(
+        default='8843',
+        description='ユーザーが用意したサーバーのポート番号'
+    )
+
     llm_host: str = Field(default='127.0.0.1', description='マクロ生成用AI（LLM）の接続先（IPまたはホスト名）')
     llm_port: str = Field(default='8844', description='LLM APIのポート番号')
     
@@ -211,20 +229,24 @@ class AppConfig(BaseModel):
     @field_validator('ai_mode')
     @classmethod
     def validate_ai_mode(cls, v: str) -> str:
-        if v not in ('local', 'cloud'):
-            raise ValueError(f'Invalid ai_mode: {v}')
+        if v not in ('local', 'custom', 'cloud'):
+            raise ValueError(f'無効な接続モードです: {v} (local, custom, cloud のいずれか)')
         return v
 
-    @field_validator('llm_host', 'cv_host', 'vllm_host')
+    @field_validator('llm_host', 'cv_host', 'vllm_host', 'custom_server_host')
     @classmethod
     def sanitize_host(cls, v: str) -> str:
+        if not v:
+            return v
         if not re.match(r'^[a-zA-Z0-9.-]+$', v):
-            raise ValueError(f'Invalid host format: {v}')
+            raise ValueError(f'ホストの形式が正しくありません（英数字、ドット、ハイフンのみ）: {v}')
         return v
 
-    @field_validator('llm_port', 'cv_port', 'vllm_port')
+    @field_validator('llm_port', 'cv_port', 'vllm_port', 'custom_server_port')
     @classmethod
     def validate_port(cls, v: str) -> str:
+        if not v:
+            return v
         if not v.isdigit() or not (1 <= int(v) <= 65535):
-            raise ValueError(f'Invalid port number: {v}')
+            raise ValueError(f'ポート番号は 1 〜 65535 の整数で入力してください: {v}')
         return v
