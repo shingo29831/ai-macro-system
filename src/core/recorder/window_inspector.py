@@ -18,16 +18,17 @@ IGNORED_WINDOW_TITLES = [
     "停止中",
     "AI Macro System",
     "設定",
-    "AIマクロ生成中...",
+IGNORED_WINDOW_TITLES = [
+    '記録中', '停止中', 'AI Macro System', '設定', 'AIマクロ生成中...', 'AIマクロ生成中', 'マクロ生成中', '実行中', '実行中...', 'ウィンドウの紐付け'
 ]
-
 
 def should_ignore_window(title: str | None) -> bool:
     """システム自身の操作・設定ウィンドウかどうかを判定して除外対象とする"""
     if not title:
         return False
+    title_lower = title.lower()
     for ignored in IGNORED_WINDOW_TITLES:
-        if ignored in title:
+        if ignored.lower() in title_lower:
             return True
     return False
 

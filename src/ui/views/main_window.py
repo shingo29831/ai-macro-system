@@ -227,27 +227,60 @@ class MainWindow(FluentWindow):
         # UIイベントを処理して画面遷移とウィジェット描画を確定させる
         QApplication.processEvents()
 
-        title_to_aliases = {}
+        import re
+        ignored_system_titles = [
+            "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中",
+            "実行中", "設定", "ウィンドウの紐付け", "program manager", "taskbar"
+        ]
+
+        def _extract_app(t: str) -> str:
+            parts = re.split(r"[\-—–―]", t)
+            app = parts[-1].strip()
+            return app if app else t.strip()
+
+        # 同一アプリまたは同一エイリアスごとにウィンドウをグループ化
+        groups = {}
         for cmd in commands:
             if cmd.get("method") == "activate_window":
-                alias = cmd.get("args", {}).get("window_alias")
-                title = cmd.get("args", {}).get("window_title")
-                if alias and title:
-                    if title not in title_to_aliases:
-                        title_to_aliases[title] = []
-                    title_to_aliases[title].append(alias)
+                args = cmd.get("args", {})
+                title = args.get("window_title", "").strip()
+                alias = args.get("window_alias", "")
+                if not title or any(kw in title.lower() for kw in ignored_system_titles):
+                    continue
 
-        unique_titles = list(title_to_aliases.keys())
+                app_key = _extract_app(title).lower()
+                group_key = alias if alias else app_key
+
+                if group_key not in groups:
+                    groups[group_key] = {
+                        "display_title": title,
+                        "titles": set(),
+                        "aliases": set()
+                    }
+                groups[group_key]["titles"].add(title)
+                if alias:
+                    groups[group_key]["aliases"].add(alias)
+                # より具体的なタイトル（例: 'Book1 - Excel' > 'Excel'）を表示用タイトルとして採用
+                if len(title) > len(groups[group_key]["display_title"]):
+                    groups[group_key]["display_title"] = title
+
+        unique_titles = [g["display_title"] for g in groups.values()]
 
         if unique_titles:
             dialog = WindowMappingDialog(unique_titles, self)
             if dialog.exec() == QDialog.Accepted:
                 mapping = dialog.get_mapping()
-                for cmd in commands:
-                    if cmd.get("method") == "activate_window":
-                        title = cmd.get("args", {}).get("window_title")
-                        if title and title in mapping:
-                            cmd["args"]["mapped_hwnd"] = mapping[title]
+                for grp in groups.values():
+                    disp = grp["display_title"]
+                    if disp in mapping:
+                        mapped_hwnd = mapping[disp]
+                        for cmd in commands:
+                            if cmd.get("method") == "activate_window":
+                                c_args = cmd.get("args", {})
+                                c_title = c_args.get("window_title", "").strip()
+                                c_alias = c_args.get("window_alias", "")
+                                if c_title in grp["titles"] or (c_alias and c_alias in grp["aliases"]):
+                                    c_args["mapped_hwnd"] = mapped_hwnd
             else:
                 self._on_macro_edit_canceled()
                 return

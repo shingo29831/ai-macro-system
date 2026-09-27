@@ -79,7 +79,9 @@ def get_open_windows_info():
     def enum_windows_proc(hwnd, lParam):
         if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowTextLength(hwnd) > 0:
             title = win32gui.GetWindowText(hwnd)
-            if not any(ignored in title for ignored in IGNORED_SYSTEM_WINDOW_TITLES + ["Program Manager"]):
+            title_lower = title.lower()
+            system_ignored = IGNORED_SYSTEM_WINDOW_TITLES + ["Program Manager", "マクロ生成中", "aiマクロ生成中", "ウィンドウの紐付け"]
+            if not any(ignored.lower() in title_lower for ignored in system_ignored):
                 rect = win32gui.GetWindowRect(hwnd)
                 w = rect[2] - rect[0]
                 h = rect[3] - rect[1]

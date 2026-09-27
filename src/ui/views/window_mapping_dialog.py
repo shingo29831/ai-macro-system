@@ -114,7 +114,15 @@ class WindowMappingDialog(QDialog):
         self.confirmed_hwnds = set()
         self.current_selected_hwnd = None
 
-        self.all_windows = [{"hwnd": -1, "title": "新規起動", "thumbnail": None}] + get_open_windows_info()
+        ignored_system_kw = [
+            "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中",
+            "実行中", "設定", "ウィンドウの紐付け", "program manager", "taskbar"
+        ]
+        filtered_open_windows = [
+            w for w in get_open_windows_info()
+            if not any(kw in w.get("title", "").lower() for kw in ignored_system_kw)
+        ]
+        self.all_windows = [{"hwnd": -1, "title": "新規起動", "thumbnail": None}] + filtered_open_windows
 
         layout = QVBoxLayout(self)
 

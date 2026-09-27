@@ -25,7 +25,11 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         
     window_name = log_entry.get("WindowName") or "Unknown Window"
     command_line = log_entry.get("WindowCommandLine", "")
-    system_windows = ["python", "unknown window", "検索", "スタート", "start", "search", "taskbar", "タスクバー", "cortana", "ジャンプ リスト"]
+    system_windows = [
+        "python", "unknown window", "検索", "スタート", "start", "search",
+        "taskbar", "タスクバー", "cortana", "ジャンプ リスト", "マクロ生成中",
+        "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"
+    ]
     if not window_name.strip() or any(sw in window_name.lower() for sw in system_windows):
         return None
         

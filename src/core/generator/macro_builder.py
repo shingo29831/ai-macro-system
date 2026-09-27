@@ -30,6 +30,20 @@ def build_and_save_macro(
     
     screen_size = Size(width=1920, height=1080)
     
+    import re
+    system_window_keywords = [
+        "python", "unknown window", "検索", "スタート", "start", "search",
+        "taskbar", "タスクバー", "cortana", "ジャンプ リスト", "マクロ生成中",
+        "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"
+    ]
+
+    def extract_app_name(title: str) -> str:
+        if not title:
+            return "App"
+        parts = re.split(r"[\-—–―]", title)
+        app = parts[-1].strip()
+        return app if app else title.strip()
+
     step_idx = 1
     prev_window_name = None
     prev_win_rect = None
@@ -38,14 +52,22 @@ def build_and_save_macro(
     app_alias_counters = {}
 
     def get_window_alias(title, rect):
-        app_name = title.split("—")[-1].split("-")[-1].strip()
-        if not app_name:
-            app_name = "App"
-        key = (title, rect)
-        if key not in window_alias_map:
-            app_alias_counters[app_name] = app_alias_counters.get(app_name, 0) + 1
-            window_alias_map[key] = f"{app_name}{app_alias_counters[app_name]}"
-        return window_alias_map[key]
+        app_name = extract_app_name(title)
+        app_key = app_name.lower()
+        # 同一アプリかつ座標が近いウィンドウは同一エイリアスを共有
+        for (reg_app, reg_rect), alias in window_alias_map.items():
+            if reg_app == app_key:
+                if rect and reg_rect:
+                    rx, ry, rw, rh = reg_rect
+                    x, y, w, h = rect
+                    if abs(x - rx) <= 20 and abs(y - ry) <= 20 and abs(w - rw) <= 20 and abs(h - rh) <= 20:
+                        return alias
+                elif not rect and not reg_rect:
+                    return alias
+        app_alias_counters[app_name] = app_alias_counters.get(app_name, 0) + 1
+        new_alias = f"{app_name}{app_alias_counters[app_name]}"
+        window_alias_map[(app_key, rect)] = new_alias
+        return new_alias
     
     for info in temp_workflow_info:
         if check_cancel_callback and check_cancel_callback():
@@ -94,6 +116,10 @@ def build_and_save_macro(
             continue
 
         if current_window != "Unknown":
+            # 自システムの操作画面への切り替えはアクティブ化対象から除外
+            if any(sw in current_window.lower() for sw in system_window_keywords):
+                continue
+
             win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
             win_x = win_ctx.coordinates.x if win_ctx else info.get("win_x", 0)
             win_y = win_ctx.coordinates.y if win_ctx else info.get("win_y", 0)
@@ -102,13 +128,24 @@ def build_and_save_macro(
             
             current_win_rect = (win_x, win_y, win_w, win_h)
             
-            needs_activation = False
-            if current_window != prev_window_name:
-                needs_activation = True
-            elif prev_win_rect:
+            curr_app = extract_app_name(current_window).lower()
+            prev_app = extract_app_name(prev_window_name).lower() if prev_window_name else ""
+            is_same_app = (curr_app == prev_app and curr_app != "")
+
+            rect_changed = False
+            if prev_win_rect and current_win_rect:
                 px, py, pw, ph = prev_win_rect
-                if abs(win_x - px) > 10 or abs(win_y - py) > 10 or abs(win_w - pw) > 10 or abs(win_h - ph) > 10:
-                    needs_activation = True
+                cx, cy, cw, ch = current_win_rect
+                if abs(cx - px) > 15 or abs(cy - py) > 15 or abs(cw - pw) > 15 or abs(ch - ph) > 15:
+                    rect_changed = True
+
+            needs_activation = False
+            if prev_window_name is None:
+                needs_activation = True
+            elif is_same_app and not rect_changed:
+                needs_activation = False
+            elif current_window != prev_window_name or rect_changed:
+                needs_activation = True
                     
             if needs_activation:
                 command_line = info.get("command_line", "")

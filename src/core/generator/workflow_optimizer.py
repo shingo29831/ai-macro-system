@@ -163,7 +163,11 @@ def optimize_workflow_events(
         win_name = info.get("window_name", "")
         
         if skip_until_new_window:
-            system_windows = ["python", "unknown window", "検索", "スタート", "start", "search", "taskbar", "タスクバー", "cortana", "ジャンプ リスト"]
+            system_windows = [
+                "python", "unknown window", "検索", "スタート", "start", "search",
+                "taskbar", "タスクバー", "cortana", "ジャンプ リスト", "マクロ生成中",
+                "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"
+            ]
             is_system = not win_name.strip() or any(sw in win_name.lower() for sw in system_windows)
             
             if not is_system and win_name != win_key_window_name:
