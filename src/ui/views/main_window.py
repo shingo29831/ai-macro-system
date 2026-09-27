@@ -192,6 +192,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.hide()
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
+        # UIイベントを処理して画面遷移とウィジェット描画を確定させる
         QApplication.processEvents()
 
         title_to_aliases = {}
