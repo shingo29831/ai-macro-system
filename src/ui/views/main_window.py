@@ -303,8 +303,7 @@ from PySide6.QtCore import Slot
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from qfluentwidgets import FluentIcon, FluentWindow, Theme, setTheme
 from ui.views.main_screen import MainScreen
-from ui.views.setting_screen import SettingScreen
-from ui.views.window_mapping_dialog import WindowMappingDialog, WindowThumbnailWidget
+        # UIイベントを処理して画面遷移とウィジェット描画を確定させる
         QApplication.processEvents()
         
         title_to_aliases = {}
