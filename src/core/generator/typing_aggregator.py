@@ -407,8 +407,8 @@ class TypingSessionAggregator:
                 pass
             return None, False
 
-        uia_candidates = []
         confirmed_queries = []
+        latest_uia_text = ""
         
         all_events_in_session = session + trailing_events
         for item in reversed(all_events_in_session):
@@ -420,8 +420,8 @@ class TypingSessionAggregator:
                     if extracted:
                         if is_url_query and extracted not in confirmed_queries:
                             confirmed_queries.append(extracted)
-                        elif not is_url_query and extracted not in uia_candidates:
-                            uia_candidates.append(extracted)
+                        elif not is_url_query and not latest_uia_text:
+                            latest_uia_text = extracted
 
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
@@ -440,67 +440,28 @@ class TypingSessionAggregator:
                     if extracted:
                         if is_url_query and extracted not in confirmed_queries:
                             confirmed_queries.append(extracted)
-                        elif not is_url_query and extracted not in uia_candidates:
-                            uia_candidates.append(extracted)
-
-        uia_rescued_text = ""
-        if confirmed_queries:
-            uia_rescued_text = confirmed_queries[0]
-        elif uia_candidates:
-            if fallback_text:
-                best_candidate = None
-                best_ratio = -1.0
-                fb_lower = fallback_text.lower()
-                
-                for cand in uia_candidates:
-                    cand_lower = cand.lower()
-                    
-                    if fb_lower == cand_lower:
-                        ratio = 1.2
-                    elif fb_lower in cand_lower:
-                        ratio = 1.0
-                    else:
-                        ratio = difflib.SequenceMatcher(None, fb_lower, cand_lower).ratio()
-                        if cand_lower and fb_lower.startswith(cand_lower[:3]):
-                            ratio += 0.2
-                        ratio = min(0.99, ratio)
-                        
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_candidate = cand
-                
-                # Why: 漢字変換時はひらがな入力との類似度が低くてもTab補完/IME候補を救出
-                if best_ratio >= 0.25 or any_ime_active or has_suggest_selection:
-                    uia_rescued_text = best_candidate if (best_candidate and best_ratio >= 0.25) else uia_candidates[0]
-            else:
-                uia_rescued_text = uia_candidates[0]
+                        # Why: 一番最後に確定された最新のUIA要素文字列のみを採用し入力途中の巻き戻りを防止
+                        elif not is_url_query and not latest_uia_text:
+                            latest_uia_text = extracted
 
         has_suggest_selection = any(
             item.get("raw_action") in ["key_down", "key_press"] and 
             str(item.get("semantic_role", "")).lower() in ["tab", "down", "up"]
             for item in session + trailing_events
         )
-
         any_ime_active = any(item.get("ime_active", False) for item in session)
 
-        similarity = 0.0
-        if fallback_text and uia_rescued_text:
-            fb_lower = fallback_text.lower()
-            uia_lower = uia_rescued_text.lower()
-            if fb_lower in uia_lower or uia_lower in fb_lower:
-                similarity = 1.0
-            else:
-                similarity = difflib.SequenceMatcher(None, fb_lower, uia_lower).ratio()
-
-        # Why: IME変換やTab補完（サジェスト確定）時はUIA確定テキストを最優先採用
+        # Why: Tab補完またはIME変換時はキー累積ではなく最新の確定UIテキストを絶対採用
         if confirmed_queries:
             final_text = confirmed_queries[0]
-        elif (any_ime_active or has_suggest_selection) and uia_rescued_text:
-            final_text = uia_rescued_text
+        elif (has_suggest_selection or any_ime_active) and latest_uia_text:
+            final_text = latest_uia_text
+        elif latest_uia_text and fallback_text and (fallback_text in latest_uia_text or latest_uia_text in fallback_text):
+            final_text = latest_uia_text
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
-            final_text = uia_rescued_text if uia_rescued_text else fallback_text
+            final_text = latest_uia_text if latest_uia_text else fallback_text
 
         if final_text:
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
