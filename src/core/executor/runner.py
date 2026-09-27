@@ -29,8 +29,8 @@ class WorkflowStoppedException(Exception):
     """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
     pass
 
-def _get_excel_application(hwnd: int = None):
-    if platform.system() != "Windows":
+def _get_excel_application(hwnd: int = None, expected_title: str = ""):
+    if platform.system() != "Windows" or not hwnd:
         return None
     try:
         import win32gui
@@ -38,53 +38,63 @@ def _get_excel_application(hwnd: int = None):
         import pythoncom
         import ctypes
 
-        if hwnd:
-            excel7_hwnd = None
-            def enum_child(child, _):
-                nonlocal excel7_hwnd
-                try:
-                    if win32gui.GetClassName(child) == "EXCEL7":
-                        excel7_hwnd = child
-                except Exception:
-                    pass
-                return True
+        current_title = win32gui.GetWindowText(hwnd)
+        if "excel" not in current_title.lower():
+            return None
+        if expected_title:
+            is_new = ("book" in expected_title.lower() or "ブック" in expected_title.lower())
+            if is_new and not ("book" in current_title.lower() or "ブック" in current_title.lower()):
+                return None
 
+        excel7_hwnd = None
+        def enum_child(child, _):
+            nonlocal excel7_hwnd
             try:
-                if win32gui.GetClassName(hwnd) == "EXCEL7":
-                    excel7_hwnd = hwnd
-                else:
-                    win32gui.EnumChildWindows(hwnd, enum_child, None)
+                if win32gui.GetClassName(child) == "EXCEL7":
+                    excel7_hwnd = child
             except Exception:
                 pass
-
-            target_hwnd = excel7_hwnd or hwnd
-            if target_hwnd:
-                try:
-                    iid = (ctypes.c_byte * 16)(
-                        0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-                        0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
-                    )
-                    p_acc = ctypes.c_void_p()
-                    # Why: ROT未登録の新規起動Excelでもウィンドウから直接COM参照を取得する
-                    hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(
-                        target_hwnd, -16, iid, ctypes.byref(p_acc)
-                    )
-                    if hr == 0 and p_acc.value:
-                        pycom_dll = ctypes.PyDLL(pythoncom.__file__)
-                        pycom_func = pycom_dll.PyCom_PyObjectFromIUnknown
-                        pycom_func.restype = ctypes.py_object
-                        pycom_func.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
-                        py_dispatch = pycom_func(p_acc.value, ctypes.byref(iid), 0)
-                        if py_dispatch:
-                            disp = win32com.client.Dispatch(py_dispatch)
-                            return disp.Application
-                except Exception:
-                    pass
+            return True
 
         try:
-            return win32com.client.GetActiveObject("Excel.Application")
+            if win32gui.GetClassName(hwnd) == "EXCEL7":
+                excel7_hwnd = hwnd
+            else:
+                win32gui.EnumChildWindows(hwnd, enum_child, None)
         except Exception:
             pass
+
+        target_hwnd = excel7_hwnd or hwnd
+        if target_hwnd:
+            try:
+                iid = (ctypes.c_byte * 16)(
+                    0x00, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+                )
+                p_acc = ctypes.c_void_p()
+                hr = ctypes.oledll.oleacc.AccessibleObjectFromWindow(
+                    target_hwnd, -16, iid, ctypes.byref(p_acc)
+                )
+                if hr == 0 and p_acc.value:
+                    pycom_dll = ctypes.PyDLL(pythoncom.__file__)
+                    pycom_func = pycom_dll.PyCom_PyObjectFromIUnknown
+                    pycom_func.restype = ctypes.py_object
+                    pycom_func.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+                    py_dispatch = pycom_func(p_acc.value, ctypes.byref(iid), 0)
+                    if py_dispatch:
+                        disp = win32com.client.Dispatch(py_dispatch)
+                        app = getattr(disp, "Application", disp)
+                        # Why: 取得したCOMのActiveWorkbookが期待するブック種別と一致するか二重検証
+                        if expected_title and is_new:
+                            try:
+                                wb_name = app.ActiveWorkbook.Name
+                                if not ("book" in wb_name.lower() or "ブック" in wb_name.lower()):
+                                    return None
+                            except Exception:
+                                pass
+                        return app
+            except Exception:
+                pass
     except Exception:
         pass
     return None
@@ -206,7 +216,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 app_name = window_title.split("—")[-1].split("-")[-1].strip().lower()
                 is_browser_target = any(b in app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
                 
-                activate_and_restore_window(
+                # Why: 確定したウィンドウHWNDを全コマンドで共有し他ウィンドウ誤操作を防止
+                activated_hwnd = activate_and_restore_window(
                     window_title,
                     args.get("x", 0),
                     args.get("y", 0),
@@ -216,6 +227,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     args.get("launch_cmd", ""),
                     args.get("mapped_hwnd")
                 )
+                if activated_hwnd:
+                    args["mapped_hwnd"] = activated_hwnd
+                    for cmd in commands:
+                        if cmd.get("method") == "activate_window":
+                            cmd.setdefault("args", {})["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
                 _check_stop()
                 
@@ -519,7 +535,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 launch_cmd = args.get("launch_cmd", "")
                 mapped_hwnd = args.get("mapped_hwnd")
                 
-                activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
+                # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
+                act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
+                if act_hwnd:
+                    args["mapped_hwnd"] = act_hwnd
+                    last_win_args["mapped_hwnd"] = act_hwnd
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:
                 if last_win_args:
@@ -654,7 +674,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             try:
                                 if excel_app_cache is None:
                                     target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
-                                    excel_app_cache = _get_excel_application(target_hwnd)
+                                    expected_t = last_win_args.get("window_title", "") if last_win_args else ""
+                                    excel_app_cache = _get_excel_application(target_hwnd, expected_t)
                                 if excel_app_cache:
                                     sheet = excel_app_cache.ActiveSheet
                                     sheet.Range(excel_cell).Select()

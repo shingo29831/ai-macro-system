@@ -164,8 +164,14 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
 
     if not windows and not force_new:
         safe_title = re.escape(window_title)
+        # Why: 新規ブックの日英表記ゆれ(Book/ブック)を相互許容して正しく検索
+        if "book" in window_title.lower() or "ブック" in window_title:
+            pattern_title = re.sub(r"(?:book|ブック)\s*(\d+)", r"(?:Book|ブック)\s*\1", safe_title, flags=re.IGNORECASE)
+        else:
+            pattern_title = safe_title
+
         for _ in range(10):
-            all_matched = desktop.windows(title_re=f".*{safe_title}.*", visible_only=True)
+            all_matched = desktop.windows(title_re=f".*{pattern_title}.*", visible_only=True)
             if all_matched:
                 if is_target_browser:
                     windows = all_matched
@@ -177,16 +183,21 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     
     if not windows and app_name:
         safe_app_name = re.escape(app_name)
+        is_generic_excel = ("excel" in app_name.lower()) and ("book" in window_title.lower() or "ブック" in window_title)
         
         for _ in range(4):
-            all_matched = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
+            # Why: 新規ブック検索時に既存の名前付き別ファイルを誤爆しないよう制限
+            if is_generic_excel:
+                all_matched = desktop.windows(title_re=r".*(?:Book|ブック)\s*\d+.*Excel.*", visible_only=True)
+            else:
+                all_matched = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
             if all_matched:
                 if is_target_browser:
                     windows = all_matched
                 else:
                     windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
             
-            if not windows:
+            if not windows and not is_generic_excel:
                 all_matched = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
                 if all_matched:
                     if is_target_browser:
@@ -314,6 +325,8 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 logger.warning(f"Failed to resize window: {e}")
                 
         time.sleep(0.5)
+        # Why: アクティベートした正確なウィンドウハンドルを呼び出し元へ返し誤爆を防止
+        return win.handle
     else:
         logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
         raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
