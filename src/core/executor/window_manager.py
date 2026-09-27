@@ -146,6 +146,7 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
     import pywinauto
     desktop = pywinauto.Desktop(backend="uia")
     
+    browser_names = SUPPORTED_BROWSERS
     app_name = window_title.split("—")[-1].split("-")[-1].strip()
     is_target_browser = any(b in app_name.lower() for b in SUPPORTED_BROWSERS)
     
