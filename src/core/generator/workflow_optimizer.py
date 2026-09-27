@@ -64,12 +64,34 @@ def optimize_workflow_events(
                             if prev_info["raw_action"] in ["key_down", "type_text", "click", "move"]:
                                 role = str(prev_info.get("semantic_role", "")).lower()
                                 if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
-                                    insert_idx = i
+                                    if not idx_to_remove:
+                                        insert_idx = i
+                                    else:
+                                        break
                                 else:
                                     idx_to_remove.append(i)
                             else:
                                 break
                                 
+                        if idx_to_remove and insert_idx == len(cleaned_workflow_info):
+                            insert_idx = min(idx_to_remove)
+
+                        # Why: 入力前の孤立したEnterキー（起動直後等）を除去しA1セルの入力抜け・二重Enterを防止
+                        if insert_idx > 0:
+                            prior = cleaned_workflow_info[insert_idx - 1]
+                            if prior.get("raw_action") in ["key_down", "press_key"] and str(prior.get("semantic_role", "")).lower() in ["enter", "return"]:
+                                if not prior.get("excel_dest_cell") and not prior.get("excel_cell"):
+                                    cleaned_workflow_info.pop(insert_idx - 1)
+                                    insert_idx -= 1
+                                    idx_to_remove = [idx - 1 for idx in idx_to_remove]
+
+                        if idx_to_remove:
+                            first_typed = cleaned_workflow_info[min(idx_to_remove)]
+                            if first_typed.get("pre_img_path"):
+                                info["pre_img_path"] = first_typed["pre_img_path"]
+                            if first_typed.get("event_id"):
+                                info["event_id"] = first_typed["event_id"]
+
                         info["raw_action"] = "type_text"
                         info["semantic_role"] = val
                         info["excel_cell"] = cell

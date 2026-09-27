@@ -279,28 +279,30 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     global_dynamic_mask = np.zeros_like(global_dynamic_mask)
 
                 last_win_args = args
-                for i, cmd in enumerate(commands):
-                    _check_stop()
-                    if cmd.get("method") == "activate_window":
-                        last_win_args = cmd.get("args", {})
-                    
-                    raw_event_id = cmd.get("args", {}).get("raw_event_id")
-                    if raw_event_id and last_win_args:
-                        pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
-                        if pre_image_path.exists():
-                            win_x = last_win_args.get("x", 0)
-                            win_y = last_win_args.get("y", 0)
-                            win_w = last_win_args.get("width", 0)
-                            win_h = last_win_args.get("height", 0)
-                            
-                            is_match, scores = is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y, global_dynamic_mask)
-                            if is_match:
-                                logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
-                                start_index = i
-                                screen_matched = True
-                                execution_log["start_step"] = start_index
-                                execution_log["initial_match_scores"] = scores
-                                break
+                # Why: デスクトップアプリの先頭入力スキップを防ぐためステップ途中再開はブラウザのみに限定
+                if is_browser_target:
+                    for i, cmd in enumerate(commands):
+                        _check_stop()
+                        if cmd.get("method") == "activate_window":
+                            last_win_args = cmd.get("args", {})
+                        
+                        raw_event_id = cmd.get("args", {}).get("raw_event_id")
+                        if raw_event_id and last_win_args:
+                            pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+                            if pre_image_path.exists():
+                                win_x = last_win_args.get("x", 0)
+                                win_y = last_win_args.get("y", 0)
+                                win_w = last_win_args.get("width", 0)
+                                win_h = last_win_args.get("height", 0)
+                                
+                                is_match, scores = is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y, global_dynamic_mask)
+                                if is_match:
+                                    logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
+                                    start_index = i
+                                    screen_matched = True
+                                    execution_log["start_step"] = start_index
+                                    execution_log["initial_match_scores"] = scores
+                                    break
                                 
             if screen_matched and start_index > 0:
                 last_activation = None
