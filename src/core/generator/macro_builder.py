@@ -320,6 +320,10 @@ def build_and_save_macro(
             duration = (current_timestamp - prev_timestamp) / 1000.0
             if duration > 0.01:
                 duration = min(duration, 1.5)
+                # Why: ホバー後のドロップダウンメニュー展開アニメーション時間を最低0.5秒確保
+                prev_step_cmd = raw_commands_data[-1].get("method") if raw_commands_data else ""
+                if prev_step_cmd == "move" and cmd_type == "MOUSE_CLICK":
+                    duration = max(duration, 0.5)
                 raw_commands_data.append({
                     "method": "wait",
                     "args": {"duration": round(duration, 3)}

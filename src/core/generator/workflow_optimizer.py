@@ -10,61 +10,101 @@ from typing import List, Dict, Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Why: 記録時に取りこぼされたリンク/ボタンの押下を画面遷移から逆算してクリックへ自動昇格
+    # Why: ドロップダウン等のホバー操作を保持しつつ遷移の契機となった最後の要素のみクリックへ昇格
     n = len(temp_workflow_info)
-    for i in range(n):
-        info = temp_workflow_info[i]
-        if info.get("raw_action") != "move":
+    if n == 0:
+        return temp_workflow_info
+
+    for i in range(1, n):
+        curr_info = temp_workflow_info[i]
+        prev_info = temp_workflow_info[i - 1]
+
+        curr_win = curr_info.get("window_name", "")
+        prev_win = prev_info.get("window_name", "")
+
+        curr_ctx = curr_info.get("app_context") or {}
+        curr_url = str(curr_ctx.get("url") or curr_ctx.get("text") or curr_ctx.get("value") or "").strip()
+
+        transition_detected = False
+        target_url = curr_url
+        target_title = curr_win
+
+        if prev_win and curr_win and prev_win != curr_win:
+            w1_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", prev_win)]
+            w2_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", curr_win)]
+            if len(w1_parts) > 0 and len(w2_parts) > 0 and w1_parts[-1] == w2_parts[-1]:
+                transition_detected = True
+
+        if not transition_detected and curr_url.startswith("http"):
+            prev_ctx = prev_info.get("app_context") or {}
+            prev_url = str(prev_ctx.get("url") or prev_ctx.get("text") or prev_ctx.get("value") or "").strip()
+            if prev_url and prev_url != curr_url:
+                base_prev = prev_url.split("#")[0].rstrip("/")
+                base_curr = curr_url.split("#")[0].rstrip("/")
+                if base_prev != base_curr:
+                    transition_detected = True
+
+        if not transition_detected:
             continue
 
-        app_ctx = info.get("app_context") or {}
-        control_type = str(app_ctx.get("control_type", "")).lower()
-        elem_url = str(app_ctx.get("url") or app_ctx.get("text") or app_ctx.get("value") or "").strip()
-        elem_name = str(app_ctx.get("element_name", "")).strip()
+        candidate_idx = None
+        best_match_score = -1
 
-        is_interactive = (
-            "hyperlink" in control_type or
-            "button" in control_type or
-            "menuitem" in control_type or
-            elem_url.startswith("http://") or
-            elem_url.startswith("https://") or
-            elem_url.startswith("/") or
-            bool(app_ctx.get("css_selector")) or
-            bool(app_ctx.get("xpath"))
-        )
+        for k in range(i - 1, max(-1, i - 6), -1):
+            cand = temp_workflow_info[k]
+            cand_act = cand.get("raw_action", "")
 
-        curr_win = info.get("window_name", "")
-        transition_detected = False
-
-        for j in range(i + 1, min(i + 5, n)):
-            next_info = temp_workflow_info[j]
-            next_act = next_info.get("raw_action", "")
-            next_win = next_info.get("window_name", "")
-            next_ctx = next_info.get("app_context") or {}
-            next_url = str(next_ctx.get("url") or next_ctx.get("text") or next_ctx.get("value") or "").strip()
-
-            if next_act == "click":
+            if cand_act == "click":
+                candidate_idx = None
                 break
 
-            if curr_win and next_win and curr_win != next_win:
-                w1_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", curr_win)]
-                w2_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", next_win)]
-                if w1_parts[-1] == w2_parts[-1]:
-                    transition_detected = True
-                    break
+            if cand_act != "move":
+                continue
 
-            if elem_url and next_url and next_url.startswith("http"):
-                base_elem_url = elem_url.split("#")[0].rstrip("/")
-                base_next_url = next_url.split("#")[0].rstrip("/")
-                if base_elem_url and (base_elem_url == base_next_url or base_elem_url in base_next_url or base_next_url in base_elem_url):
-                    transition_detected = True
-                    break
+            cand_ctx = cand.get("app_context") or {}
+            c_type = str(cand_ctx.get("control_type", "")).lower()
+            c_url = str(cand_ctx.get("url") or cand_ctx.get("text") or cand_ctx.get("value") or "").strip()
+            c_name = str(cand_ctx.get("element_name", "")).strip()
 
-        if is_interactive and transition_detected:
-            logger.info(f"Navigation transition detected after hover (Event: {info.get('event_id')}). Promoting move -> click.")
-            info["raw_action"] = "click"
-            info["raw_type"] = "mouse_click"
-            info["button"] = "left"
+            is_interactive = (
+                "hyperlink" in c_type or
+                "button" in c_type or
+                "menuitem" in c_type or
+                c_url.startswith("http") or
+                bool(cand_ctx.get("css_selector")) or
+                bool(cand_ctx.get("xpath"))
+            )
+
+            if not is_interactive:
+                continue
+
+            score = 1
+            if target_url and c_url:
+                b_target = target_url.split("#")[0].rstrip("/").lower()
+                b_curl = c_url.split("#")[0].rstrip("/").lower()
+                if b_target == b_curl:
+                    score = 10
+                elif b_curl in b_target or b_target in b_curl:
+                    score = 8
+
+            if target_title and (c_name or c_url):
+                clean_title = re.split(r"[\-—–―]", target_title)[0].strip().lower()
+                if clean_title and (clean_title in c_name.lower() or clean_title in c_url.lower()):
+                    score = max(score, 9)
+
+            if score > best_match_score:
+                best_match_score = score
+                candidate_idx = k
+
+        if candidate_idx is not None:
+            target_cand = temp_workflow_info[candidate_idx]
+            logger.info(
+                f"Navigation transition detected (Step {candidate_idx} -> {i}). "
+                f"Promoting move -> click on Event: {target_cand.get('event_id')} (score: {best_match_score})."
+            )
+            target_cand["raw_action"] = "click"
+            target_cand["raw_type"] = "mouse_click"
+            target_cand["button"] = "left"
 
     return temp_workflow_info
 
