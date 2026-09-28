@@ -724,8 +724,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             next_has_pre_img = True
                         break
 
-                # Why: ホバー直後や照合画像のないスクロール前の待機を除外せずページ遷移を担保
-                if next_has_pre_img and prev_method not in ["move", "click"]:
+                # Why: スクロール直後は描画・アニメーション完了が必須のため固定待機を維持
+                if next_has_pre_img and prev_method not in ["move", "click", "scroll"]:
                     logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
                     i += 1
                     continue
@@ -820,6 +820,21 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
+                    # Why: スクロール後の微細な座標ズレをUIA要素探索で吸収し正確に補正
+                    selector = args.get("selector")
+                    elem_name = args.get("element_name")
+                    if is_browser_target and (selector or elem_name):
+                        try:
+                            from core.executor.browser_controller import BrowserController
+                            controller = BrowserController.get_instance()
+                            target_elem = controller._find_uia_element(selector or elem_name, last_win_args)
+                            if target_elem:
+                                r = target_elem.rectangle()
+                                if r.width() > 0 and r.height() > 0:
+                                    x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+                        except Exception:
+                            pass
+
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
@@ -861,19 +876,39 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         sx, sy = int(x + off_x), int(y + off_y)
                         if platform.system() == "Windows":
                             ctypes.windll.user32.SetCursorPos(sx, sy)
+                            # Why: SetCursorPosだけではホバーが反映されないためMOVEで領域を捕捉
+                            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
                         else:
                             mouse.position = (sx, sy)
-                        time.sleep(0.03)
+                        time.sleep(0.05)
                     
                     if platform.system() == "Windows":
+                        # Why: 一括送信によるスクロールの間引きを防ぐため1ノッチずつ分割送信
                         if dy != 0.0:
-                            scroll_amount = int(dy * WHEEL_DELTA)
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+                            direction = 1 if dy > 0 else -1
+                            total_notches = max(1, int(round(abs(dy))))
+                            raw_val = ctypes.c_ulong((direction * WHEEL_DELTA) & 0xFFFFFFFF).value
+                            for _ in range(total_notches):
+                                _check_stop()
+                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, raw_val, 0)
+                                time.sleep(0.035)
                         if dx != 0.0:
-                            scroll_amount_x = int(dx * WHEEL_DELTA)
-                            ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, scroll_amount_x, 0)
+                            direction_x = 1 if dx > 0 else -1
+                            total_notches_x = max(1, int(round(abs(dx))))
+                            raw_val_x = ctypes.c_ulong((direction_x * WHEEL_DELTA) & 0xFFFFFFFF).value
+                            for _ in range(total_notches_x):
+                                _check_stop()
+                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, raw_val_x, 0)
+                                time.sleep(0.035)
+                        # Why: スクロール後のスムーズアニメーションおよび描画完了を待機
+                        time.sleep(0.35)
                     else:
-                        mouse.scroll(dx, dy)
+                        steps = max(1, int(round(abs(dy))))
+                        dir_y = 1 if dy > 0 else -1
+                        for _ in range(steps):
+                            mouse.scroll(0, dir_y)
+                            time.sleep(0.035)
+                        time.sleep(0.35)
                         
                 elif method == "type_text":
                     text = args.get("text", "")
