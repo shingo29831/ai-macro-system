@@ -53,13 +53,20 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        has_recent_action = any(
-            temp_workflow_info[idx].get("raw_action") in ["click", "type_text"] or
-            (temp_workflow_info[idx].get("raw_action") in ["key_down", "key_press", "press_key"] and 
-             str(temp_workflow_info[idx].get("semantic_role", "")).lower() in ["enter", "return"])
-            for idx in range(i - 1, max(-1, i - 4), -1)
-        )
-        if has_recent_action:
+        # Why: 遷移元ウィンドウ内でのEnter等のキー操作遷移があった場合のみホバー昇格を抑制
+        has_recent_key_nav = False
+        for idx in range(i - 1, max(-1, i - 4), -1):
+            act_info = temp_workflow_info[idx]
+            if act_info.get("window_name") != prev_win:
+                break
+            act_role = str(act_info.get("semantic_role", "")).lower()
+            if act_info.get("raw_action") in ["type_text"] or (
+                act_info.get("raw_action") in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
+            ):
+                has_recent_key_nav = True
+                break
+
+        if has_recent_key_nav:
             i += 1
             continue
 
@@ -92,6 +99,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
 
             # Why: 直近のキー入力やクリックを跨いで過去の無関係な移動へ遡るのを完全阻止
             if cand_act in ["click", "type_text", "key_down", "key_press", "press_key"]:
+                break
+            # Why: 遷移元ウィンドウ外の無関係な移動へ遡るのを防止
+            if cand.get("window_name") != prev_win:
                 break
 
             if cand_act != "move":
