@@ -46,22 +46,28 @@ def _get_app_context(window_info: dict, x: int | None = None, y: int | None = No
         try:
             from core.recorder.uia_scanner import get_focused_element_info
             focused_info = get_focused_element_info()
-            if focused_info:
-                if context is None:
-                    context = {
-                        "app": "GenericUIA",
-                        "element_name": focused_info.get("name", ""),
-                        "control_type": focused_info.get("control_type", ""),
-                        "text": focused_info.get("value", "") or focused_info.get("name", ""),
-                        "value": focused_info.get("value", ""),
-                    }
-                else:
-                    context["text"] = focused_info.get("value", "") or focused_info.get("name", "")
-                    context["value"] = focused_info.get("value", "")
-                    if not context.get("element_name"):
-                        context["element_name"] = focused_info.get("name", "")
-                    if not context.get("control_type"):
-                        context["control_type"] = focused_info.get("control_type", "")
+            if focused_info and not focused_info.get("error"):
+                c_name = focused_info.get("name", "")
+                c_type = focused_info.get("control_type", "")
+                # Why: ボタン等の非入力コントロールやシステムUIがテキストとして誤混入するのを防止
+                if "button" not in c_type.lower() and not window_inspector.should_ignore_window(c_name):
+                    if context is None:
+                        context = {
+                            "app": "GenericUIA",
+                            "element_name": c_name,
+                            "control_type": c_type,
+                            "text": focused_info.get("value", "") or c_name,
+                            "value": focused_info.get("value", ""),
+                        }
+                    else:
+                        val = focused_info.get("value", "") or c_name
+                        if val:
+                            context["text"] = val
+                            context["value"] = focused_info.get("value", "")
+                        if not context.get("element_name") and c_name:
+                            context["element_name"] = c_name
+                        if not context.get("control_type") and c_type:
+                            context["control_type"] = c_type
         except Exception as e:
             print(f"UIA fallback error: {e}")
 

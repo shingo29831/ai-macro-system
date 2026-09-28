@@ -4,6 +4,8 @@ import time
 from typing import Optional, Dict, Any
 import uiautomation as auto
 
+from core.recorder.window_inspector import should_ignore_window
+
 def get_focused_element_info() -> Optional[Dict[str, Any]]:
     try:
         # 背景: Tabキー押下直後はUIの描画やアニメーションが完了していない可能性があるため微小な待機を入れる
@@ -13,6 +15,11 @@ def get_focused_element_info() -> Optional[Dict[str, Any]]:
         if not focused_elem:
             return None
             
+        top_window = focused_elem.GetTopLevelControl()
+        # Why: 記録ダイアログ等のシステムUIへのフォーカス誤検知を遮断
+        if top_window and should_ignore_window(top_window.Name):
+            return None
+
         info = {
             "name": focused_elem.Name,
             "control_type": focused_elem.ControlTypeName,

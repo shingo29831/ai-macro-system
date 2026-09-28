@@ -2,6 +2,7 @@
 
 import difflib
 import logging
+import re
 import urllib.parse
 from typing import List, Dict, Any, Optional
 
@@ -64,16 +65,16 @@ class TypingSessionAggregator:
                 time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
                 
                 if current_window and last_window and current_window != last_window:
-                    self._flush_session(current_session, aggregated_events)
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
                 elif diff_val > 15.0:
                     if time_diff > 500:
-                        self._flush_session(current_session, aggregated_events)
+                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
                 elif time_diff > 3000:
-                    self._flush_session(current_session, aggregated_events)
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
                 elif last_element and curr_element and last_element != curr_element:
                     # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
                     if diff_val > 5.0 or time_diff > 2000:
-                        self._flush_session(current_session, aggregated_events)
+                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
 
             role_lower = str(event.get("semantic_role", "")).lower()
             
@@ -95,7 +96,7 @@ class TypingSessionAggregator:
 
             if role_lower == "enter":
                 current_session.append(event)
-                self._flush_session(current_session, aggregated_events)
+                self._flush_session(current_session, aggregated_events, future_events=raw_events[i + 1:])
                 continue
 
             if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
@@ -106,12 +107,12 @@ class TypingSessionAggregator:
                 continue
 
             if current_session:
-                self._flush_session(current_session, aggregated_events)
+                self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
 
             aggregated_events.append(event)
 
         if current_session:
-            self._flush_session(current_session, aggregated_events)
+            self._flush_session(current_session, aggregated_events, future_events=None)
 
         final_events = []
         i = 0
@@ -178,7 +179,12 @@ class TypingSessionAggregator:
 
         return final_events
 
-    def _flush_session(self, session: List[Dict[str, Any]], output_list: List[Dict[str, Any]]) -> None:
+    def _flush_session(
+        self, 
+        session: List[Dict[str, Any]], 
+        output_list: List[Dict[str, Any]], 
+        future_events: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
         if not session:
             return
 
@@ -398,14 +404,31 @@ class TypingSessionAggregator:
                     return None, False
                 return url_or_text, False
             try:
-                parsed = urllib.parse.urlparse(url_or_text)
+                parsed = urllib.parse.urlsplit(url_or_text)
                 qs = urllib.parse.parse_qs(parsed.query)
-                if 'q' in qs: return qs['q'][0], True
-                elif 'p' in qs: return qs['p'][0], True
-                elif 'text' in qs: return qs['text'][0], True
+                for key in ["q", "query", "p", "wd", "word", "search_query", "text"]:
+                    if key in qs and qs[key]:
+                        # Why: URLエンコードされた日本語クエリを安全に復元
+                        return urllib.parse.unquote_plus(qs[key][0]), True
             except Exception:
                 pass
             return None, False
+
+        def _extract_query_from_title(title: str) -> Optional[str]:
+            if not title:
+                return None
+            patterns = [
+                r"^(.+?)\s*[-—–―]\s*(?:Google\s*検索|Google\s*Search|Yahoo!検索|Bing(?:\s*検索)?|DuckDuckGo)",
+                r"^「(.+?)」の検索結果",
+                r"^(.+?)\s*[-—–―]\s*(?:検索|Search)",
+            ]
+            for pat in patterns:
+                m = re.search(pat, title, re.IGNORECASE)
+                if m:
+                    q = m.group(1).strip()
+                    if q and q.lower() not in ["検索", "search"]:
+                        return q
+            return None
 
         confirmed_queries = []
         latest_uia_text = ""
@@ -444,6 +467,24 @@ class TypingSessionAggregator:
                         elif not is_url_query and not latest_uia_text:
                             latest_uia_text = extracted
 
+        confirmed_future_queries = []
+        if future_events:
+            for f_evt in future_events[:15]:
+                f_win = f_evt.get("window_name") or f_evt.get("WindowName", "")
+                title_q = _extract_query_from_title(f_win)
+                if title_q and title_q not in confirmed_future_queries:
+                    confirmed_future_queries.append(title_q)
+
+                f_ctx = f_evt.get("app_context") or f_evt.get("AppSpecificContext") or f_evt.get("appSpecificContext") or {}
+                for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
+                    if url_candidate and isinstance(url_candidate, str):
+                        extracted, is_url_query = _extract_search_query(url_candidate)
+                        if is_url_query and extracted and extracted not in confirmed_future_queries:
+                            confirmed_future_queries.append(extracted)
+
+                if f_ctx.get("query") and f_ctx["query"] not in confirmed_future_queries:
+                    confirmed_future_queries.append(f_ctx["query"])
+
         has_suggest_selection = any(
             item.get("raw_action") in ["key_down", "key_press"] and 
             str(item.get("semantic_role", "")).lower() in ["tab", "down", "up"]
@@ -451,8 +492,20 @@ class TypingSessionAggregator:
         )
         any_ime_active = any(item.get("ime_active", False) for item in session)
 
+        # Why: 後続イベントに確定クエリ（検索候補選択後等）があればプレフィックス照合で最優先採用
+        matched_future_query = None
+        current_input = (latest_uia_text or fallback_text or "").strip().lower()
+        if confirmed_future_queries:
+            for fq in confirmed_future_queries:
+                fq_lower = fq.lower()
+                if not current_input or current_input in fq_lower or fq_lower.startswith(current_input):
+                    matched_future_query = fq
+                    break
+
         # Why: Tab補完またはIME変換時はキー累積ではなく最新の確定UIテキストを絶対採用
-        if confirmed_queries:
+        if matched_future_query:
+            final_text = matched_future_query
+        elif confirmed_queries:
             final_text = confirmed_queries[0]
         elif (has_suggest_selection or any_ime_active) and latest_uia_text:
             final_text = latest_uia_text
