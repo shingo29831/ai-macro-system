@@ -72,20 +72,23 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 遷移元ウィンドウ内でのEnter等のキー操作遷移があった場合のみホバー昇格を抑制
-        has_recent_key_nav = False
+        # Why: 遷移元ウィンドウ内でのクリックやEnter等の操作遷移があった場合のみホバー昇格を抑制
+        has_recent_nav_action = False
         for idx in range(i - 1, max(-1, i - 4), -1):
             act_info = temp_workflow_info[idx]
             if act_info.get("window_name") != prev_win:
                 break
             act_role = str(act_info.get("semantic_role", "")).lower()
+            if act_info.get("raw_action") == "click":
+                has_recent_nav_action = True
+                break
             if act_info.get("raw_action") in ["type_text"] or (
                 act_info.get("raw_action") in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
             ):
-                has_recent_key_nav = True
+                has_recent_nav_action = True
                 break
 
-        if has_recent_key_nav:
+        if has_recent_nav_action:
             i += 1
             continue
 
@@ -292,6 +295,12 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
             is_meaningful_hover = diff_val >= 0.005
 
             if next_act == "click" and next_info:
+                # Why: ドロップダウン親ホバーと子クリックのペアは距離に関わらず確実に保持
+                if next_info.get("match_event_id") and next_info.get("match_event_id") == best_move.get("event_id"):
+                    result.append(best_move)
+                    i = j
+                    continue
+
                 cx, cy = next_info.get("cursor_x", next_info.get("x", 0)), next_info.get("cursor_y", next_info.get("y", 0))
                 mx, my = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
                 dist = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5
