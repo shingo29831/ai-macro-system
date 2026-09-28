@@ -70,14 +70,24 @@ def _set_clipboard_text(text: str) -> bool:
 
 
 def _resolve_variables(data, variables: dict):
-    # Why: ワークフロー内の全引数パラメータに対する動的変数を透過的に再帰展開
+    # Why: 大文字小文字の表記揺れ({{A}}と{{a}})を自動吸収し変数未展開によるデータ破壊を完全抑止
     if not variables:
         return data
     if isinstance(data, str):
+        import re
         res = data
         for k, v in variables.items():
             res = res.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
-        return res
+        var_lower_map = {k.lower(): v for k, v in variables.items()}
+        pattern = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
+        def _repl(match):
+            var_name = match.group(1)
+            if var_name in variables:
+                return str(variables[var_name])
+            if var_name.lower() in var_lower_map:
+                return str(var_lower_map[var_name.lower()])
+            return match.group(0)
+        return pattern.sub(_repl, res)
     elif isinstance(data, dict):
         return {k: _resolve_variables(v, variables) for k, v in data.items()}
     elif isinstance(data, list):
@@ -179,22 +189,37 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
     return records
 
 
+def _is_file_locked(path_str: str) -> bool:
+    # Why: ファイル排他ロックの事前検知によりopenpyxl PermissionErrorを完全回避
+    if not Path(path_str).exists():
+        return False
+    try:
+        with open(path_str, "a+b"):
+            pass
+        return False
+    except (PermissionError, IOError):
+        return True
+
+
 def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_col: str, status_text: str):
-    # Why: openpyxl保存失敗時もCOMで直接書き込み二重処理を確実に抑止
+    # Why: 開かれているExcelはCOMインメモリ即時更新、非オープン時はopenpyxl直接保存を自動選択
     if not file_path or not status_col or not row_idx:
         return
     resolved = str(Path(file_path).resolve())
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(resolved)
-        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
-        col_idx = openpyxl.utils.column_index_from_string(status_col)
-        ws.cell(row=row_idx, column=col_idx, value=status_text)
-        wb.save(resolved)
-        wb.close()
-        return
-    except Exception as e:
-        logger.warning(f"openpyxl status update failed ({e}), falling back to COM...")
+    is_locked = _is_file_locked(resolved)
+
+    if not is_locked:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(resolved)
+            ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+            col_idx = openpyxl.utils.column_index_from_string(status_col)
+            ws.cell(row=row_idx, column=col_idx, value=status_text)
+            wb.save(resolved)
+            wb.close()
+            return
+        except Exception as e:
+            logger.warning(f"openpyxl status update failed ({e}), routing to COM...")
 
     if platform.system() == "Windows":
         excel = None
@@ -216,14 +241,19 @@ def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_co
                 wb = excel.Workbooks.Open(resolved)
                 should_close = True
             ws = wb.Sheets(sheet_name) if sheet_name else wb.ActiveSheet
-            ws.Range(f"{status_col}{row_idx}").Value = status_text
-            wb.Save()
+            # Why: COMビジー時のRPC拒否に備え最大3回のリトライバックオフを実施
+            for attempt in range(3):
+                try:
+                    ws.Range(f"{status_col}{row_idx}").Value = status_text
+                    wb.Save()
+                    break
+                except Exception:
+                    time.sleep(0.3)
             if should_close:
                 wb.Close(SaveChanges=True)
         except Exception as com_err:
-            logger.error(f"COM fallback status update failed: {com_err}")
+            logger.error(f"COM status update failed: {com_err}")
         finally:
-            # Why: 単独起動したExcel COMインスタンスを確実に終了し排他ロックを解除
             if excel and should_quit:
                 try:
                     excel.Quit()
@@ -873,12 +903,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         variables[k] = v
                     variables[item_var] = records[0]
 
+                    max_iter = args.get("max_iterations", 10000)
+                    clamped_records = records[:max_iter]
                     loop_stack.append({
                         "start_index": i,
-                        "total_count": len(records),
+                        "total_count": len(clamped_records),
                         "current_iteration": 0,
                         "data_source": "excel",
-                        "records": records,
+                        "records": clamped_records,
                         "file_path": f_path,
                         "sheet_name": s_name,
                         "status_column": st_col,

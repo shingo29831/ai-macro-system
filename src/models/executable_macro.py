@@ -106,6 +106,7 @@ class LoopStartArgs(BaseModel):
     status_column: Optional[str] = Field(default=None, description="Column to write execution status (e.g., 'E').")
     skip_completed: Optional[bool] = Field(default=True, description="Skip rows where status_column has value.")
     continue_on_error: Optional[bool] = Field(default=False, description="Continue next record if an error occurs in current row.")
+    max_iterations: Optional[int] = Field(default=10000, description="Safety upper bound for iterations to prevent infinite loop.")
     items_variable: Optional[str] = Field(default=None, description="Variable name holding list of items.")
     item_variable: Optional[str] = Field(default="row", description="Variable name to store current row/item dict.")
 
