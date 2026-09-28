@@ -82,10 +82,18 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 curr_info["raw_action"] = "click"
                 curr_info["raw_type"] = "mouse_click"
                 curr_info["button"] = "left"
-                if not curr_info.get("element_name") and target_title:
-                    clean_title = re.split(r"[\-—–―]", target_title)[0].strip()
-                    if clean_title:
-                        curr_info["element_name"] = clean_title
+                curr_info["window_name"] = prev_win
+                # Why: 遷移契機クリックの画面照合タイムアウトを防ぐため遷移前画像と親イベントを継承
+                if prev_info.get("pre_img_path"):
+                    curr_info["pre_img_path"] = prev_info["pre_img_path"]
+                curr_info["fallback_events"] = [prev_info.get("event_id", curr_info.get("event_id"))]
+
+                clean_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
+                if clean_title:
+                    curr_info["element_name"] = clean_title
+                    curr_info["semantic_role"] = clean_title
+                    curr_info.setdefault("app_context", {})["element_name"] = clean_title
+
                 logger.info(f"Sub-menu item click promoted at ({cx}, {cy}) for Event: {curr_info.get('event_id')}")
                 i += 1
                 continue

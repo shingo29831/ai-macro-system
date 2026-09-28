@@ -715,15 +715,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             
             if method == "wait":
                 prev_method = commands[i - 1].get("method") if i > 0 else ""
-                next_has_event = False
+                next_has_pre_img = False
                 for j in range(i + 1, len(commands)):
                     if commands[j].get("method") not in ["wait", "activate_window", "loop_start", "loop_end"]:
-                        if commands[j].get("args", {}).get("raw_event_id"):
-                            next_has_event = True
+                        next_eid = commands[j].get("args", {}).get("raw_event_id")
+                        if next_eid and (target_dir / "images" / f"{next_eid}_pre.png").exists():
+                            next_has_pre_img = True
                         break
-                
-                # Why: ホバー(move)直後の待機はメニューアニメーション展開に必須のため保持
-                if next_has_event and prev_method != "move":
+
+                # Why: ホバー直後や照合画像のないスクロール前の待機を除外せずページ遷移を担保
+                if next_has_pre_img and prev_method not in ["move", "click"]:
                     logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
                     i += 1
                     continue
