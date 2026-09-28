@@ -80,9 +80,17 @@ class TypingSessionAggregator:
             
             is_shift_char = action == "key_combo" and "shift" in role_lower and len(role_lower.split("+")) == 2 and len(role_lower.split("+")[1]) == 1
             
+            # Why: 修飾キーや機能キーが文字入力セッションへ誤混入するのを防止
+            special_key_names = {
+                "enter", "tab", "esc", "escape", "up", "down", "left", "right",
+                "left_click", "right_click", "middle_click",
+                "win", "cmd", "windows", "ctrl", "alt", "shift", "caps_lock",
+                "home", "end", "page_up", "page_down", "insert", "delete", "print_screen",
+                "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
+            }
             is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.") or 
-                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right", "left_click", "right_click", "middle_click"] or
+                role_lower in special_key_names or
                 ("+" in role_lower and not is_shift_char)
             )
             is_text_input = action in ["type_text", "key_down", "key_press", "key_combo"] and not is_special_key
@@ -492,18 +500,26 @@ class TypingSessionAggregator:
         )
         any_ime_active = any(item.get("ime_active", False) for item in session)
 
-        # Why: 後続イベントに確定クエリ（検索候補選択後等）があればプレフィックス照合で最優先採用
+        # Why: 物理的な文字入力が一切ないセッション（Winキー等の単体連打）でのテキスト捏造を阻止
+        has_actual_chars = any(
+            str(item.get("semantic_role", "")).lower() not in ignore_exact_keys and 
+            not str(item.get("semantic_role", "")).lower().startswith("key.") and
+            len(str(item.get("semantic_role", ""))) == 1
+            for item in session
+        )
+
         matched_future_query = None
         current_input = (latest_uia_text or fallback_text or "").strip().lower()
-        if confirmed_future_queries:
+        if confirmed_future_queries and (has_actual_chars or any_ime_active):
             for fq in confirmed_future_queries:
                 fq_lower = fq.lower()
                 if not current_input or current_input in fq_lower or fq_lower.startswith(current_input):
                     matched_future_query = fq
                     break
 
-        # Why: Tab補完またはIME変換時はキー累積ではなく最新の確定UIテキストを絶対採用
-        if matched_future_query:
+        if not has_actual_chars and not fallback_text and not any_ime_active:
+            final_text = ""
+        elif matched_future_query:
             final_text = matched_future_query
         elif confirmed_queries:
             final_text = confirmed_queries[0]

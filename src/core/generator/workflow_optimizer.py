@@ -197,7 +197,8 @@ def optimize_workflow_events(
             else:
                 continue
         
-        if info.get("raw_action") == "key_down" and info.get("semantic_role", "").lower() in ["win", "cmd", "windows"]:
+        # Why: アプリ起動用のWinキー操作（key_down/key_press問わず）を確実に検知してシェル操作を完全カット
+        if info.get("raw_action") in ["key_down", "key_press", "press_key"] and str(info.get("semantic_role", "")).lower() in ["win", "cmd", "windows"]:
             skip_until_new_window = True
             win_key_window_name = win_name
             continue
