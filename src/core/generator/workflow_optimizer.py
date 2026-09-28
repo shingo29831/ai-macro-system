@@ -182,40 +182,48 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
 
         if candidate_idx is not None:
             target_cand = temp_workflow_info[candidate_idx]
-            # Why: 直前に親ホバーが存在する場合は子ホバー自身をクリック変換し、単独時のみクリック新設
-            has_parent = (candidate_idx > 0 and temp_workflow_info[candidate_idx - 1].get("raw_action") == "move")
-            if has_parent:
+            # Why: 直前の移動が残留ホバーではない真の親ホバーであるか厳密判定
+            has_real_parent = False
+            if candidate_idx > 0:
+                p_cand = temp_workflow_info[candidate_idx - 1]
+                if p_cand.get("raw_action") == "move" and not _is_residual_hover(p_cand, temp_workflow_info, candidate_idx - 1):
+                    has_real_parent = True
+
+            if has_real_parent:
                 target_cand["raw_action"] = "click"
                 target_cand["raw_type"] = "mouse_click"
                 target_cand["button"] = "left"
                 i += 1
             else:
-                c_ctx = target_cand.get("app_context") or {}
-                c_sel = str(c_ctx.get("css_selector", "")).lower()
-                cy = target_cand.get("cursor_y", target_cand.get("y", 0))
-                # Why: ドロップダウン項目クリック前に親ヘッダーホバー(Y=196)を自律補完し展開を保証
-                if ("header_nav" in c_sel or "list" in c_sel) and cy > 210:
-                    lead_hover = target_cand.copy()
-                    lead_hover["raw_action"] = "move"
-                    lead_hover["raw_type"] = "mouse_move"
-                    lead_hover["cursor_y"] = 196
-                    lead_hover["event_id"] = f"{target_cand.get('event_id')}_header_hover"
-                    target_cand["raw_action"] = "click"
-                    target_cand["raw_type"] = "mouse_click"
-                    target_cand["button"] = "left"
-                    temp_workflow_info.insert(candidate_idx, lead_hover)
-                    i += 2
-                else:
-                    nav_click = target_cand.copy()
-                    nav_click["raw_action"] = "click"
-                    nav_click["raw_type"] = "mouse_click"
-                    nav_click["button"] = "left"
-                    nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
-                    nav_click["fallback_events"] = [target_cand.get("event_id")]
-                    temp_workflow_info.insert(candidate_idx + 1, nav_click)
-                    i += 2
+                # Why: ヘッダーホバーでメニューを展開してからクリックするシークエンスを完全構築
+                target_cand["raw_action"] = "move"
+                target_cand["raw_type"] = "mouse_move"
+                target_cand["is_nav_hover"] = True
+
+                nav_click = target_cand.copy()
+                nav_click["raw_action"] = "click"
+                nav_click["raw_type"] = "mouse_click"
+                nav_click["button"] = "left"
+                nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
+                nav_click["fallback_events"] = [target_cand.get("event_id")]
+
+                clean_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
+                if clean_title:
+                    nav_click["element_name"] = clean_title
+                    nav_click["semantic_role"] = clean_title
+                    nav_click.setdefault("app_context", {})["element_name"] = clean_title
+
+                temp_workflow_info.insert(candidate_idx + 1, nav_click)
+                i += 2
         elif curr_act == "move":
-            # Why: 遷移前ウィンドウにホバーがない場合、遷移先ヘッダー移動自身をクリックに昇格
+            # Why: 遷移前ウィンドウにホバーがない場合でも親ホバーを先行生成して空クリックを防止
+            lead_hover = curr_info.copy()
+            lead_hover["raw_action"] = "move"
+            lead_hover["raw_type"] = "mouse_move"
+            lead_hover["window_name"] = prev_win
+            lead_hover["is_nav_hover"] = True
+            lead_hover["event_id"] = f"{curr_info.get('event_id')}_header_hover"
+
             curr_info["raw_action"] = "click"
             curr_info["raw_type"] = "mouse_click"
             curr_info["button"] = "left"
@@ -230,8 +238,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 curr_info["semantic_role"] = clean_title
                 curr_info.setdefault("app_context", {})["element_name"] = clean_title
 
-            logger.info(f"Direct nav click promoted at ({curr_info.get('cursor_x')}, {curr_info.get('cursor_y')}) for Event: {curr_info.get('event_id')}")
-            i += 1
+            temp_workflow_info.insert(i, lead_hover)
+            logger.info(f"Direct nav hover and click promoted at ({curr_info.get('cursor_x')}, {curr_info.get('cursor_y')}) for Event: {curr_info.get('event_id')}")
+            i += 2
         else:
             i += 1
 
@@ -271,6 +280,12 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
 
             # Why: 直後にクリックがある場合はホバーメニュー展開の可能性を厳密評価
             if next_act == "click" and next_info:
+                # Why: ナビゲーションホバーフラグがある場合は同一座標でも展開待機のため確実に保持
+                if curr.get("is_nav_hover"):
+                    filtered.append(curr)
+                    i += 1
+                    continue
+
                 if next_info.get("match_event_id") and next_info.get("match_event_id") == curr.get("event_id"):
                     filtered.append(curr)
                     i += 1
