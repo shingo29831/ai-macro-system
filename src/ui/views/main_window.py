@@ -265,11 +265,13 @@ class MainWindow(FluentWindow):
                     groups[group_key]["display_title"] = title
 
         unique_titles = [g["display_title"] for g in groups.values()]
+        has_loop = any(cmd.get("method") == "loop_start" for cmd in commands)
 
         if unique_titles:
-            dialog = WindowMappingDialog(unique_titles, self)
+            dialog = WindowMappingDialog(unique_titles, has_loop=has_loop, parent=self)
             if dialog.exec() == QDialog.Accepted:
                 mapping = dialog.get_mapping()
+                loop_launch_each_time = dialog.get_loop_launch_each_time()
                 for grp in groups.values():
                     disp = grp["display_title"]
                     if disp in mapping:
@@ -281,6 +283,8 @@ class MainWindow(FluentWindow):
                                 c_alias = c_args.get("window_alias", "")
                                 if c_title in grp["titles"] or (c_alias and c_alias in grp["aliases"]):
                                     c_args["mapped_hwnd"] = mapped_hwnd
+                                    if loop_launch_each_time:
+                                        c_args["loop_launch_each_time"] = True
             else:
                 self._on_macro_edit_canceled()
                 return

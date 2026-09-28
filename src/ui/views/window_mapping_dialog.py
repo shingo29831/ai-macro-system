@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import BodyLabel, PrimaryPushButton, PushButton, SubtitleLabel
+from qfluentwidgets import BodyLabel, CheckBox, PrimaryPushButton, PushButton, SubtitleLabel
 
 from core.executor.window_manager import get_open_windows_info
 
@@ -100,8 +100,9 @@ class WindowThumbnailWidget(QFrame):
 
 
 class WindowMappingDialog(QDialog):
-    def __init__(self, target_titles, parent=None):
+    def __init__(self, target_titles, has_loop: bool = False, parent=None):
         super().__init__(parent)
+        self.has_loop = has_loop
         self.setWindowTitle("ウィンドウの紐付け")
         self.resize(800, 600)
         self.setStyleSheet("""
@@ -145,6 +146,12 @@ class WindowMappingDialog(QDialog):
         layout.addWidget(self.scroll)
 
         btn_layout = QHBoxLayout()
+        self.loop_launch_checkbox = None
+        if self.has_loop:
+            self.loop_launch_checkbox = CheckBox("ループのたびに新規起動する")
+            self.loop_launch_checkbox.setChecked(False)
+            btn_layout.addWidget(self.loop_launch_checkbox)
+
         self.cancel_btn = PushButton("キャンセル")
         self.cancel_btn.clicked.connect(self.reject)
 
@@ -282,3 +289,8 @@ class WindowMappingDialog(QDialog):
 
     def get_mapping(self):
         return self.mapping
+
+    def get_loop_launch_each_time(self) -> bool:
+        if self.loop_launch_checkbox:
+            return self.loop_launch_checkbox.isChecked()
+        return False

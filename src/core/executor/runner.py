@@ -790,10 +790,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     for cmd in commands:
                         if cmd.get("method") == "activate_window":
                             cmd_args = cmd.setdefault("args", {})
-                            # Why: 明示的新規起動指定(-1)を除き同一アプリのHWNDを共有し2重起動防止
-                            if cmd_args.get("mapped_hwnd") != -1:
-                                cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
-                                if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
+                            # Why: 初回新規起動したウィンドウを後続コマンドでも共有し重複起動を防止
+                            cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
+                            if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
+                                # Why: ループ毎新規起動指定時は初回HWNDを後続に固定せず都度起動を許容
+                                if not cmd_args.get("loop_launch_each_time"):
                                     cmd_args["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
                 _check_stop()
@@ -1212,19 +1213,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
-                mapped_hwnd = args.get("mapped_hwnd")
+                loop_launch = raw_args.get("loop_launch_each_time", False)
+                raw_mapped = raw_args.get("mapped_hwnd")
+
+                # Why: ループ毎新規起動が有効かつ新規起動(-1)指定時は毎周回新規起動を実行
+                if loop_stack and loop_launch and (raw_mapped == -1 or args.get("mapped_hwnd") == -1):
+                    mapped_hwnd = -1
+                else:
+                    mapped_hwnd = args.get("mapped_hwnd")
                 current_alias = args.get("window_alias")
-                
+
                 # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
                 act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
                 if act_hwnd:
-                    args["mapped_hwnd"] = act_hwnd
-                    cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
+                    if not loop_launch:
+                        args["mapped_hwnd"] = act_hwnd
+                        cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
+                        if current_alias:
+                            for future_cmd in commands[i+1:]:
+                                if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
+                                    future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
-                    if current_alias:
-                        for future_cmd in commands[i+1:]:
-                            if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
-                                future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:
                 if last_win_args:
