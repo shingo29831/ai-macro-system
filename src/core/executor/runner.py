@@ -29,6 +29,37 @@ class WorkflowStoppedException(Exception):
     """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
     pass
 
+def _smooth_move(target_x: int, target_y: int, steps: int = 10, duration: float = 0.12):
+    # Why: ホバー位置から子メニューへのワープ移動によるドロップダウン消滅を連続軌跡で完全防止
+    if platform.system() == "Windows":
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        pt = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        start_x, start_y = pt.x, pt.y
+        dist = ((target_x - start_x) ** 2 + (target_y - start_y) ** 2) ** 0.5
+        if dist < 5:
+            ctypes.windll.user32.SetCursorPos(int(target_x), int(target_y))
+            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
+            return
+
+        actual_steps = max(4, min(steps, int(dist / 12)))
+        step_delay = duration / actual_steps
+        for s in range(1, actual_steps + 1):
+            t = s / actual_steps
+            ease_t = 1.0 - (1.0 - t) ** 2
+            cx = int(start_x + (target_x - start_x) * ease_t)
+            cy = int(start_y + (target_y - start_y) * ease_t)
+            ctypes.windll.user32.SetCursorPos(cx, cy)
+            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
+            time.sleep(step_delay)
+        ctypes.windll.user32.SetCursorPos(int(target_x), int(target_y))
+        ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
+    else:
+        mouse = MouseController()
+        mouse.position = (target_x, target_y)
+
+
 def _get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> tuple[int, int]:
     # Why: 記録時と実行時のウィンドウ配置の差分をオフセットとして補正
     if not hwnd or platform.system() != "Windows":
@@ -789,12 +820,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
-                        
-                        if platform.system() == "Windows":
-                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                        else:
-                            mouse.position = (x, y)
-                            
+                        _smooth_move(int(x), int(y))
                         # Why: クリック直前にカーソル位置を安定させホバー/展開UIの空振りを防止
                         time.sleep(0.08)
                         mouse.click(btn, clicks)
@@ -820,13 +846,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             excel_app_cache = None
                     
                     if not skip_physical:
-                        if platform.system() == "Windows":
-                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                            # Why: MOUSEEVENTF_MOVEを発行しブラウザの:hover/mouseenterを確実に誘発
-                            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
-                        else:
-                            mouse.position = (x, y)
-                            
+                        _smooth_move(int(x), int(y))
                         time.sleep(0.5)
                         
                 elif method == "scroll":
