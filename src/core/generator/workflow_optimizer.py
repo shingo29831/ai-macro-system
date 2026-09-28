@@ -9,6 +9,21 @@ from typing import List, Dict, Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+def _is_residual_hover(move_info: Dict[str, Any], temp_workflow_info: List[Dict[str, Any]], current_idx: int) -> bool:
+    # Why: 直前クリックと同一座標(15px以内)に残った無意味な過渡的ホバーを厳密検知
+    mx, my = move_info.get("cursor_x", move_info.get("x", 0)), move_info.get("cursor_y", move_info.get("y", 0))
+    for k in range(current_idx - 1, max(-1, current_idx - 4), -1):
+        prev = temp_workflow_info[k]
+        p_act = prev.get("raw_action", "")
+        if p_act == "click":
+            cx, cy = prev.get("cursor_x", prev.get("x", 0)), prev.get("cursor_y", prev.get("y", 0))
+            if ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5 <= 15:
+                return True
+            break
+        elif p_act != "move":
+            break
+    return False
+
 def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: ドロップダウン等のホバー操作を保持しつつ遷移の契機となった要素のクリックを正しく生成
     if not temp_workflow_info:
@@ -73,20 +88,24 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
         curr_act = curr_info.get("raw_action", "")
         prev_act = prev_info.get("raw_action", "")
 
+        # Why: 直前クリックの残留ホバーは親メニューと誤認させず後続の個別昇格・除去へ誘導
+        is_prev_residual = _is_residual_hover(prev_info, temp_workflow_info, i - 1)
+
         # Why: 親ホバー直後にメニュー項目へのカーソル移動がある場合、親をホバーに残し子項目位置をクリックに昇格
-        if curr_act == "move" and prev_act == "move":
+        if curr_act == "move" and prev_act == "move" and not is_prev_residual:
             cx, cy = curr_info.get("cursor_x", curr_info.get("x", 0)), curr_info.get("cursor_y", curr_info.get("y", 0))
             px, py = prev_info.get("cursor_x", prev_info.get("x", 0)), prev_info.get("cursor_y", prev_info.get("y", 0))
             dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
-            if dist >= 15:
+            # Why: 下方向かつ近距離(120px以内)の移動のみドロップダウンサブメニューと判定
+            if 15 <= dist <= 120 and cy >= py - 10:
                 curr_info["raw_action"] = "click"
                 curr_info["raw_type"] = "mouse_click"
                 curr_info["button"] = "left"
                 curr_info["window_name"] = prev_win
-                # Why: 遷移契機クリックの画面照合タイムアウトを防ぐため遷移前画像と親イベントを継承
                 if prev_info.get("pre_img_path"):
                     curr_info["pre_img_path"] = prev_info["pre_img_path"]
-                curr_info["fallback_events"] = [prev_info.get("event_id", curr_info.get("event_id"))]
+                # Why: 照合用IDのみ親画像を割り当て、自身のイベントID・座標の完全保持を徹底
+                curr_info["match_event_id"] = prev_info.get("event_id")
 
                 clean_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
                 if clean_title:
@@ -111,6 +130,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             # Why: 遷移元ウィンドウ外の無関係な移動へ遡るのを防止
             if cand.get("window_name") != prev_win:
                 break
+            # Why: 直前クリックの残留ホバーを誤昇格して2重クリックになるのを完全阻止
+            if _is_residual_hover(cand, temp_workflow_info, k):
+                continue
 
             if cand_act != "move":
                 continue
@@ -169,6 +191,24 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 nav_click["fallback_events"] = [target_cand.get("event_id")]
                 temp_workflow_info.insert(candidate_idx + 1, nav_click)
                 i += 2
+        elif curr_act == "move":
+            # Why: 遷移前ウィンドウにホバーがない場合、遷移先ヘッダー移動自身をクリックに昇格
+            curr_info["raw_action"] = "click"
+            curr_info["raw_type"] = "mouse_click"
+            curr_info["button"] = "left"
+            curr_info["window_name"] = prev_win
+            if prev_info.get("pre_img_path"):
+                curr_info["pre_img_path"] = prev_info["pre_img_path"]
+            curr_info["match_event_id"] = prev_info.get("event_id")
+
+            clean_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
+            if clean_title:
+                curr_info["element_name"] = clean_title
+                curr_info["semantic_role"] = clean_title
+                curr_info.setdefault("app_context", {})["element_name"] = clean_title
+
+            logger.info(f"Direct nav click promoted at ({curr_info.get('cursor_x')}, {curr_info.get('cursor_y')}) for Event: {curr_info.get('event_id')}")
+            i += 1
         else:
             i += 1
 
@@ -187,6 +227,11 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
         act = curr.get("raw_action", "")
 
         if act == "move":
+            # Why: 直前クリックと同一座標の残留ホバーは新画面遷移時に無用なため完全排除
+            if _is_residual_hover(curr, temp_workflow_info, i):
+                i += 1
+                continue
+
             best_move = curr
             j = i + 1
             while j < n and temp_workflow_info[j].get("raw_action") == "move":

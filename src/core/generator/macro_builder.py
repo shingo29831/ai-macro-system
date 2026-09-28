@@ -397,6 +397,8 @@ def build_and_save_macro(
                 "target_id": target_id_for_healer,
                 "raw_event_id": raw_event_id
             }
+            if cur_info.get("match_event_id"):
+                cmd_args["match_event_id"] = cur_info["match_event_id"]
             if elem_name: cmd_args["element_name"] = elem_name
             if css_sel:
                 cmd_args["selector"] = css_sel

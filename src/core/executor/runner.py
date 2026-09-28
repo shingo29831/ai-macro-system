@@ -623,8 +623,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     logger.info(f"[{workflow_id}] Skipping screen match inside loop.")
                     time.sleep(0.5)
                 else:
+                    match_eid = args.get("match_event_id") or raw_event_id
                     match_info = wait_for_screen_match(
-                        target_dir, raw_event_id, current_win_x, current_win_y, current_win_w, current_win_h, 
+                        target_dir, match_eid, current_win_x, current_win_y, current_win_w, current_win_h, 
                         workflow_id, status_callback, i, timeout=10.0, check_cancel_callback=lambda: _stop_requested
                     )
                     _check_stop()
