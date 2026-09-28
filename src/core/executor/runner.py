@@ -763,10 +763,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     for cmd in commands:
                         if cmd.get("method") == "activate_window":
                             cmd_args = cmd.setdefault("args", {})
-                            # Why: 同一アプリであればエイリアス差異に関わらずHWNDを共有し2重起動を防止
-                            cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
-                            if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
-                                cmd_args["mapped_hwnd"] = activated_hwnd
+                            # Why: 明示的新規起動指定(-1)を除き同一アプリのHWNDを共有し2重起動防止
+                            if cmd_args.get("mapped_hwnd") != -1:
+                                cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
+                                if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
+                                    cmd_args["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
                 _check_stop()
                 
@@ -1162,15 +1163,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
-                mapped_hwnd = args.get("mapped_hwnd")
+                raw_mapped = raw_args.get("mapped_hwnd")
+                mapped_hwnd = raw_mapped if raw_mapped == -1 else args.get("mapped_hwnd")
                 current_alias = args.get("window_alias")
                 
-                # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
+                # Why: 明示的新規起動(-1)を尊重しつつ閉じたウィンドウの再起動を追跡
                 act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
                 if act_hwnd:
-                    args["mapped_hwnd"] = act_hwnd
+                    if raw_mapped != -1:
+                        args["mapped_hwnd"] = act_hwnd
+                        cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
-                    if current_alias:
+                    if current_alias and raw_mapped != -1:
                         for future_cmd in commands[i+1:]:
                             if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
                                 future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
