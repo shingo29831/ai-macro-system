@@ -100,8 +100,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     else:
         action_type = "unknown"
 
-    # ★修正: uia_scan や不要なイベントを初期段階で除外する
-    if action_type in ["unknown", "uia_scan"] or "recording" in raw_type_lower:
+    # Why: uia_scanはTab補完テキスト救出に必須なため除外せず後続の集約処理に渡す
+    if action_type == "unknown" or "recording" in raw_type_lower:
         return None
 
     button_val = "left"

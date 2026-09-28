@@ -446,6 +446,10 @@ class TypingSessionAggregator:
             if item.get("raw_action") == "uia_scan":
                 uia_info = item.get("content", {}).get("uia_info", {})
                 val = uia_info.get("value") or uia_info.get("name")
+                candidates = uia_info.get("candidates") or []
+                # Why: Tab補完時は展開された候補リストの先頭アイテムを優先採用
+                if candidates and has_suggest_selection and not val:
+                    val = candidates[0]
                 if val and len(str(val).strip()) > 0:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
@@ -518,7 +522,10 @@ class TypingSessionAggregator:
         if confirmed_future_queries and (has_actual_chars or any_ime_active):
             for fq in confirmed_future_queries:
                 fq_lower = fq.lower()
-                if not current_input or current_input in fq_lower or fq_lower.startswith(current_input):
+                matches_text = bool(current_input and (current_input in fq_lower or fq_lower.startswith(current_input)))
+                # Why: Tab補完やIME変換で入力仮名と確定漢字が一致しないケースを検索遷移から救済
+                matches_suggest_or_ime = (has_suggest_selection or any_ime_active) and (has_actual_chars or len(current_input) > 0)
+                if not current_input or matches_text or matches_suggest_or_ime:
                     matched_future_query = fq
                     break
 

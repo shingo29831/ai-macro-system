@@ -216,6 +216,16 @@ class BrowserInspector(BaseInspector):
                             log_debug("ウィンドウ座標からのUI要素特定に成功しました")
                     except Exception as e2:
                         log_debug(f"ウィンドウからの要素特定にも失敗: {e2}")
+            else:
+                # Why: キー入力時(座標None)は現在フォーカス要素を特定してターゲットに設定
+                try:
+                    import uiautomation as auto
+                    focused = auto.GetFocusedControl()
+                    if focused and focused.NativeWindowHandle:
+                        f_elem = desktop.window(handle=focused.NativeWindowHandle)
+                        target_elements.append(("FocusedElement", f_elem))
+                except Exception as ef:
+                    log_debug(f"フォーカス要素特定例外: {ef}")
 
             extracted_text = ""
             primary_elem = None
@@ -302,6 +312,9 @@ class BrowserInspector(BaseInspector):
                 aname = (primary_elem.window_text() or "").lower()
                 if any(k in aid for k in ["urlbar", "address", "omnibox"]) or any(k in aname for k in ["アドレス", "address bar"]):
                     is_address_bar = True
+            elif x is None and y is None and addr_info.get("address_bar_text"):
+                # Why: キー入力時にアドレスバーテキストが存在する場合はアドレスバー操作と判定
+                is_address_bar = True
 
             result["is_address_bar"] = is_address_bar
             if is_address_bar:
