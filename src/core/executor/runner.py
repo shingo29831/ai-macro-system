@@ -70,7 +70,7 @@ def _set_clipboard_text(text: str) -> bool:
 
 
 def _resolve_variables(data, variables: dict):
-    # Why: 大文字小文字の表記揺れ({{A}}と{{a}})を自動吸収し変数未展開によるデータ破壊を完全抑止
+    # Why: 空白混在({{ A }})や日本語列名、大文字小文字の差異を包括的に吸収して展開
     if not variables:
         return data
     if isinstance(data, str):
@@ -78,14 +78,14 @@ def _resolve_variables(data, variables: dict):
         res = data
         for k, v in variables.items():
             res = res.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
-        var_lower_map = {k.lower(): v for k, v in variables.items()}
-        pattern = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
+        var_lower_map = {str(k).strip().lower(): v for k, v in variables.items()}
+        pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
         def _repl(match):
-            var_name = match.group(1)
-            if var_name in variables:
-                return str(variables[var_name])
-            if var_name.lower() in var_lower_map:
-                return str(var_lower_map[var_name.lower()])
+            raw_key = match.group(1).strip()
+            if raw_key in variables:
+                return str(variables[raw_key])
+            if raw_key.lower() in var_lower_map:
+                return str(var_lower_map[raw_key.lower()])
             return match.group(0)
         return pattern.sub(_repl, res)
     elif isinstance(data, dict):
@@ -104,9 +104,19 @@ def _col_idx_to_letter(col_idx: int) -> str:
     return res
 
 
-def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True) -> list[dict]:
-    # Why: openpyxl直読を最優先し排他ロックや未インストール時はCOM経由で確実に取得
-    resolved = str(Path(file_path).resolve())
+def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True, target_dir: Path = None) -> list[dict]:
+    # Why: 相対パス指定時もtarget_dirからのフォールバック解決によりファイル未検出を根絶
+    if not file_path:
+        return []
+    p = Path(file_path)
+    if not p.is_absolute() and target_dir and (target_dir / file_path).exists():
+        resolved = str((target_dir / file_path).resolve())
+    else:
+        resolved = str(p.resolve())
+    if not Path(resolved).exists():
+        logger.error(f"Excel file not found: {resolved}")
+        return []
+
     records = []
     try:
         import openpyxl
@@ -796,8 +806,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     global_dynamic_mask[static_edges_dilated == 255] = 0
 
                 last_win_args = args
-                # Why: デスクトップアプリの先頭入力スキップを防ぐためステップ途中再開はブラウザのみに限定
-                if is_browser_target:
+                # Why: ループ構造を持つマクロでは変数初期化スキップを防ぐため画面マッチ途中開始を完全無効化
+                has_loop_command = any(c.get("method") == "loop_start" for c in commands)
+                if is_browser_target and not has_loop_command:
                     for i, cmd in enumerate(commands):
                         _check_stop()
                         if cmd.get("method") == "activate_window":
@@ -857,6 +868,22 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             current_win_y = last_win_args.get("y", 0)
             current_win_w = last_win_args.get("width", 0)
             current_win_h = last_win_args.get("height", 0)
+
+        # Why: loop_start前の操作でもExcel変数を参照できるよう第1レコードを先行ロード
+        first_excel_loop = next((c for c in commands if c.get("method") == "loop_start" and c.get("args", {}).get("data_source") == "excel"), None)
+        if first_excel_loop:
+            f_args = first_excel_loop.get("args", {})
+            pre_records = _read_excel_records(
+                f_args.get("file_path"), f_args.get("sheet_name"),
+                f_args.get("start_row", 2), f_args.get("end_row"),
+                f_args.get("status_column"), f_args.get("skip_completed", True),
+                target_dir=target_dir
+            )
+            if pre_records:
+                logger.info(f"[{workflow_id}] Pre-loaded {len(pre_records)} Excel records. First row keys: {list(pre_records[0].keys())}")
+                for k, v in pre_records[0].items():
+                    variables[k] = v
+                variables[f_args.get("item_variable", "row")] = pre_records[0]
         
         i = start_index
         loop_stack = []
@@ -917,7 +944,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     ed_row = args.get("end_row")
                     st_col = args.get("status_column")
                     skip_comp = args.get("skip_completed", True)
-                    records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_comp)
+                    records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_comp, target_dir=target_dir)
                     
                     if not records:
                         # Why: 転記対象行が0件の場合は対応するloop_endまで即座にスキップして安全終了
