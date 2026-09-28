@@ -402,7 +402,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 offset_y = curr_monitor.get("top", 0) if isinstance(curr_monitor, dict) else 0
 
                 std_dev_global = np.std(initial_frames, axis=0)
-                global_dynamic_mask = (std_dev_global > 20).astype(np.uint8) * 255
+                global_dynamic_mask = (std_dev_global > 12).astype(np.uint8) * 255
                 
                 edges_list = [cv2.Canny(f, 50, 150) for f in initial_frames]
                 static_edges = edges_list[0]
@@ -414,8 +414,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 
                 global_dynamic_mask[static_edges_dilated == 255] = 0
                 
-                if np.count_nonzero(global_dynamic_mask) / global_dynamic_mask.size > 0.3:
-                    global_dynamic_mask = np.zeros_like(global_dynamic_mask)
+                # Why: 大画面動画が流れるトップページでも静的枠組みを保持して照合可能に
+                if np.count_nonzero(global_dynamic_mask) / global_dynamic_mask.size > 0.85:
+                    global_dynamic_mask = (std_dev_global > 25).astype(np.uint8) * 255
+                    global_dynamic_mask[static_edges_dilated == 255] = 0
 
                 last_win_args = args
                 # Why: デスクトップアプリの先頭入力スキップを防ぐためステップ途中再開はブラウザのみに限定
@@ -654,6 +656,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         raise e
             
             if method == "wait":
+                prev_method = commands[i - 1].get("method") if i > 0 else ""
                 next_has_event = False
                 for j in range(i + 1, len(commands)):
                     if commands[j].get("method") not in ["wait", "activate_window", "loop_start", "loop_end"]:
@@ -661,7 +664,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             next_has_event = True
                         break
                 
-                if next_has_event:
+                # Why: ホバー(move)直後の待機はメニューアニメーション展開に必須のため保持
+                if next_has_event and prev_method != "move":
                     logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
                     i += 1
                     continue
@@ -761,7 +765,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         else:
                             mouse.position = (x, y)
                             
-                        time.sleep(0.05)
+                        # Why: クリック直前にカーソル位置を安定させホバー/展開UIの空振りを防止
+                        time.sleep(0.08)
                         mouse.click(btn, clicks)
 
                 elif method == "move":

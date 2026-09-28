@@ -379,21 +379,26 @@ def build_and_save_macro(
                 "args": cmd_args
             })
         elif cmd_type == "MOUSE_MOVE":
+            # Why: 相対座標欠落時も絶対座標フォールバックでホバー脱落を完全防止
+            move_x = info.get("cursor_x", 0)
+            move_y = info.get("cursor_y", 0)
             if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                 win_c = integ_evt.window.coordinates
                 rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
-                cmd_args = {
-                    "x": win_c.x + rel_c.x,
-                    "y": win_c.y + rel_c.y,
-                    "target_id": target_id_for_healer,
-                    "raw_event_id": raw_event_id
-                }
-                if params.excel_dest_cell:
-                    cmd_args["excel_dest_cell"] = params.excel_dest_cell
-                raw_commands_data.append({
-                    "method": "move",
-                    "args": cmd_args
-                })
+                move_x = win_c.x + rel_c.x
+                move_y = win_c.y + rel_c.y
+            cmd_args = {
+                "x": move_x,
+                "y": move_y,
+                "target_id": target_id_for_healer,
+                "raw_event_id": raw_event_id
+            }
+            if params.excel_dest_cell:
+                cmd_args["excel_dest_cell"] = params.excel_dest_cell
+            raw_commands_data.append({
+                "method": "move",
+                "args": cmd_args
+            })
         elif cmd_type == "MOUSE_SCROLL":
             if params.text:
                 try:

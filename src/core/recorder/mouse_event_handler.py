@@ -85,7 +85,8 @@ def process_move_event(event: dict):
         diff_str = calculate_and_update_diff(pre_full_img)
         diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
 
-        is_meaningless = diff_val < 0.1
+        # Why: ホバーに伴う微小なUI変化(0.05%以上)を取りこぼさず保持
+        is_meaningless = diff_val < 0.05
         macros_root = screen_capturer.get_macros_root()
 
         if is_meaningless:

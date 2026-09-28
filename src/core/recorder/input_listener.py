@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
 
+_hover_timer = None
+_hover_timer_lock = threading.Lock()
+
+def _cancel_hover_timer():
+    global _hover_timer
+    with _hover_timer_lock:
+        if _hover_timer is not None:
+            _hover_timer.cancel()
+            _hover_timer = None
+
+def _on_hover_timeout(hx: int, hy: int):
+    if not state.is_recording or state.is_stopping:
+        return
+    # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録
+    state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
+    logger.debug("Hover event emitted at (%d, %d)", hx, hy)
+
 def _trigger_field_search(trigger_reason: str):
     buffer = getattr(state, "typing_buffer", "")
     if not buffer:
@@ -41,6 +58,14 @@ def on_move(x, y):
     if not state.is_recording or state.is_stopping: return
     current_time = time.time()
     
+    global _hover_timer
+    with _hover_timer_lock:
+        if _hover_timer is not None:
+            _hover_timer.cancel()
+        _hover_timer = threading.Timer(0.3, _on_hover_timeout, args=(int(x), int(y)))
+        _hover_timer.daemon = True
+        _hover_timer.start()
+
     if not state.mouse_path:
         state.mouse_path.append((x, y, current_time))
     else:
@@ -59,6 +84,7 @@ def on_move(x, y):
                 state.mouse_path.pop(0)
 
 def on_click(x, y, button, pressed):
+    _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
     
@@ -69,6 +95,7 @@ def on_click(x, y, button, pressed):
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
 def on_scroll(x, y, dx, dy):
+    _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
     try: 
@@ -84,6 +111,7 @@ def on_scroll(x, y, dx, dy):
         logger.exception("スクロールイベントの記録に失敗しました")
 
 def on_press(key):
+    _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: 
         return False

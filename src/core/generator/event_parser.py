@@ -152,7 +152,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     if action_type == "move":
         if crop_path_str and "delete_" in crop_path_str:
             return None
-        if diff_val < 0.05:
+        # Why: 比率換算値(0.05%=0.0005)との桁ズレによるホバー誤破棄を解消
+        if diff_val < 0.0005:
             return None
     
     if crop_path_str and crop_path_str != "切り抜き失敗":

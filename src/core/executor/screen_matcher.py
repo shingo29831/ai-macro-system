@@ -174,7 +174,7 @@ def wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y
                 video_mask = np.zeros_like(curr_crop_eval, dtype=np.uint8)
                 if len(frame_buffer) >= 3:
                     std_dev = np.std(frame_buffer, axis=0)
-                    video_mask = (std_dev > 20).astype(np.uint8) * 255
+                    video_mask = (std_dev > 12).astype(np.uint8) * 255
                     
                     edges_list = [cv2.Canny(f, 50, 150) for f in frame_buffer]
                     static_edges = edges_list[0]
@@ -186,8 +186,11 @@ def wait_for_screen_match(target_dir: Path, raw_event_id: str, win_x: int, win_y
                     
                     video_mask[static_edges_dilated == 255] = 0
                     
-                    if np.count_nonzero(video_mask) / video_mask.size > 0.3:
-                        video_mask = np.zeros_like(video_mask)
+                    # Why: 動画が画面の30%以上を占めても静的領域を残し動的マスクを維持
+                    mask_ratio = np.count_nonzero(video_mask) / video_mask.size
+                    if mask_ratio > 0.85:
+                        video_mask = (std_dev > 25).astype(np.uint8) * 255
+                        video_mask[static_edges_dilated == 255] = 0
                 
                 diff_for_mask = cv2.absdiff(pre_crop_eval, curr_crop_eval)
                 _, diff_thresh = cv2.threshold(diff_for_mask, 30, 255, cv2.THRESH_BINARY)
