@@ -9,6 +9,65 @@ from typing import List, Dict, Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Why: 記録時に取りこぼされたリンク/ボタンの押下を画面遷移から逆算してクリックへ自動昇格
+    n = len(temp_workflow_info)
+    for i in range(n):
+        info = temp_workflow_info[i]
+        if info.get("raw_action") != "move":
+            continue
+
+        app_ctx = info.get("app_context") or {}
+        control_type = str(app_ctx.get("control_type", "")).lower()
+        elem_url = str(app_ctx.get("url") or app_ctx.get("text") or app_ctx.get("value") or "").strip()
+        elem_name = str(app_ctx.get("element_name", "")).strip()
+
+        is_interactive = (
+            "hyperlink" in control_type or
+            "button" in control_type or
+            "menuitem" in control_type or
+            elem_url.startswith("http://") or
+            elem_url.startswith("https://") or
+            elem_url.startswith("/") or
+            bool(app_ctx.get("css_selector")) or
+            bool(app_ctx.get("xpath"))
+        )
+
+        curr_win = info.get("window_name", "")
+        transition_detected = False
+
+        for j in range(i + 1, min(i + 5, n)):
+            next_info = temp_workflow_info[j]
+            next_act = next_info.get("raw_action", "")
+            next_win = next_info.get("window_name", "")
+            next_ctx = next_info.get("app_context") or {}
+            next_url = str(next_ctx.get("url") or next_ctx.get("text") or next_ctx.get("value") or "").strip()
+
+            if next_act == "click":
+                break
+
+            if curr_win and next_win and curr_win != next_win:
+                w1_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", curr_win)]
+                w2_parts = [p.strip().lower() for p in re.split(r"[\-—–―]", next_win)]
+                if w1_parts[-1] == w2_parts[-1]:
+                    transition_detected = True
+                    break
+
+            if elem_url and next_url and next_url.startswith("http"):
+                base_elem_url = elem_url.split("#")[0].rstrip("/")
+                base_next_url = next_url.split("#")[0].rstrip("/")
+                if base_elem_url and (base_elem_url == base_next_url or base_elem_url in base_next_url or base_next_url in base_elem_url):
+                    transition_detected = True
+                    break
+
+        if is_interactive and transition_detected:
+            logger.info(f"Navigation transition detected after hover (Event: {info.get('event_id')}). Promoting move -> click.")
+            info["raw_action"] = "click"
+            info["raw_type"] = "mouse_click"
+            info["button"] = "left"
+
+    return temp_workflow_info
+
 def optimize_workflow_events(
     temp_workflow_info: List[Dict[str, Any]], 
     workflow_id: str, 
@@ -267,6 +326,7 @@ def optimize_workflow_events(
         layout_cleaned.append(info)
 
     temp_workflow_info = layout_cleaned
+    temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
 
     optimized_workflow_info = []
     idx = 0

@@ -301,6 +301,7 @@ def build_and_save_macro(
 
     raw_commands_data = []
     prev_timestamp = None
+    workflow_info_map = {item["event_id"]: item for item in temp_workflow_info}
     
     for step in workflow_steps:
         if check_cancel_callback and check_cancel_callback():
@@ -355,10 +356,11 @@ def build_and_save_macro(
                     })
                 except Exception as e:
                     logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
-        elif cmd_type == "MOUSE_CLICK":
+        cur_info = workflow_info_map.get(raw_event_id, {})
+        if cmd_type == "MOUSE_CLICK":
             # Why: UIA相対座標が欠落していても絶対座標フォールバックでクリック脱落を完全防止
-            click_x = info.get("cursor_x", 0)
-            click_y = info.get("cursor_y", 0)
+            click_x = cur_info.get("cursor_x", 0)
+            click_y = cur_info.get("cursor_y", 0)
             if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                 win_c = integ_evt.window.coordinates
                 rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
@@ -380,8 +382,8 @@ def build_and_save_macro(
             })
         elif cmd_type == "MOUSE_MOVE":
             # Why: 相対座標欠落時も絶対座標フォールバックでホバー脱落を完全防止
-            move_x = info.get("cursor_x", 0)
-            move_y = info.get("cursor_y", 0)
+            move_x = cur_info.get("cursor_x", 0)
+            move_y = cur_info.get("cursor_y", 0)
             if integ_evt.window.UIs and integ_evt.window.UIs[0].action and integ_evt.window.UIs[0].action.cursorRelativeCoordinates:
                 win_c = integ_evt.window.coordinates
                 rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
