@@ -238,12 +238,12 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
     return temp_workflow_info
 
 def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Why: クリック直前の移動やスクロール合間の移動を除去しスクロールを1つに集約
+    # Why: スクロール合間の無駄な移動を除去してスクロールを集約しつつ、メニュー出現用ホバーを確実に保持
     if not temp_workflow_info:
         return temp_workflow_info
 
-    result = []
     n = len(temp_workflow_info)
+    filtered = []
     i = 0
     while i < n:
         curr = temp_workflow_info[i]
@@ -255,67 +255,99 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                 i += 1
                 continue
 
-            best_move = curr
-            j = i + 1
-            while j < n and temp_workflow_info[j].get("raw_action") == "move":
-                nxt = temp_workflow_info[j]
-                # Why: 別ウィンドウや要素特定済みのホバーは別アクションとして保持
-                if nxt.get("window_name") != curr.get("window_name"):
-                    break
-                nxt_ctx = nxt.get("app_context") or {}
-                curr_ctx = curr.get("app_context") or {}
-                if nxt_ctx.get("element_name") and curr_ctx.get("element_name") and nxt_ctx.get("element_name") != curr_ctx.get("element_name"):
-                    break
-
-                bx, by = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
-                nx, ny = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                dist = ((nx - bx) ** 2 + (ny - by) ** 2) ** 0.5
-                # Why: 手振れ吸収は15px以内に限定しメニュー展開のトリガー座標を確実に保持
-                if dist <= 15:
-                    best_has_crop = bool(best_move.get("app_context", {}).get("element_name") or (best_move.get("pre_img_path") and best_move.get("diff_val", 0.0) >= 0.005))
-                    nxt_has_crop = bool(nxt.get("app_context", {}).get("element_name"))
-                    if not best_has_crop and nxt_has_crop:
-                        best_move = nxt
-                    elif not best_has_crop and nxt.get("diff_val", 0.0) > best_move.get("diff_val", 0.0):
-                        best_move = nxt
-                    j += 1
-                else:
-                    break
-
             next_act = None
             next_info = None
-            for k in range(j, min(n, j + 4)):
-                c_act = temp_workflow_info[k].get("raw_action", "")
-                if c_act != "move":
-                    next_act = c_act
+            for k in range(i + 1, n):
+                a = temp_workflow_info[k].get("raw_action", "")
+                if a != "move":
+                    next_act = a
                     next_info = temp_workflow_info[k]
                     break
 
-            diff_val = best_move.get("diff_val", 0.0)
-            is_meaningful_hover = diff_val >= 0.005
+            # Why: スクロール直前またはスクロール間に挟まる移動はメニューホバーではないため除去
+            if next_act == "scroll":
+                i += 1
+                continue
 
+            # Why: 直後にクリックがある場合はホバーメニュー展開の可能性を厳密評価
             if next_act == "click" and next_info:
-                # Why: ドロップダウン親ホバーと子クリックのペアは距離に関わらず確実に保持
-                if next_info.get("match_event_id") and next_info.get("match_event_id") == best_move.get("event_id"):
-                    result.append(best_move)
-                    i = j
+                if next_info.get("match_event_id") and next_info.get("match_event_id") == curr.get("event_id"):
+                    filtered.append(curr)
+                    i += 1
                     continue
 
                 cx, cy = next_info.get("cursor_x", next_info.get("x", 0)), next_info.get("cursor_y", next_info.get("y", 0))
-                mx, my = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
+                mx, my = curr.get("cursor_x", curr.get("x", 0)), curr.get("cursor_y", curr.get("y", 0))
                 dist = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5
-                # Why: クリック直前のブレ移動(差分無かつ近距離)のみ除外しホバー展開を保持
+
+                # Why: クリック対象と同一位置(35px以内)のブレ移動のみ除外し、離れたヘッダーホバーは保護
+                diff_val = curr.get("diff_val", 0.0)
+                is_meaningful_hover = diff_val >= 0.005 or bool(curr.get("app_context", {}).get("element_name"))
                 if not is_meaningful_hover and dist <= 35:
-                    i = j
-                    continue
-            elif next_act == "scroll":
-                if not is_meaningful_hover:
-                    i = j
+                    i += 1
                     continue
 
-            result.append(best_move)
+            filtered.append(curr)
+            i += 1
+            continue
+
+        filtered.append(curr)
+        i += 1
+
+    deduped = []
+    m = len(filtered)
+    i = 0
+    while i < m:
+        curr = filtered[i]
+        act = curr.get("raw_action", "")
+
+        if act == "move":
+            move_group = [curr]
+            j = i + 1
+            while j < m and filtered[j].get("raw_action") == "move":
+                move_group.append(filtered[j])
+                j += 1
+
+            if len(move_group) == 1:
+                deduped.append(curr)
+                i = j
+                continue
+
+            next_click = filtered[j] if j < m and filtered[j].get("raw_action") == "click" else None
+
+            if next_click:
+                # Why: クリック直前の反復横跳びを除去し、親メニューと選択項目の最大2ホバーに集約
+                cx, cy = next_click.get("cursor_x", next_click.get("x", 0)), next_click.get("cursor_y", next_click.get("y", 0))
+                parent_hovers = [
+                    mv for mv in move_group 
+                    if (((mv.get("cursor_x", 0) - cx) ** 2 + (mv.get("cursor_y", 0) - cy) ** 2) ** 0.5) > 35
+                ]
+                child_hovers = [
+                    mv for mv in move_group 
+                    if (((mv.get("cursor_x", 0) - cx) ** 2 + (mv.get("cursor_y", 0) - cy) ** 2) ** 0.5) <= 35
+                ]
+
+                if parent_hovers:
+                    deduped.append(parent_hovers[-1])
+                if child_hovers and child_hovers[-1].get("diff_val", 0.0) >= 0.005:
+                    deduped.append(child_hovers[-1])
+                elif not parent_hovers and not child_hovers:
+                    deduped.append(move_group[-1])
+            else:
+                deduped.append(move_group[-1])
+
             i = j
             continue
+
+        deduped.append(curr)
+        i += 1
+
+    result = []
+    k = len(deduped)
+    i = 0
+    while i < k:
+        curr = deduped[i]
+        act = curr.get("raw_action", "")
 
         if act == "scroll":
             tot_dx = curr.get("dx", 0.0)
@@ -326,18 +358,13 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
             evts = list(curr.get("fallback_events", [curr.get("event_id")]))
 
             j = i + 1
-            while j < n:
-                nxt = temp_workflow_info[j]
+            while j < k:
+                nxt = deduped[j]
                 n_act = nxt.get("raw_action", "")
-                if n_act == "move":
-                    mx, my = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                    if abs(mx - base_x) <= 30 and abs(my - base_y) <= 30:
-                        j += 1
-                        continue
-                    break
                 if n_act == "scroll":
+                    # Why: 同一ウィンドウ内でのスクロールであれば座標の揺れを許容して単一アクションに集約
                     sx, sy = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                    if abs(sx - base_x) <= 40 and abs(sy - base_y) <= 40:
+                    if abs(sx - base_x) <= 80 and abs(sy - base_y) <= 80:
                         tot_dx += nxt.get("dx", 0.0)
                         tot_dy += nxt.get("dy", 0.0)
                         last_eid = nxt.get("event_id")
@@ -358,6 +385,7 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
 
         result.append(curr)
         i += 1
+
     return result
 
 def optimize_workflow_events(
