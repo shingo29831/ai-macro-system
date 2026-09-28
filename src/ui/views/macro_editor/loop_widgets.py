@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSpinBox, QWidget, 
+                               QPushButton, QVBoxLayout, QFormLayout, 
                                QPushButton, QDialog, QVBoxLayout, QFormLayout, 
                                QLineEdit, QCheckBox, QComboBox, QFileDialog)
 
@@ -166,108 +167,250 @@ class LoopSettingDialog(QDialog):
 
 class LoopCountWidget(QFrame):
     count_changed = Signal(int, int)
-    setting_requested = Signal(int)
+    settings_changed = Signal()
+    delete_requested = Signal(int)
 
-    def __init__(self, loop_start_idx: int, initial_count: int, parent=None):
+    def __init__(self, loop_start_idx: int, cmd: dict, workflow_dir: Path, parent=None):
         super().__init__(parent)
         self.loop_start_idx = loop_start_idx
+        self.cmd = cmd
+        self.workflow_dir = workflow_dir
+        self.args = cmd.setdefault("args", {})
+        self.is_expanded = False
 
         self.setObjectName("LoopCountWidget")
-        self.setStyleSheet("""
-            #LoopCountWidget {
-                background-color: #ffffff;
-                border: 2px solid #0078d4;
-                border-radius: 6px;
-            }
-        """)
+        self._build_ui()
+        self._update_appearance()
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(6)
+    def _build_ui(self):
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(8, 6, 8, 6)
+        self.main_layout.setSpacing(6)
 
+        # 1. サマリー表示バー
+        self.bar_layout = QHBoxLayout()
+        self.bar_layout.setContentsMargins(0, 0, 0, 0)
+        self.bar_layout.setSpacing(6)
+
+        self.icon_label = QLabel()
+        self.bar_layout.addWidget(self.icon_label)
+
+        self.summary_label = QLabel()
+        self.summary_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333333;")
+        self.bar_layout.addWidget(self.summary_label)
+
+        # 固定回数時のインラインスピン
         self.spin_box = QSpinBox()
-        self.spin_box.setRange(1, 9999)
-        self.spin_box.setValue(initial_count)
+        self.spin_box.setRange(1, 99999)
+        self.spin_box.setValue(self.args.get("loop_count", 10))
+        self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.spin_box.setFixedWidth(44)
+        self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.spin_box.setStyleSheet("""
             QSpinBox {
-                border: none;
-                background: transparent;
-                font-size: 13px;
+                border: 1px solid #d0d0d0;
+                border-radius: 3px;
+                background: #ffffff;
+                font-size: 12px;
                 font-weight: bold;
+                padding: 1px 3px;
+            }
+        """)
+        self.spin_box.valueChanged.connect(self._on_spin_changed)
+        self.bar_layout.addWidget(self.spin_box)
+
+        self.unit_label = QLabel("回")
+        self.unit_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333333;")
+        self.bar_layout.addWidget(self.unit_label)
+
+        self.bar_layout.addStretch()
+
+        # 詳細トグルボタン
+        self.toggle_btn = QPushButton("詳細 ▼")
+        self.toggle_btn.setFixedSize(54, 22)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                background: #f3f2f1;
+                border: 1px solid #d0d0d0;
+                border-radius: 3px;
+                font-size: 11px;
+                color: #444444;
+            }
+            QPushButton:hover {
+                background: #e1dfdd;
                 color: #0078d4;
             }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 0px;
-            }
         """)
-        self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        self.spin_box.setFixedWidth(40)
-        self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.toggle_btn.clicked.connect(self._toggle_expand)
+        self.bar_layout.addWidget(self.toggle_btn)
 
-        self.label = QLabel("回")
-        self.label.setStyleSheet("color: #333333; font-weight: bold; font-size: 13px;")
-
-        self.excel_badge = QLabel("Excel連携")
-        self.excel_badge.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                background-color: #107c41;
-                font-weight: bold;
-                font-size: 11px;
-                padding: 2px 6px;
-                border-radius: 4px;
-            }
-        """)
-        self.excel_badge.hide()
-
-        self.setting_btn = QPushButton("⚙")
-        self.setting_btn.setFixedSize(22, 22)
-        self.setting_btn.setToolTip("ループ設定（Excel連携など）")
-        self.setting_btn.setStyleSheet("""
+        # ループ解除ボタン
+        self.del_btn = QPushButton("✕")
+        self.del_btn.setFixedSize(22, 22)
+        self.del_btn.setToolTip("このループを解除する")
+        self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.del_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 border: none;
-                color: #555555;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                color: #0078d4;
+                color: #888888;
+                font-size: 12px;
                 font-weight: bold;
             }
+            QPushButton:hover {
+                color: #d13438;
+            }
         """)
-        self.setting_btn.clicked.connect(lambda: self.setting_requested.emit(self.loop_start_idx))
+        self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self.loop_start_idx))
+        self.bar_layout.addWidget(self.del_btn)
 
-        layout.addWidget(self.spin_box)
-        layout.addWidget(self.label)
-        layout.addWidget(self.excel_badge)
-        layout.addWidget(self.setting_btn)
+        self.main_layout.addLayout(self.bar_layout)
 
-        self.spin_box.valueChanged.connect(self._on_value_changed)
+        # 2. インライン詳細設定パネル（展開式）
+        self.detail_panel = QWidget()
+        self.detail_layout = QFormLayout(self.detail_panel)
+        self.detail_layout.setContentsMargins(4, 6, 4, 2)
+        self.detail_layout.setSpacing(6)
+        self.detail_panel.setStyleSheet("""
+            QLabel { font-size: 11px; color: #444444; }
+            QLineEdit, QSpinBox, QComboBox {
+                font-size: 11px;
+                padding: 2px 4px;
+                border: 1px solid #d0d0d0;
+                border-radius: 3px;
+                background: #ffffff;
+            }
+            QCheckBox { font-size: 11px; color: #333333; }
+        """)
 
-    def set_data_source(self, data_source: str):
-        # Why: データ駆動ループ時に回数スピンを隠しExcel連携バッジへ切り替え
-        if data_source == "excel":
+        # モード選択
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("固定回数ループ", "static")
+        self.mode_combo.addItem("Excelデータ連携ループ", "excel")
+        cur_mode = self.args.get("data_source", "static")
+        self.mode_combo.setCurrentIndex(1 if cur_mode == "excel" else 0)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self.detail_layout.addRow("種別:", self.mode_combo)
+
+        # Excelグループ
+        self.excel_group = QWidget()
+        eg_layout = QFormLayout(self.excel_group)
+        eg_layout.setContentsMargins(0, 0, 0, 0)
+        eg_layout.setSpacing(5)
+
+        file_box = QHBoxLayout()
+        self.file_edit = QLineEdit(self.args.get("file_path", ""))
+        self.file_edit.setPlaceholderText("Excelファイル...")
+        self.file_edit.textChanged.connect(lambda v: self._update_field("file_path", v))
+        file_box.addWidget(self.file_edit)
+
+        browse_btn = QPushButton("参照")
+        browse_btn.setFixedWidth(42)
+        browse_btn.clicked.connect(self._browse_excel_file)
+        file_box.addWidget(browse_btn)
+        eg_layout.addRow("ファイル:", file_box)
+
+        self.sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
+        self.sheet_edit.setPlaceholderText("空欄でアクティブシート")
+        self.sheet_edit.textChanged.connect(lambda v: self._update_field("sheet_name", v))
+        eg_layout.addRow("シート:", self.sheet_edit)
+
+        row_box = QHBoxLayout()
+        self.st_row_spin = QSpinBox()
+        self.st_row_spin.setRange(1, 99999)
+        self.st_row_spin.setValue(self.args.get("start_row", 2))
+        self.st_row_spin.valueChanged.connect(lambda v: self._update_field("start_row", v))
+        row_box.addWidget(QLabel("開始:"))
+        row_box.addWidget(self.st_row_spin)
+
+        self.ed_row_spin = QSpinBox()
+        self.ed_row_spin.setRange(0, 99999)
+        self.ed_row_spin.setValue(self.args.get("end_row") or 0)
+        self.ed_row_spin.setSpecialValueText("末尾まで")
+        self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
+        row_box.addWidget(QLabel("終了:"))
+        row_box.addWidget(self.ed_row_spin)
+        eg_layout.addRow("行範囲:", row_box)
+
+        self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
+        self.status_col_edit.setPlaceholderText("例: E")
+        self.status_col_edit.textChanged.connect(lambda v: self._update_field("status_column", v.upper()))
+        eg_layout.addRow("ステータス列:", self.status_col_edit)
+
+        self.skip_check = QCheckBox("完了行をスキップ")
+        self.skip_check.setChecked(bool(self.args.get("skip_completed", True)))
+        self.skip_check.toggled.connect(lambda v: self._update_field("skip_completed", v))
+        eg_layout.addRow("", self.skip_check)
+
+        self.cont_check = QCheckBox("エラー時次行継続")
+        self.cont_check.setChecked(bool(self.args.get("continue_on_error", False)))
+        self.cont_check.toggled.connect(lambda v: self._update_field("continue_on_error", v))
+        eg_layout.addRow("", self.cont_check)
+
+        self.detail_layout.addRow(self.excel_group)
+        self.detail_panel.hide()
+        self.main_layout.addWidget(self.detail_panel)
+
+    def _update_appearance(self):
+        is_excel = self.args.get("data_source") == "excel"
+        self.excel_group.setVisible(is_excel)
+
+        if is_excel:
+            self.icon_label.setText("📊")
+            f_name = Path(self.args.get("file_path", "")).name if self.args.get("file_path") else "未選択"
+            st_col = self.args.get("status_column") or "-"
+            self.summary_label.setText(f"{f_name} [{st_col}列]")
             self.spin_box.hide()
-            self.label.hide()
-            self.excel_badge.show()
+            self.unit_label.hide()
             self.setStyleSheet("""
                 #LoopCountWidget {
-                    background-color: #ffffff;
+                    background-color: #f6fcf8;
                     border: 2px solid #107c41;
                     border-radius: 6px;
                 }
             """)
         else:
-            self.excel_badge.hide()
+            self.icon_label.setText("🔁")
+            self.summary_label.setText("固定ループ:")
             self.spin_box.show()
-            self.label.show()
+            self.unit_label.show()
             self.setStyleSheet("""
                 #LoopCountWidget {
-                    background-color: #ffffff;
+                    background-color: #f7faff;
                     border: 2px solid #0078d4;
                     border-radius: 6px;
                 }
             """)
+        self.adjustSize()
 
-    def _on_value_changed(self, val):
+    def _toggle_expand(self):
+        self.is_expanded = not self.is_expanded
+        self.detail_panel.setVisible(self.is_expanded)
+        self.toggle_btn.setText("閉じる ▲" if self.is_expanded else "詳細 ▼")
+        self.setFixedWidth(270 if self.is_expanded else 210)
+        self.adjustSize()
+        self.settings_changed.emit()
+
+    def _on_mode_changed(self, idx):
+        mode = "excel" if idx == 1 else "static"
+        self.args["data_source"] = mode
+        self._update_appearance()
+        self.settings_changed.emit()
+
+    def _on_spin_changed(self, val):
+        self.args["loop_count"] = val
         self.count_changed.emit(self.loop_start_idx, val)
+
+    def _update_field(self, key, val):
+        self.args[key] = val
+        self._update_appearance()
+        self.settings_changed.emit()
+
+    def _browse_excel_file(self):
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "Excelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if fp:
+            self.file_edit.setText(fp)
+            self._update_field("file_path", fp)

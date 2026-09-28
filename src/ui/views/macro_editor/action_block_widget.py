@@ -29,16 +29,32 @@ class ActionBlockWidget(QFrame):
         self.drag_start_pos = None
         
         self.setObjectName("ActionBlock")
-        self.setStyleSheet("""
-            #ActionBlock {
-                background-color: #ffffff;
-                border: 1px solid #d0d0d0;
-                border-radius: 8px;
-            }
-            #ActionBlock:hover {
-                border: 2px solid #0078d4;
-            }
-        """)
+        # Why: ループ内ブロックの左端にアクセントカラーを付与し実行範囲を明瞭化
+        if self.is_in_loop:
+            border_accent = "#107c41" if self.args.get("data_source") == "excel" else "#0078d4"
+            self.setStyleSheet(f"""
+                #ActionBlock {{
+                    background-color: #ffffff;
+                    border: 1px solid #d0d0d0;
+                    border-left: 5px solid {border_accent};
+                    border-radius: 8px;
+                }}
+                #ActionBlock:hover {{
+                    border: 1px solid #0078d4;
+                    border-left: 5px solid {border_accent};
+                }}
+            """)
+        else:
+            self.setStyleSheet("""
+                #ActionBlock {
+                    background-color: #ffffff;
+                    border: 1px solid #d0d0d0;
+                    border-radius: 8px;
+                }
+                #ActionBlock:hover {
+                    border: 2px solid #0078d4;
+                }
+            """)
         self.setFixedWidth(480)
         
         self._build_ui()

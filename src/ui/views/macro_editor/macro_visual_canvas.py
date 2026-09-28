@@ -25,7 +25,8 @@ class MacroVisualCanvas(QWidget):
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.main_layout.setContentsMargins(100, 40, 100, 40)
+        # Why: 線の横に配置される詳細設定カード(幅270px)がはみ出さないよう右余白を拡張
+        self.main_layout.setContentsMargins(60, 40, 360, 40)
         self.main_layout.setSpacing(40)
         
         self.rebuild()
@@ -72,22 +73,20 @@ class MacroVisualCanvas(QWidget):
             self.blocks.append(block)
 
         for loop in self.loops:
-            cmd = self.commands[loop["loop_start_idx"]]
-            data_source = cmd.get("args", {}).get("data_source", "static")
-            w = LoopCountWidget(loop["loop_start_idx"], loop["loop_count"], self)
-            w.set_data_source(data_source)
+            start_cmd = self.commands[loop["loop_start_idx"]]
+            w = LoopCountWidget(loop["loop_start_idx"], start_cmd, self.workflow_dir, self)
             if loop.get("is_reversed"):
                 w.setStyleSheet("""
                     #LoopCountWidget {
-                        background-color: #ffffff;
+                        background-color: #fff9f9;
                         border: 2px solid #d13438;
                         border-radius: 6px;
                     }
                 """)
-                w.spin_box.setStyleSheet(w.spin_box.styleSheet().replace("#0078d4", "#d13438"))
                 
             w.count_changed.connect(self._on_loop_count_changed)
-            w.setting_requested.connect(self._open_loop_setting_dialog)
+            w.settings_changed.connect(self.commands_changed.emit)
+            w.delete_requested.connect(self._on_loop_delete_requested)
             w.show()
             self.loop_widgets.append(w)
             
@@ -100,15 +99,13 @@ class MacroVisualCanvas(QWidget):
             
         self.update()
 
-    def _open_loop_setting_dialog(self, loop_start_idx: int):
-        # Why: 矢印バッジの設定ボタンからExcelファイル指定・列マッピングダイアログを起動
+    def _on_loop_delete_requested(self, loop_start_idx: int):
+        # Why: ループ解除ボタン押下時にloop_startとloop_endのペアを安全に除去
         if 0 <= loop_start_idx < len(self.commands):
-            cmd = self.commands[loop_start_idx]
-            from .loop_widgets import LoopSettingDialog
-            dlg = LoopSettingDialog(cmd, self.workflow_dir, self)
-            if dlg.exec():
-                self.commands_changed.emit()
-                self.rebuild()
+            target_id = self.commands[loop_start_idx].get("loop_id")
+            self.commands = [c for c in self.commands if not (c.get("method") in ["loop_start", "loop_end"] and c.get("loop_id") == target_id)]
+            self.commands_changed.emit()
+            self.rebuild()
 
     def _on_loop_count_changed(self, loop_start_idx: int, new_count: int):
         if 0 <= loop_start_idx < len(self.commands):
@@ -502,8 +499,9 @@ class MacroVisualCanvas(QWidget):
             if i < len(self.loop_widgets):
                 w = self.loop_widgets[i]
                 w.adjustSize()
-                target_x = x_turn + 8
-                target_y = int((y_top + y_bottom) / 2 - w.height() / 2)
+                target_x = x_turn + 10
+                # Why: ループ線の垂直中央位置に設定カードを安定配置
+                target_y = max(10, int((y_top + y_bottom) / 2 - w.height() / 2))
                 if w.pos() != QPoint(target_x, target_y):
                     w.move(target_x, target_y)
                     

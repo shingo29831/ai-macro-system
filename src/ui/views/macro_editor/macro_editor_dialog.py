@@ -247,28 +247,31 @@ class MacroEditorScreen(QWidget):
         if block_widget:
             self.scroll_area.ensureWidgetVisible(block_widget, 50, 50)
         
-    def _validate_loops(self) -> bool:
+    def _validate_loops(self) -> tuple[bool, str]:
+        # Why: ループ構造不整合およびExcel未設定による実行時クラッシュを事前防止
         stack = []
         for i, cmd in enumerate(self.commands):
             method = cmd.get("method")
             if method == "loop_start":
+                args = cmd.get("args", {})
+                if args.get("data_source") == "excel" and not args.get("file_path"):
+                    return False, "Excelデータ連携ループにExcelファイルが設定されていません。\n線の横にあるループ詳細からExcelファイルを選択してください。"
                 stack.append(i)
             elif method == "loop_end":
                 if not stack:
-                    return False
+                    return False, "ループの開始と終了の順序が不正です。"
                 start_idx = stack.pop()
-                has_action = False
-                for j in range(start_idx + 1, i):
-                    if self.commands[j].get("method") not in ["loop_start", "loop_end"]:
-                        has_action = True
-                        break
+                has_action = any(self.commands[j].get("method") not in ["loop_start", "loop_end"] for j in range(start_idx + 1, i))
                 if not has_action:
-                    return False
-        return len(stack) == 0
+                    return False, "ループ内にアクションが存在しません。"
+        if len(stack) != 0:
+            return False, "終了していないループが存在します。"
+        return True, ""
 
     def _on_save_clicked(self):
-        if not self._validate_loops():
-            QMessageBox.warning(self, "保存エラー", "ループの構造が不正です。\nループの開始と終了の順序が逆転しているか、ループ内にアクションが存在しません。")
+        valid, err_msg = self._validate_loops()
+        if not valid:
+            QMessageBox.warning(self, "保存エラー", err_msg)
             return
             
         if self.is_temporary:
