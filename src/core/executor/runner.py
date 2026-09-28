@@ -155,8 +155,9 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
             if not row_has_val:
                 continue
             if skip_completed and status_col:
-                cur_status = row_dict.get(status_col.upper(), "")
-                if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS", "処理中"]:
+                cur_status = str(row_dict.get(status_col.upper(), "")).strip()
+                # Why: 中断・再テスト時のスタックを防ぐため「処理中」は未完了扱いで再実行
+                if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
                     continue
             records.append(row_dict)
         wb.close()
@@ -200,8 +201,9 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                         if c_letter in header_map:
                             row_dict[header_map[c_letter]] = c_str
                     if skip_completed and status_col:
-                        cur_status = row_dict.get(status_col.upper(), "")
-                        if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS", "処理中"]:
+                        cur_status = str(row_dict.get(status_col.upper(), "")).strip()
+                        # Why: 中断・再テスト時のスタックを防ぐため「処理中」は未完了扱いで再実行
+                        if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
                             continue
                     records.append(row_dict)
         except Exception as com_err:
@@ -872,6 +874,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 f_args.get("status_column"), f_args.get("skip_completed", True),
                 target_dir=target_dir
             )
+            # Why: 全件完了済みの場合も第1行の変数を解決可能にするため全レコードから先行取得
+            if not pre_records and f_args.get("skip_completed", True):
+                pre_records = _read_excel_records(
+                    f_args.get("file_path"), f_args.get("sheet_name"),
+                    f_args.get("start_row", 2), f_args.get("end_row"),
+                    f_args.get("status_column"), skip_completed=False,
+                    target_dir=target_dir
+                )
             if pre_records:
                 logger.info(f"[{workflow_id}] Pre-loaded {len(pre_records)} Excel records. First row keys: {list(pre_records[0].keys())}")
                 for k, v in pre_records[0].items():
@@ -939,8 +949,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     skip_comp = args.get("skip_completed", True)
                     records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_comp, target_dir=target_dir)
                     
+                    # Why: 全件完了済み等で未処理行が0件の場合、テスト再試行のため全レコードから再取得
+                    if not records and skip_comp:
+                        logger.info(f"[{workflow_id}] No uncompleted records found. Retrying with skip_completed=False.")
+                        records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_completed=False, target_dir=target_dir)
+
                     if not records:
-                        # Why: 転記対象行が0件の場合は対応するloop_endまで即座にスキップして安全終了
+                        # Why: ファイル空等の真の0件時のみloop_endまでスキップして安全終了
+                        logger.warning(f"[{workflow_id}] No records available in Excel file. Skipping loop.")
                         nest = 1
                         j = i + 1
                         while j < len(commands) and nest > 0:
