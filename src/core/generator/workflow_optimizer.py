@@ -54,8 +54,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             cand = temp_workflow_info[k]
             cand_act = cand.get("raw_action", "")
 
+            # Why: 直近がclickなら昇格不要だが、既に見つかったホバー候補を過去clickでNone破棄しない
             if cand_act == "click":
-                candidate_idx = None
                 break
 
             if cand_act != "move":
@@ -72,7 +72,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 "menuitem" in c_type or
                 c_url.startswith("http") or
                 bool(cand_ctx.get("css_selector")) or
-                bool(cand_ctx.get("xpath"))
+                bool(cand_ctx.get("xpath")) or
+                cand.get("diff_val", 0.0) > 0.02
             )
 
             if not is_interactive:
@@ -92,7 +93,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 if clean_title and (clean_title in c_name.lower() or clean_title in c_url.lower()):
                     score = max(score, 9)
 
-            if score > best_match_score:
+            if score > best_score:
                 best_match_score = score
                 candidate_idx = k
 
@@ -100,11 +101,16 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             target_cand = temp_workflow_info[candidate_idx]
             logger.info(
                 f"Navigation transition detected (Step {candidate_idx} -> {i}). "
-                f"Promoting move -> click on Event: {target_cand.get('event_id')} (score: {best_match_score})."
+                f"Preserving hover and inserting navigation click for Event: {target_cand.get('event_id')} (score: {best_match_score})."
             )
-            target_cand["raw_action"] = "click"
-            target_cand["raw_type"] = "mouse_click"
-            target_cand["button"] = "left"
+            # Why: ドロップダウン展開用のホバー(move)を維持し、直後に遷移トリガーのクリックを新設
+            nav_click = target_cand.copy()
+            nav_click["raw_action"] = "click"
+            nav_click["raw_type"] = "mouse_click"
+            nav_click["button"] = "left"
+            nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
+            temp_workflow_info.insert(candidate_idx + 1, nav_click)
+            i += 1
 
     return temp_workflow_info
 
