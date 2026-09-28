@@ -85,6 +85,15 @@ def _resolve_variables(data, variables: dict):
     return data
 
 
+def _col_idx_to_letter(col_idx: int) -> str:
+    # Why: openpyxl依存なしで26列超(AA, AB等)のExcel列記号を確実に算出
+    res = ""
+    while col_idx > 0:
+        col_idx, rem = divmod(col_idx - 1, 26)
+        res = chr(65 + rem) + res
+    return res
+
+
 def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True) -> list[dict]:
     # Why: openpyxl直読を最優先し排他ロックや未インストール時はCOM経由で確実に取得
     resolved = str(Path(file_path).resolve())
@@ -95,7 +104,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
         ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
         header_map = {}
         for col_idx in range(1, ws.max_column + 1):
-            col_letter = openpyxl.utils.get_column_letter(col_idx)
+            col_letter = _col_idx_to_letter(col_idx)
             val = ws.cell(row=1, column=col_idx).value
             if val is not None:
                 header_map[col_letter] = str(val).strip()
@@ -105,7 +114,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
             row_has_val = False
             row_dict = {"_row_idx": r}
             for col_idx in range(1, ws.max_column + 1):
-                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                col_letter = _col_idx_to_letter(col_idx)
                 raw_v = ws.cell(row=r, column=col_idx).value
                 if raw_v is not None and str(raw_v).strip() != "":
                     row_has_val = True
@@ -127,6 +136,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
         logger.warning(f"openpyxl headless read failed ({e}), falling back to COM...")
 
     if platform.system() == "Windows":
+        excel = None
         try:
             import win32com.client
             excel = win32com.client.Dispatch("Excel.Application")
@@ -138,7 +148,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
             wb.Close(SaveChanges=False)
             if vals and len(vals) >= start_row:
                 headers = vals[0]
-                header_map = {openpyxl.utils.get_column_letter(idx + 1) if 'openpyxl' in locals() else chr(ord('A') + idx): str(h).strip() for idx, h in enumerate(headers) if h is not None}
+                header_map = {_col_idx_to_letter(idx + 1): str(h).strip() for idx, h in enumerate(headers) if h is not None}
                 max_r = min(end_row, len(vals)) if end_row else len(vals)
                 for r in range(start_row, max_r + 1):
                     row_data = vals[r - 1]
@@ -146,7 +156,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                         continue
                     row_dict = {"_row_idx": r}
                     for idx, cell in enumerate(row_data):
-                        c_letter = chr(ord('A') + idx) if idx < 26 else f"A{chr(ord('A') + idx - 26)}"
+                        c_letter = _col_idx_to_letter(idx + 1)
                         c_str = "" if cell is None else str(cell).strip()
                         row_dict[c_letter] = c_str
                         if c_letter in header_map:
@@ -158,6 +168,14 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                     records.append(row_dict)
         except Exception as com_err:
             logger.error(f"COM fallback read also failed: {com_err}")
+        finally:
+            # Why: COMプロセス明示破棄によりEXCEL.EXEゾンビプロセスの蓄積を完全防止
+            if excel:
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+                del excel
     return records
 
 
@@ -179,16 +197,39 @@ def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_co
         logger.warning(f"openpyxl status update failed ({e}), falling back to COM...")
 
     if platform.system() == "Windows":
+        excel = None
+        should_quit = False
         try:
             import win32com.client
-            excel = win32com.client.Dispatch("Excel.Application")
-            wb = excel.Workbooks.Open(resolved)
+            try:
+                excel = win32com.client.GetActiveObject("Excel.Application")
+            except Exception:
+                excel = win32com.client.Dispatch("Excel.Application")
+                should_quit = True
+            wb = None
+            for open_wb in excel.Workbooks:
+                if open_wb.FullName.lower() == resolved.lower() or open_wb.Name.lower() == Path(file_path).name.lower():
+                    wb = open_wb
+                    break
+            should_close = False
+            if wb is None:
+                wb = excel.Workbooks.Open(resolved)
+                should_close = True
             ws = wb.Sheets(sheet_name) if sheet_name else wb.ActiveSheet
             ws.Range(f"{status_col}{row_idx}").Value = status_text
             wb.Save()
-            wb.Close(SaveChanges=True)
+            if should_close:
+                wb.Close(SaveChanges=True)
         except Exception as com_err:
             logger.error(f"COM fallback status update failed: {com_err}")
+        finally:
+            # Why: 単独起動したExcel COMインスタンスを確実に終了し排他ロックを解除
+            if excel and should_quit:
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+                del excel
 
 
 def _detect_unexpected_dialog(expected_hwnd: int = None, auto_dismiss: bool = True) -> tuple[bool, str]:
@@ -763,6 +804,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             raw_args = cmd.get("args", {}).copy()
             args = _resolve_variables(raw_args, variables)
 
+            # Why: アクション種別を問わずステップ実行直前にモーダルダイアログを自動解除しスタック防止
+            has_dlg, dlg_title = _detect_unexpected_dialog(last_win_args.get("mapped_hwnd") if last_win_args else None, auto_dismiss=True)
+            if has_dlg:
+                logger.warning(f"[{workflow_id}] Unexpected dialog detected and dismissed before step {i+1}: {dlg_title}")
+
             try:
 
             if loop_stack:
@@ -1242,6 +1288,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 keyboard.press('v')
                                 keyboard.release('v')
                                 keyboard.release(Key.ctrl)
+                                time.sleep(0.04)
+                                # Why: ペースト直後に右矢印キーを送信しReact/Vue等の仮想DOM inputイベントを強制発火
+                                keyboard.press(Key.right)
+                                keyboard.release(Key.right)
                                 time.sleep(0.08)
                             else:
                                 for char in text:
