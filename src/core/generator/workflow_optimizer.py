@@ -48,9 +48,18 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 直近3ステップ内にすでに確定クリックがあれば昇格不要
-        has_recent_click = any(temp_workflow_info[idx].get("raw_action") == "click" for idx in range(i - 1, max(-1, i - 4), -1))
-        if has_recent_click:
+        # Why: 遷移先自身がクリック、または直近にEnter・テキスト入力があればキー操作遷移のためホバー昇格不要
+        if curr_info.get("raw_action") == "click":
+            i += 1
+            continue
+
+        has_recent_action = any(
+            temp_workflow_info[idx].get("raw_action") in ["click", "type_text"] or
+            (temp_workflow_info[idx].get("raw_action") in ["key_down", "key_press", "press_key"] and 
+             str(temp_workflow_info[idx].get("semantic_role", "")).lower() in ["enter", "return"])
+            for idx in range(i - 1, max(-1, i - 4), -1)
+        )
+        if has_recent_action:
             i += 1
             continue
 
@@ -81,7 +90,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             cand = temp_workflow_info[k]
             cand_act = cand.get("raw_action", "")
 
-            if cand_act == "click":
+            # Why: 直近のキー入力やクリックを跨いで過去の無関係な移動へ遡るのを完全阻止
+            if cand_act in ["click", "type_text", "key_down", "key_press", "press_key"]:
                 break
 
             if cand_act != "move":
