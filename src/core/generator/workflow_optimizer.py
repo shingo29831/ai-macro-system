@@ -117,6 +117,72 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
 
     return temp_workflow_info
 
+def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Why: クリック直前の移動やスクロール合間の移動を除去しスクロールを1つに集約
+    if not temp_workflow_info:
+        return temp_workflow_info
+
+    result = []
+    n = len(temp_workflow_info)
+    i = 0
+    while i < n:
+        curr = temp_workflow_info[i]
+        act = curr.get("raw_action", "")
+
+        if act == "move":
+            next_act = None
+            for j in range(i + 1, min(n, i + 4)):
+                c_act = temp_workflow_info[j].get("raw_action", "")
+                if c_act != "move":
+                    next_act = c_act
+                    break
+            if next_act in ["click", "scroll"]:
+                i += 1
+                continue
+
+        if act == "scroll":
+            tot_dx = curr.get("dx", 0.0)
+            tot_dy = curr.get("dy", 0.0)
+            base_x = curr.get("cursor_x", curr.get("x", 0))
+            base_y = curr.get("cursor_y", curr.get("y", 0))
+            last_eid = curr.get("event_id")
+            evts = list(curr.get("fallback_events", [curr.get("event_id")]))
+
+            j = i + 1
+            while j < n:
+                nxt = temp_workflow_info[j]
+                n_act = nxt.get("raw_action", "")
+                if n_act == "move":
+                    mx, my = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
+                    if abs(mx - base_x) <= 30 and abs(my - base_y) <= 30:
+                        j += 1
+                        continue
+                    break
+                if n_act == "scroll":
+                    sx, sy = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
+                    if abs(sx - base_x) <= 40 and abs(sy - base_y) <= 40:
+                        tot_dx += nxt.get("dx", 0.0)
+                        tot_dy += nxt.get("dy", 0.0)
+                        last_eid = nxt.get("event_id")
+                        evts.extend(nxt.get("fallback_events", [last_eid]))
+                        j += 1
+                        continue
+                    break
+                break
+
+            merged = curr.copy()
+            merged["dx"] = round(tot_dx, 2)
+            merged["dy"] = round(tot_dy, 2)
+            merged["event_id"] = last_eid
+            merged["fallback_events"] = evts
+            result.append(merged)
+            i = j
+            continue
+
+        result.append(curr)
+        i += 1
+    return result
+
 def optimize_workflow_events(
     temp_workflow_info: List[Dict[str, Any]], 
     workflow_id: str, 
@@ -400,6 +466,7 @@ def optimize_workflow_events(
 
     temp_workflow_info = layout_cleaned
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
+    temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:

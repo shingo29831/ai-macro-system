@@ -292,13 +292,29 @@ def process_pending_single_click():
         run_click_process_thread(event, input_type="mouse_click", click_count=1)
 
 
+_last_scroll_time = 0.0
+_last_scroll_info = None
+_scroll_dedup_lock = threading.Lock()
+
 def process_scroll_event(event: dict):
+    global _last_scroll_time, _last_scroll_info
     try:
-        x = event["x"]
-        y = event["y"]
-        dx = event["dx"]
-        dy = event["dy"]
+        import time
+        now = time.time()
+        x = int(event["x"])
+        y = int(event["y"])
+        dx = float(event["dx"])
+        dy = float(event["dy"])
         source = event.get("source", "unknown")
+
+        with _scroll_dedup_lock:
+            # Why: 30ms以内の同一スクロールの二重記録を完全排除
+            if _last_scroll_info is not None:
+                lx, ly, ldx, ldy = _last_scroll_info
+                if (now - _last_scroll_time < 0.03) and abs(x - lx) <= 5 and abs(y - ly) <= 5 and (dx == ldx) and (dy == ldy):
+                    return
+            _last_scroll_time = now
+            _last_scroll_info = (x, y, dx, dy)
 
         point_window = window_inspector.get_window_title_at_point(x, y)
         if window_inspector.should_ignore_window(point_window.get("title")):

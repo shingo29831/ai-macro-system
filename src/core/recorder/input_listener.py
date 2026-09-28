@@ -98,6 +98,9 @@ def on_scroll(x, y, dx, dy):
     _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
+    # Why: Windowsネイティブスクロールフック有効時の二重記録を完全排除
+    if getattr(state, "native_scroll_hook_active", False):
+        return
     try: 
         # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
         process_scroll_event({

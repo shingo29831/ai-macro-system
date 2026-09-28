@@ -29,6 +29,20 @@ class WorkflowStoppedException(Exception):
     """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
     pass
 
+def _get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> tuple[int, int]:
+    # Why: 記録時と実行時のウィンドウ配置の差分をオフセットとして補正
+    if not hwnd or platform.system() != "Windows":
+        return 0, 0
+    try:
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        rect = RECT()
+        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return rect.left - rec_x, rect.top - rec_y
+    except Exception:
+        pass
+    return 0, 0
+
 def _get_excel_application(hwnd: int = None, expected_title: str = ""):
     if platform.system() != "Windows":
         return None
@@ -748,9 +762,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 mapped_hwnd
                             )
 
+                target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or (ctypes.windll.user32.GetForegroundWindow() if platform.system() == "Windows" else None)
+                off_x, off_y = _get_window_offset(target_hwnd_for_offset, current_win_x, current_win_y)
+
                 if method == "click":
-                    x = args.get("x", 0)
-                    y = args.get("y", 0)
+                    x = args.get("x", 0) + off_x
+                    y = args.get("y", 0) + off_y
                     button_str = args.get("button", "left")
                     clicks = args.get("clicks", 1)
                     excel_dest_cell = args.get("excel_dest_cell")
@@ -783,8 +800,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         mouse.click(btn, clicks)
 
                 elif method == "move":
-                    x = args.get("x", 0)
-                    y = args.get("y", 0)
+                    x = args.get("x", 0) + off_x
+                    y = args.get("y", 0) + off_y
                     excel_dest_cell = args.get("excel_dest_cell")
                     
                     skip_physical = False
@@ -817,11 +834,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     y = args.get("y")
                     
                     if x is not None and y is not None and (x != 0 or y != 0):
+                        sx, sy = int(x + off_x), int(y + off_y)
                         if platform.system() == "Windows":
-                            ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                            ctypes.windll.user32.SetCursorPos(sx, sy)
                         else:
-                            mouse.position = (x, y)
-                        time.sleep(0.01)
+                            mouse.position = (sx, sy)
+                        time.sleep(0.03)
                     
                     if platform.system() == "Windows":
                         if dy != 0.0:

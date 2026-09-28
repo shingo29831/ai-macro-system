@@ -491,14 +491,15 @@ def build_and_save_macro(
             last_cmd = commands_data[-1]
             
             if last_cmd["method"] == "scroll":
-                if last_cmd["args"]["x"] == cmd["args"]["x"] and last_cmd["args"]["y"] == cmd["args"]["y"]:
+                # Why: 座標完全一致ではなく微小な揺れ(25px以内)を許容してスクロールを集約
+                if abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
                     last_cmd["args"]["dx"] = round(last_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
                     last_cmd["args"]["dy"] = round(last_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
                     merged = True
             elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
                 prev_cmd = commands_data[-2]
                 if prev_cmd["method"] == "scroll":
-                    if last_cmd["args"]["duration"] < 1.0 and prev_cmd["args"]["x"] == cmd["args"]["x"] and prev_cmd["args"]["y"] == cmd["args"]["y"]:
+                    if last_cmd["args"]["duration"] < 1.2 and abs(prev_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(prev_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
                         prev_cmd["args"]["dx"] = round(prev_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
                         prev_cmd["args"]["dy"] = round(prev_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
                         commands_data.pop()
