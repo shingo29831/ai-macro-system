@@ -27,15 +27,24 @@ def set_dpi_awareness():
                 pass
 
 
-def set_ime_state(text: str):
+def set_ime_state(text: str = "", target_state: bool | None = None):
     """アクティブウィンドウのIME状態（全角/半角）を制御する"""
     if platform.system() != "Windows":
         return
     try:
+        # Why: 日本語を含む場合はIMEをON、ASCIIのみは強制OFFにして半角英数入力の破壊を防止
+        if target_state is None:
+            has_japanese = any(ord(c) > 0x7F for c in text)
+            open_status = 1 if has_japanese else 0
+        else:
+            open_status = 1 if target_state else 0
+
         hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return
         default_ime_wnd = ctypes.windll.imm32.ImmGetDefaultIMEWnd(hwnd)
         if default_ime_wnd:
-            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
-            time.sleep(0.15)
+            ctypes.windll.user32.SendMessageW(default_ime_wnd, WM_IME_CONTROL, IMC_SETOPENSTATUS, open_status)
+            time.sleep(0.05)
     except Exception as e:
         logger.warning(f"Failed to set IME state: {e}")

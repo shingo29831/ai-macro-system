@@ -20,6 +20,152 @@ MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
 WHEEL_DELTA = 120
 
+
+def _set_clipboard_text(text: str) -> bool:
+    # Why: Windows API直接呼び出しにより外部依存ゼロで確実なクリップボード転記を実現
+    if platform.system() != "Windows":
+        return False
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.CloseClipboard.restype = wintypes.BOOL
+
+        for _ in range(5):
+            if user32.OpenClipboard(None):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+
+        user32.EmptyClipboard()
+        buffer = ctypes.create_unicode_buffer(text)
+        size = ctypes.sizeof(buffer)
+        h_mem = kernel32.GlobalAlloc(0x0002, size)
+        if not h_mem:
+            user32.CloseClipboard()
+            return False
+
+        p_mem = kernel32.GlobalLock(h_mem)
+        if not p_mem:
+            kernel32.GlobalFree(h_mem)
+            user32.CloseClipboard()
+            return False
+
+        ctypes.memmove(p_mem, buffer, size)
+        kernel32.GlobalUnlock(h_mem)
+        user32.SetClipboardData(13, h_mem)
+        user32.CloseClipboard()
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to set clipboard text: {e}")
+        return False
+
+
+def _resolve_variables(data, variables: dict):
+    # Why: ワークフロー内の全引数パラメータに対する動的変数を透過的に再帰展開
+    if not variables:
+        return data
+    if isinstance(data, str):
+        res = data
+        for k, v in variables.items():
+            res = res.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
+        return res
+    elif isinstance(data, dict):
+        return {k: _resolve_variables(v, variables) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_resolve_variables(elem, variables) for elem in data]
+    return data
+
+
+def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True) -> list[dict]:
+    # Why: openpyxl直読によりExcel編集ロック(RPC拒否)やゾンビプロセスを完全回避
+    resolved = str(Path(file_path).resolve())
+    records = []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(resolved, data_only=True)
+        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+        header_map = {}
+        for col_idx in range(1, ws.max_column + 1):
+            col_letter = openpyxl.utils.get_column_letter(col_idx)
+            val = ws.cell(row=1, column=col_idx).value
+            if val is not None:
+                header_map[col_letter] = str(val).strip()
+
+        max_r = end_row or ws.max_row
+        for r in range(start_row, max_r + 1):
+            row_has_val = False
+            row_dict = {"_row_idx": r}
+            for col_idx in range(1, ws.max_column + 1):
+                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                raw_v = ws.cell(row=r, column=col_idx).value
+                if raw_v is not None and str(raw_v).strip() != "":
+                    row_has_val = True
+                v_str = "" if raw_v is None else (raw_v.strftime("%Y-%m-%d") if hasattr(raw_v, "strftime") else str(raw_v).strip())
+                row_dict[col_letter] = v_str
+                if col_letter in header_map:
+                    row_dict[header_map[col_letter]] = v_str
+
+            if not row_has_val:
+                continue
+            if skip_completed and status_col:
+                cur_status = row_dict.get(status_col.upper(), "")
+                if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
+                    continue
+            records.append(row_dict)
+        wb.close()
+        return records
+    except Exception as e:
+        logger.warning(f"openpyxl headless read failed: {e}. Falling back to COM...")
+        return []
+
+
+def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_col: str, status_text: str):
+    # Why: 1レコードごとにExcelへ実行結果を即時確定し二重登録リスクを排除
+    if not file_path or not status_col or not row_idx:
+        return
+    resolved = str(Path(file_path).resolve())
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(resolved)
+        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+        col_idx = openpyxl.utils.column_index_from_string(status_col)
+        ws.cell(row=row_idx, column=col_idx, value=status_text)
+        wb.save(resolved)
+        wb.close()
+    except Exception as e:
+        logger.warning(f"Failed to write status via openpyxl: {e}")
+
+
+def _detect_unexpected_dialog(expected_hwnd: int = None) -> tuple[bool, str]:
+    # Why: 予期せぬエラーモーダルや重複警告の割り込みを非侵入検知
+    if platform.system() != "Windows":
+        return False, ""
+    try:
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not fg_hwnd or fg_hwnd == expected_hwnd:
+            return False, ""
+        cls_buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(fg_hwnd, cls_buf, 256)
+        txt_len = ctypes.windll.user32.GetWindowTextLengthW(fg_hwnd)
+        txt_buf = ctypes.create_unicode_buffer(txt_len + 1)
+        ctypes.windll.user32.GetWindowTextW(fg_hwnd, txt_buf, txt_len + 1)
+        title = txt_buf.value
+        cls_name = cls_buf.value
+        is_dialog = cls_name == "#32770" or any(kw in title for kw in ["エラー", "警告", "確認", "Notice", "Alert", "Error", "Warning"])
+        if is_dialog:
+            return True, f"[{cls_name}] {title}"
+    except Exception:
+        pass
+    return False, ""
+
 _is_running = False
 _stop_requested = False
 
@@ -283,6 +429,21 @@ def _execute_excel_action(args: dict, variables: dict, excel_app, last_win_args:
     elif action == "run_macro":
         if macro_name:
             result = excel_app.Run(macro_name)
+    elif action == "read_records":
+        st_row = args.get("start_row", 2)
+        end_r = args.get("end_row")
+        st_col = args.get("status_column")
+        skip_comp = args.get("skip_completed", True)
+        records = _read_excel_records(file_path, sheet_name, st_row, end_r, st_col, skip_comp)
+        if var_name:
+            variables[var_name] = records
+        result = records
+    elif action == "update_status":
+        r_idx = args.get("row_index")
+        st_col = args.get("status_column")
+        st_val = str(args.get("value", "完了"))
+        _write_excel_status(file_path, sheet_name, r_idx, st_col, st_val)
+        result = True
     else:
         logger.warning(f"[{workflow_id}] Unknown Excel action: {action}")
 
@@ -548,12 +709,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             cmd = commands[i]
                 
             method = cmd.get("method")
-            args = cmd.get("args", {}).copy()
-            
+            raw_args = cmd.get("args", {}).copy()
+            args = _resolve_variables(raw_args, variables)
+
             if loop_stack:
                 current_loop = loop_stack[-1]
                 iteration = current_loop["current_iteration"]
-                
                 seq_vars = args.get("seq_vars", {})
                 for key, seq_info in seq_vars.items():
                     if isinstance(seq_info, dict) and "step" in seq_info:
@@ -587,20 +748,73 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             target_id = args.get("target_id")
 
             if method == "loop_start":
-                loop_count = args.get("loop_count", 10)
-                loop_stack.append({
-                    "start_index": i,
-                    "total_count": loop_count,
-                    "current_iteration": 0
-                })
+                data_source = args.get("data_source", "static")
+                if data_source == "excel":
+                    f_path = args.get("file_path")
+                    s_name = args.get("sheet_name")
+                    st_row = args.get("start_row", 2)
+                    ed_row = args.get("end_row")
+                    st_col = args.get("status_column")
+                    skip_comp = args.get("skip_completed", True)
+                    records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_comp)
+                    
+                    if not records:
+                        # Why: 転記対象行が0件の場合は対応するloop_endまで即座にスキップして安全終了
+                        nest = 1
+                        j = i + 1
+                        while j < len(commands) and nest > 0:
+                            if commands[j].get("method") == "loop_start": nest += 1
+                            elif commands[j].get("method") == "loop_end": nest -= 1
+                            j += 1
+                        i = j
+                        continue
+
+                    item_var = args.get("item_variable", "row")
+                    for k, v in records[0].items():
+                        variables[k] = v
+                    variables[item_var] = records[0]
+
+                    loop_stack.append({
+                        "start_index": i,
+                        "total_count": len(records),
+                        "current_iteration": 0,
+                        "data_source": "excel",
+                        "records": records,
+                        "file_path": f_path,
+                        "sheet_name": s_name,
+                        "status_column": st_col,
+                        "item_variable": item_var
+                    })
+                else:
+                    loop_count = args.get("loop_count", 10)
+                    loop_stack.append({
+                        "start_index": i,
+                        "total_count": loop_count,
+                        "current_iteration": 0,
+                        "data_source": "static"
+                    })
                 i += 1
                 continue
                 
             elif method == "loop_end":
                 if loop_stack:
                     current_loop = loop_stack[-1]
+                    if current_loop.get("data_source") == "excel":
+                        curr_rec = current_loop["records"][current_loop["current_iteration"]]
+                        st_col = current_loop.get("status_column")
+                        f_path = current_loop.get("file_path")
+                        s_name = current_loop.get("sheet_name")
+                        if st_col and f_path:
+                            _write_excel_status(f_path, s_name, curr_rec.get("_row_idx"), st_col, "完了")
+
                     current_loop["current_iteration"] += 1
                     if current_loop["current_iteration"] < current_loop["total_count"]:
+                        if current_loop.get("data_source") == "excel":
+                            next_rec = current_loop["records"][current_loop["current_iteration"]]
+                            item_var = current_loop.get("item_variable", "row")
+                            for k, v in next_rec.items():
+                                variables[k] = v
+                            variables[item_var] = next_rec
                         i = current_loop["start_index"] + 1
                         continue
                     else:
@@ -620,8 +834,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 elif loop_stack:
-                    logger.info(f"[{workflow_id}] Skipping screen match inside loop.")
-                    time.sleep(0.5)
+                    # Why: ループ内でも画面描画の収束待機を行いサーバー遅延による空振りを抑止
+                    from core.recorder.screen_capturer import take_screenshot
+                    p_img, _ = take_screenshot()
+                    time.sleep(0.12)
+                    c_img, _ = take_screenshot()
+                    d_ratio = ((np.array(p_img) != np.array(c_img)).mean())
+                    if d_ratio > 0.02:
+                        time.sleep(0.35)
                 else:
                     match_eid = args.get("match_event_id") or raw_event_id
                     match_info = wait_for_screen_match(
@@ -913,11 +1133,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 elif method == "type_text":
                     text = args.get("text", "")
                     excel_cell = args.get("excel_cell")
-                    
+                    clear_before = args.get("clear_before_typing", False)
+                    use_clip = args.get("use_clipboard")
+                    ime_mode = args.get("ime_mode", "auto")
+
+                    # Why: 突発的ダイアログの割り込みによる入力消失を事前検出
+                    has_dlg, dlg_title = _detect_unexpected_dialog(last_win_args.get("mapped_hwnd") if last_win_args else None)
+                    if has_dlg:
+                        logger.warning(f"[{workflow_id}] Unexpected dialog detected before typing: {dlg_title}")
+
                     if text:
-                        for key, val in variables.items():
-                            text = text.replace(f"{{{{{key}}}}}", str(val)).replace(f"${{{key}}}", str(val))
-                                
                         skip_physical = False
                         if excel_cell and platform.system() == "Windows":
                             try:
@@ -934,42 +1159,42 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             except Exception as e:
                                 logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
                                 excel_app_cache = None
-                                
+
                         if not skip_physical:
-                            # Why: 物理入力時にEXCEL7ワークシート領域をクリックしてフォーカスを確実に確立
-                            if platform.system() == "Windows":
-                                try:
-                                    import win32gui
-                                    target_h = (last_win_args.get("mapped_hwnd") if last_win_args else None) or ctypes.windll.user32.GetForegroundWindow()
-                                    excel7_h = None
-                                    def _focus_ex7(c, _):
-                                        nonlocal excel7_h
-                                        if win32gui.GetClassName(c) == "EXCEL7":
-                                            excel7_h = c
-                                            return False
-                                        return True
-                                    if win32gui.GetClassName(target_h) == "EXCEL7":
-                                        excel7_h = target_h
-                                    else:
-                                        win32gui.EnumChildWindows(target_h, _focus_ex7, None)
-                                    if excel7_h:
-                                        ctypes.windll.user32.SetForegroundWindow(target_h)
-                                        rect = win32gui.GetWindowRect(excel7_h)
-                                        click_x = rect[0] + 50
-                                        click_y = rect[1] + 50
-                                        ctypes.windll.user32.SetCursorPos(click_x, click_y)
-                                        time.sleep(0.02)
-                                        ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
-                                        ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
-                                        time.sleep(0.05)
-                                except Exception:
-                                    pass
-                            set_ime_state(text)
-                            for char in text:
-                                _check_stop()
-                                keyboard.type(char)
+                            if clear_before:
+                                keyboard.press(Key.ctrl)
+                                keyboard.press('a')
+                                keyboard.release('a')
+                                keyboard.release(Key.ctrl)
+                                time.sleep(0.04)
+                                keyboard.press(Key.backspace)
+                                keyboard.release(Key.backspace)
+                                time.sleep(0.04)
+
+                            if ime_mode == "off":
+                                set_ime_state(text, target_state=False)
+                            elif ime_mode == "on":
+                                set_ime_state(text, target_state=True)
+                            else:
+                                set_ime_state(text)
+
+                            # Why: 日本語または改行を含むテキストはクリップボードペーストでIME非同期変換事故を完全根絶
+                            if use_clip is None:
+                                use_clip = any(ord(c) > 0x7F for c in text) or "\n" in text or len(text) > 4
+
+                            if use_clip and _set_clipboard_text(text):
                                 time.sleep(0.03)
-                            time.sleep(0.2)
+                                keyboard.press(Key.ctrl)
+                                keyboard.press('v')
+                                keyboard.release('v')
+                                keyboard.release(Key.ctrl)
+                                time.sleep(0.08)
+                            else:
+                                for char in text:
+                                    _check_stop()
+                                    keyboard.type(char)
+                                    time.sleep(0.02)
+                                time.sleep(0.1)
                         
                 elif method == "press_key":
                     key_str = args.get("key", "")

@@ -37,6 +37,9 @@ class TypeTextArgs(BaseModel):
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+    use_clipboard: Optional[bool] = Field(default=None, description="Inject text via clipboard paste (Ctrl+V) to avoid IME desync.")
+    clear_before_typing: Optional[bool] = Field(default=False, description="Clear existing field text (Ctrl+A, Backspace) before typing.")
+    ime_mode: Optional[Literal["auto", "on", "off"]] = Field(default="auto", description="Explicit IME mode control.")
 
 class TypeTextCommand(BaseModel):
     method: Literal["type_text"] = "type_text"
@@ -95,6 +98,15 @@ class LoopStartArgs(BaseModel):
     loop_count: int = Field(default=1, description="Number of times to repeat the loop.")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    data_source: Optional[Literal["static", "excel", "variable"]] = Field(default="static", description="Loop data source type.")
+    file_path: Optional[str] = Field(default=None, description="Path to Excel data file.")
+    sheet_name: Optional[str] = Field(default=None, description="Sheet name for data loop.")
+    start_row: Optional[int] = Field(default=2, description="1-based starting row index.")
+    end_row: Optional[int] = Field(default=None, description="1-based ending row index.")
+    status_column: Optional[str] = Field(default=None, description="Column to write execution status (e.g., 'E').")
+    skip_completed: Optional[bool] = Field(default=True, description="Skip rows where status_column has value.")
+    items_variable: Optional[str] = Field(default=None, description="Variable name holding list of items.")
+    item_variable: Optional[str] = Field(default="row", description="Variable name to store current row/item dict.")
 
 class LoopStartCommand(BaseModel):
     method: Literal["loop_start"] = "loop_start"
@@ -113,7 +125,7 @@ class ExcelArgs(BaseModel):
         "open_workbook", "save_workbook", "close_workbook",
         "read_cell", "write_cell", "read_range", "write_range",
         "select_sheet", "add_sheet", "insert_row", "delete_row",
-        "clear_range", "run_macro"
+        "clear_range", "run_macro", "read_records", "update_status"
     ] = Field(..., description="Excel RPA action type.")
     file_path: Optional[str] = Field(default=None, description="Workbook path.")
     sheet_name: Optional[str] = Field(default=None, description="Target worksheet name.")
@@ -126,10 +138,37 @@ class ExcelArgs(BaseModel):
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+    engine: Optional[Literal["auto", "direct", "com"]] = Field(default="auto", description="Engine mode ('direct' uses openpyxl headless, 'com' uses Excel UI).")
+    row_index: Optional[int] = Field(default=None, description="Target row index for update_status.")
+    status_column: Optional[str] = Field(default=None, description="Target status column letter.")
 
 class ExcelCommand(BaseModel):
     method: Literal["excel_action"] = "excel_action"
     args: ExcelArgs
+
+class BrowserArgs(BaseModel):
+    action: Literal[
+        "open_url", "click_element", "type_text", "read_text",
+        "read_attribute", "select_option", "set_checkbox",
+        "wait_element", "execute_script", "close_tab", "switch_tab"
+    ] = Field(..., description="Browser RPA action type.")
+    url: Optional[str] = Field(default=None, description="Target URL for navigation.")
+    selector: Optional[str] = Field(default=None, description="CSS selector or XPath for target element.")
+    selector_type: Literal["css", "xpath", "text", "auto"] = Field(default="auto", description="Type of selector.")
+    text: Optional[str] = Field(default=None, description="Text string to type or match.")
+    value: Optional[Any] = Field(default=None, description="Value to set, option value, or checked state.")
+    attribute_name: Optional[str] = Field(default=None, description="Attribute name to read (e.g. href, value).")
+    variable_name: Optional[str] = Field(default=None, description="Variable name to store output.")
+    script: Optional[str] = Field(default=None, description="JavaScript code snippet to execute.")
+    timeout_sec: float = Field(default=10.0, description="Timeout in seconds for waiting.")
+    clear_before_typing: bool = Field(default=True, description="Clear existing input before typing.")
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+
+class BrowserCommand(BaseModel):
+    method: Literal["browser_action"] = "browser_action"
+    args: BrowserArgs
 
 MacroCommand = Union[
     WaitCommand, 
@@ -141,7 +180,8 @@ MacroCommand = Union[
     ScrollCommand,
     LoopStartCommand,
     LoopEndCommand,
-    ExcelCommand
+    ExcelCommand,
+    BrowserCommand
 ]
 
 class ExecutableMacro(BaseModel):
