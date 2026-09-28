@@ -363,11 +363,12 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             user32 = ctypes.windll.user32
             hwnd = win.handle
             
-            user32.keybd_event(0x12, 0, 0, 0)
-            user32.keybd_event(0x12, 0, 2, 0)
             # Why: Alt押下によるOfficeリボンのキーヒント待機をEscで解除し入力阻害を防ぐ
-            user32.keybd_event(0x1B, 0, 0, 0)
-            user32.keybd_event(0x1B, 0, 2, 0)
+            if "excel" in app_name.lower() or "word" in app_name.lower() or "powerpnt" in app_name.lower():
+                user32.keybd_event(0x12, 0, 0, 0)
+                user32.keybd_event(0x12, 0, 2, 0)
+                user32.keybd_event(0x1B, 0, 0, 0)
+                user32.keybd_event(0x1B, 0, 2, 0)
             
             user32.SetForegroundWindow(hwnd)
             user32.BringWindowToTop(hwnd)

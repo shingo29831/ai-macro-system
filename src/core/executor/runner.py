@@ -852,14 +852,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         args.get("mapped_hwnd")
                     )
                     time.sleep(0.5)
-            elif not screen_matched and is_browser_target:
-                logger.info(f"[{workflow_id}] Screen did not match any recorded steps. Opening new tab for fresh browser search.")
-                keyboard.press(Key.ctrl)
-                keyboard.press('t')
-                keyboard.release('t')
-                keyboard.release(Key.ctrl)
-                time.sleep(0.5)
-                force_skip_match_until_enter = True
                 
         except Exception as e:
             logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")
@@ -1030,11 +1022,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_h = args.get("height", 0)
 
             if method not in ["wait", "activate_window", "loop_start", "loop_end", "excel_action", "browser_action"] and raw_event_id:
-                if force_skip_match_until_enter:
-                    logger.info(f"[{workflow_id}] Skipping screen match for fresh browser search.")
-                    if method == "press_key" and args.get("key") == "enter":
-                        force_skip_match_until_enter = False
-                elif loop_stack:
+                if loop_stack:
                     # Why: スピナーやサーバー応答待機を動的収束監視で自動同期
                     _wait_for_screen_settle(timeout=5.0, settle_threshold=0.004)
                 else:
@@ -1163,18 +1151,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
-                raw_mapped = raw_args.get("mapped_hwnd")
-                mapped_hwnd = raw_mapped if raw_mapped == -1 else args.get("mapped_hwnd")
+                mapped_hwnd = args.get("mapped_hwnd")
                 current_alias = args.get("window_alias")
                 
-                # Why: 明示的新規起動(-1)を尊重しつつ閉じたウィンドウの再起動を追跡
+                # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
                 act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
                 if act_hwnd:
-                    if raw_mapped != -1:
-                        args["mapped_hwnd"] = act_hwnd
-                        cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
+                    args["mapped_hwnd"] = act_hwnd
+                    cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
-                    if current_alias and raw_mapped != -1:
+                    if current_alias:
                         for future_cmd in commands[i+1:]:
                             if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
                                 future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
@@ -1259,6 +1245,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         # Why: クリック直前にカーソル位置を安定させホバー/展開UIの空振りを防止
                         time.sleep(0.08)
                         mouse.click(btn, clicks)
+                        # Why: クリック後のフォーカス遷移完了を待機し入力空振りを防止
+                        time.sleep(0.1)
 
                 elif method == "move":
                     x = args.get("x", 0) + off_x
