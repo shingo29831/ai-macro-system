@@ -273,6 +273,24 @@ def optimize_workflow_events(
         
     temp_workflow_info = cleaned_workflow_info
 
+    def _is_business_action(evt: Dict[str, Any]) -> bool:
+        act = evt.get("raw_action", "")
+        role = str(evt.get("semantic_role", "")).lower()
+        if act in ["click", "type_text", "excel_action", "browser_action"]:
+            return True
+        if "key" in act and role not in ["win", "cmd", "windows"]:
+            return True
+        return False
+
+    def _is_system_ui_event(evt: Dict[str, Any]) -> bool:
+        ctx = evt.get("app_context") or {}
+        elem_name = str(ctx.get("element_name", "")).lower()
+        elem_text = str(ctx.get("text", "")).lower()
+        role = str(evt.get("semantic_role", "")).lower()
+        css = str(ctx.get("css_selector", "")).lower()
+        system_terms = ["記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中", "qapplication.qwidget"]
+        return any(term in elem_name or term in elem_text or term in role or term in css for term in system_terms)
+
     shell_cut_info = []
     skip_until_new_window = False
     win_key_window_name = ""
@@ -281,6 +299,9 @@ def optimize_workflow_events(
         if should_cancel():
             raise InterruptedError("Generation cancelled by user")
             
+        if _is_system_ui_event(info):
+            continue
+
         win_name = info.get("window_name", "")
         
         if skip_until_new_window:
@@ -296,10 +317,13 @@ def optimize_workflow_events(
             else:
                 continue
         
-        # Why: アプリ起動用のWinキー操作（key_down/key_press問わず）を確実に検知してシェル操作を完全カット
+        # Why: アプリ起動用のWinキー検知時、起動前ウィンドウの有為でない残骸を完全除去
         if info.get("raw_action") in ["key_down", "key_press", "press_key"] and str(info.get("semantic_role", "")).lower() in ["win", "cmd", "windows"]:
             skip_until_new_window = True
             win_key_window_name = win_name
+            target_win_ops = [e for e in shell_cut_info if e.get("window_name") == win_name]
+            if target_win_ops and not any(_is_business_action(e) for e in target_win_ops):
+                shell_cut_info = [e for e in shell_cut_info if e.get("window_name") != win_name]
             continue
             
         shell_cut_info.append(info)
@@ -367,6 +391,20 @@ def optimize_workflow_events(
 
     temp_workflow_info = layout_cleaned
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
+
+    # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
+    while temp_workflow_info:
+        if temp_workflow_info[0].get("raw_action") == "move":
+            temp_workflow_info.pop(0)
+        else:
+            break
+
+    while temp_workflow_info:
+        last_evt = temp_workflow_info[-1]
+        if _is_system_ui_event(last_evt) or last_evt.get("raw_action") in ["move", "scroll", "unknown", "uia_scan"]:
+            temp_workflow_info.pop()
+        else:
+            break
 
     optimized_workflow_info = []
     idx = 0

@@ -353,24 +353,37 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         last_win_args = None
         
         try:
+            # Why: 全体コマンドから主要ブラウザ操作の有無を包括判定しブラウザモードを確立
+            is_browser_target = any(
+                any(b in str(c.get("args", {}).get("window_title", "")).lower() for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                for c in commands if c.get("method") == "activate_window"
+            ) or any(c.get("method") == "browser_action" for c in commands)
+
             first_activate_cmd = next((cmd for cmd in commands if cmd.get("method") == "activate_window"), None)
             if first_activate_cmd:
                 args = first_activate_cmd.get("args", {})
                 window_title = args.get("window_title", "")
                 app_name = window_title.split("—")[-1].split("-")[-1].strip().lower()
-                is_browser_target = any(b in app_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
                 
-                # Why: 確定したウィンドウHWNDを全コマンドで共有し他ウィンドウ誤操作を防止
-                activated_hwnd = activate_and_restore_window(
-                    window_title,
-                    args.get("x", 0),
-                    args.get("y", 0),
-                    args.get("width", 0),
-                    args.get("height", 0),
-                    workflow_id,
-                    args.get("launch_cmd", ""),
-                    args.get("mapped_hwnd")
-                )
+                # Why: 先頭ウィンドウが過渡的な場合に備え、後続に別ウィンドウがあれば単独失敗を許容
+                activated_hwnd = None
+                try:
+                    activated_hwnd = activate_and_restore_window(
+                        window_title,
+                        args.get("x", 0),
+                        args.get("y", 0),
+                        args.get("width", 0),
+                        args.get("height", 0),
+                        workflow_id,
+                        args.get("launch_cmd", ""),
+                        args.get("mapped_hwnd")
+                    )
+                except Exception as e:
+                    has_subsequent_activate = any(c.get("method") == "activate_window" for c in commands[1:])
+                    if has_subsequent_activate:
+                        logger.warning(f"[{workflow_id}] First window activation bypassed: {e}")
+                    else:
+                        raise
                 if activated_hwnd:
                     args["mapped_hwnd"] = activated_hwnd
                     first_alias = args.get("window_alias")

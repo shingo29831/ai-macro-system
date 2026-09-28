@@ -302,6 +302,8 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                     launch_cmd = "start msedge"
             elif "excel" in lower_app_name:
                 launch_cmd = "start excel"
+            elif "visual studio code" in lower_app_name or lower_app_name == "code":
+                launch_cmd = "code"
             
         if launch_cmd:
             before_hwnds.update(w.handle for w in desktop.windows(visible_only=True))
