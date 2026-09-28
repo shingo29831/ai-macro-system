@@ -10,12 +10,12 @@ from typing import List, Dict, Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Why: ドロップダウン等のホバー操作を保持しつつ遷移の契機となった最後の要素のみクリックへ昇格
-    n = len(temp_workflow_info)
-    if n == 0:
+    # Why: ドロップダウン等のホバー操作を保持しつつ遷移の契機となった要素のクリックを正しく生成
+    if not temp_workflow_info:
         return temp_workflow_info
 
-    for i in range(1, n):
+    i = 1
+    while i < len(temp_workflow_info):
         curr_info = temp_workflow_info[i]
         prev_info = temp_workflow_info[i - 1]
 
@@ -45,6 +45,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                     transition_detected = True
 
         if not transition_detected:
+            i += 1
             continue
 
         candidate_idx = None
@@ -93,7 +94,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 if clean_title and (clean_title in c_name.lower() or clean_title in c_url.lower()):
                     score = max(score, 9)
 
-            if score > best_score:
+            if score > best_match_score:
                 best_match_score = score
                 candidate_idx = k
 
@@ -110,6 +111,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             nav_click["button"] = "left"
             nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
             temp_workflow_info.insert(candidate_idx + 1, nav_click)
+            i += 2
+        else:
             i += 1
 
     return temp_workflow_info
