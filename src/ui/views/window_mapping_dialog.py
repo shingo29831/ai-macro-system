@@ -152,6 +152,15 @@ class WindowMappingDialog(QDialog):
             self.loop_launch_checkbox.setChecked(False)
             btn_layout.addWidget(self.loop_launch_checkbox)
 
+        btn_layout = QHBoxLayout()
+        self.loop_launch_checkbox = None
+        if self.has_loop:
+            self.loop_launch_checkbox = CheckBox("ループのたびに新規起動する")
+            self.loop_launch_checkbox.setChecked(False)
+            # Why: 新規起動(-1)選択時のみ動的に表示するため初期状態は非表示
+            self.loop_launch_checkbox.setVisible(False)
+            btn_layout.addWidget(self.loop_launch_checkbox)
+
         self.cancel_btn = PushButton("キャンセル")
         self.cancel_btn.clicked.connect(self.reject)
 
@@ -266,6 +275,13 @@ class WindowMappingDialog(QDialog):
         for widget in self.thumbnail_widgets:
             if not widget.is_confirmed:
                 widget.set_selected(widget.hwnd == hwnd)
+        # Why: 新規起動(-1)選択時のみループ毎起動オプションを表示し既存窓選択時は非表示
+        if self.loop_launch_checkbox:
+            if hwnd == -1:
+                self.loop_launch_checkbox.setVisible(True)
+            else:
+                self.loop_launch_checkbox.setVisible(False)
+                self.loop_launch_checkbox.setChecked(False)
         self.ok_btn.setEnabled(True)
 
     def on_confirm_clicked(self):
@@ -289,6 +305,11 @@ class WindowMappingDialog(QDialog):
 
     def get_mapping(self):
         return self.mapping
+
+    def get_loop_launch_each_time(self) -> bool:
+        if self.loop_launch_checkbox and self.loop_launch_checkbox.isVisible():
+            return self.loop_launch_checkbox.isChecked()
+        return False
 
     def get_loop_launch_each_time(self) -> bool:
         if self.loop_launch_checkbox:

@@ -283,6 +283,11 @@ class MainWindow(FluentWindow):
                                 c_alias = c_args.get("window_alias", "")
                                 if c_title in grp["titles"] or (c_alias and c_alias in grp["aliases"]):
                                     c_args["mapped_hwnd"] = mapped_hwnd
+                                    # Why: 新規起動(-1)かつユーザーが希望した場合のみループ毎起動フラグを付与
+                                    if mapped_hwnd == -1 and loop_launch_each_time:
+                                        c_args["loop_launch_each_time"] = True
+                                    else:
+                                        c_args["loop_launch_each_time"] = False
                                     if loop_launch_each_time:
                                         c_args["loop_launch_each_time"] = True
             else:

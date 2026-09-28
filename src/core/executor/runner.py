@@ -192,15 +192,39 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
 
     if platform.system() == "Windows":
         excel = None
+        should_quit = False
         try:
             import win32com.client
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            wb = excel.Workbooks.Open(resolved, ReadOnly=True)
+            # Why: 既に開かれているExcelからのインメモリ直接読み取りを優先し切断・排他ロック競合を完全回避
+            try:
+                excel = win32com.client.GetActiveObject("Excel.Application")
+            except Exception:
+                excel = win32com.client.Dispatch("Excel.Application")
+                should_quit = True
+
+            wb = None
+            for open_wb in excel.Workbooks:
+                if open_wb.FullName.lower() == resolved.lower() or open_wb.Name.lower() == Path(file_path).name.lower():
+                    wb = open_wb
+                    break
+
+            should_close = False
+            if wb is None:
+                wb = excel.Workbooks.Open(resolved, ReadOnly=True)
+                should_close = True
+
             ws = wb.Sheets(sheet_name) if sheet_name else wb.ActiveSheet
-            vals = ws.UsedRange.Value
-            wb.Close(SaveChanges=False)
+            vals = None
+            for _ in range(3):
+                try:
+                    vals = ws.UsedRange.Value
+                    break
+                except Exception:
+                    time.sleep(0.2)
+
+            if should_close:
+                wb.Close(SaveChanges=False)
+
             if vals and len(vals) >= start_row:
                 headers = vals[0]
                 header_map = {_col_idx_to_letter(idx + 1): str(h).strip() for idx, h in enumerate(headers) if h is not None}
@@ -212,7 +236,6 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                     row_dict = {"_row_idx": r}
                     for idx, cell in enumerate(row_data):
                         c_letter = _col_idx_to_letter(idx + 1)
-                        # Why: COM経由取得時も数値のfloat化(100.0)を整数へ正規化
                         if cell is None:
                             c_str = ""
                         elif hasattr(cell, "strftime"):
@@ -227,15 +250,13 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                             row_dict[header_map[c_letter]] = c_str
                     if skip_completed and status_col:
                         cur_status = str(row_dict.get(status_col.upper(), "")).strip()
-                        # Why: 中断・再テスト時のスタックを防ぐため「処理中」は未完了扱いで再実行
                         if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
                             continue
                     records.append(row_dict)
         except Exception as com_err:
             logger.error(f"COM fallback read also failed: {com_err}")
         finally:
-            # Why: COMプロセス明示破棄によりEXCEL.EXEゾンビプロセスの蓄積を完全防止
-            if excel:
+            if excel and should_quit:
                 try:
                     excel.Quit()
                 except Exception:
@@ -785,15 +806,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     else:
                         raise
                 if activated_hwnd:
-                    args["mapped_hwnd"] = activated_hwnd
                     first_alias = args.get("window_alias")
+                    # Why: ループ毎新規起動指定時は初回HWNDでコマンド引数を固定せず都度起動を保証
+                    if not args.get("loop_launch_each_time"):
+                        args["mapped_hwnd"] = activated_hwnd
                     for cmd in commands:
                         if cmd.get("method") == "activate_window":
                             cmd_args = cmd.setdefault("args", {})
-                            # Why: 初回新規起動したウィンドウを後続コマンドでも共有し重複起動を防止
                             cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
                             if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
-                                # Why: ループ毎新規起動指定時は初回HWNDを後続に固定せず都度起動を許容
                                 if not cmd_args.get("loop_launch_each_time"):
                                     cmd_args["mapped_hwnd"] = activated_hwnd
                 time.sleep(1.0)
@@ -1213,11 +1234,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 win_w = args.get("width", 0)
                 win_h = args.get("height", 0)
                 launch_cmd = args.get("launch_cmd", "")
-                loop_launch = raw_args.get("loop_launch_each_time", False)
-                raw_mapped = raw_args.get("mapped_hwnd")
+                loop_launch = raw_args.get("loop_launch_each_time", False) or args.get("loop_launch_each_time", False)
 
-                # Why: ループ毎新規起動が有効かつ新規起動(-1)指定時は毎周回新規起動を実行
-                if loop_stack and loop_launch and (raw_mapped == -1 or args.get("mapped_hwnd") == -1):
+                # Why: ループ毎新規起動が有効な場合は各周回でmapped_hwnd=-1として新規起動を実行
+                if loop_stack and loop_launch:
                     mapped_hwnd = -1
                 else:
                     mapped_hwnd = args.get("mapped_hwnd")
@@ -1233,6 +1253,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             for future_cmd in commands[i+1:]:
                                 if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
                                     future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
+                    last_win_args["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:

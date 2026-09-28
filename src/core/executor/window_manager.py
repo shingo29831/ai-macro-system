@@ -288,21 +288,25 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
             if "firefox" in lower_app_name:
                 if "プライベート" in lower_title or "private" in lower_title:
                     launch_cmd = "start firefox -private-window"
-                else:
-                    # Why: 既存プロセス存在時も確実に独立した新規ウィンドウを起動
+                elif force_new:
+                    # Why: 新規起動要求時は既存プロセス存在下でも確実に独立した新規ウィンドウを開く
                     launch_cmd = "start firefox -new-window"
+                else:
+                    launch_cmd = "start firefox"
             elif "chrome" in lower_app_name:
                 if "シークレット" in lower_title or "incognito" in lower_title:
                     launch_cmd = "start chrome --incognito"
-                else:
-                    # Why: 既存プロセス存在時も確実に独立した新規ウィンドウを起動
+                elif force_new:
                     launch_cmd = "start chrome --new-window"
+                else:
+                    launch_cmd = "start chrome"
             elif "edge" in lower_app_name:
                 if "inprivate" in lower_title:
                     launch_cmd = "start msedge --inprivate"
-                else:
-                    # Why: 既存プロセス存在時も確実に独立した新規ウィンドウを起動
+                elif force_new:
                     launch_cmd = "start msedge --new-window"
+                else:
+                    launch_cmd = "start msedge"
             elif "excel" in lower_app_name:
                 launch_cmd = "start excel"
             elif "visual studio code" in lower_app_name or lower_app_name == "code":
