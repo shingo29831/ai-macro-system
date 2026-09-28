@@ -206,6 +206,16 @@ class BrowserInspector(BaseInspector):
                     log_debug("座標からのUI要素特定に成功しました")
                 except Exception as e:
                     log_debug(f"座標からの要素特定に失敗: {e}")
+                    # Why: desktop.from_point失敗時に対象ウィンドウ経由で要素特定を再試行
+                    try:
+                        hwnd = window_info.get("hwnd") or window_info.get("handle") or ctypes.windll.user32.GetForegroundWindow()
+                        if hwnd:
+                            win_obj = desktop.window(handle=int(hwnd))
+                            elem = win_obj.from_point(int(x), int(y))
+                            target_elements.append(("WindowPointElement", elem))
+                            log_debug("ウィンドウ座標からのUI要素特定に成功しました")
+                    except Exception as e2:
+                        log_debug(f"ウィンドウからの要素特定にも失敗: {e2}")
 
             extracted_text = ""
             primary_elem = None

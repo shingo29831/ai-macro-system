@@ -64,15 +64,15 @@ class TypingSessionAggregator:
                 diff_val = _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff"))
                 time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
                 
+                # Why: サジェスト展開による画面差分や要素名変化で入力セッションが細切れになるのを防止
+                is_ongoing_typing = action in ["key_down", "key_press", "key_combo"] and time_diff < 1500
                 if current_window and last_window and current_window != last_window:
                     self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
-                elif diff_val > 15.0:
-                    if time_diff > 500:
-                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                elif not is_ongoing_typing and diff_val > 15.0 and time_diff > 500:
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
                 elif time_diff > 3000:
                     self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
-                elif last_element and curr_element and last_element != curr_element:
-                    # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
+                elif not is_ongoing_typing and last_element and curr_element and last_element != curr_element:
                     if diff_val > 5.0 or time_diff > 2000:
                         self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
 
@@ -456,6 +456,11 @@ class TypingSessionAggregator:
 
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
+                elem_name = str(app_ctx.get("element_name") or "")
+                title_q = _extract_query_from_title(elem_name)
+                if title_q and title_q not in confirmed_queries:
+                    confirmed_queries.append(title_q)
+
                 ctrl_type = str(app_ctx.get("control_type", "")).lower()
                 if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
                     continue
@@ -470,7 +475,7 @@ class TypingSessionAggregator:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
                         if is_url_query and extracted not in confirmed_queries:
-                            confirmed_queries.append(extracted)
+                            confirmed_queries.insert(0, extracted)
                         # Why: 一番最後に確定された最新のUIA要素文字列のみを採用し入力途中の巻き戻りを防止
                         elif not is_url_query and not latest_uia_text:
                             latest_uia_text = extracted
@@ -517,12 +522,11 @@ class TypingSessionAggregator:
                     matched_future_query = fq
                     break
 
-        if not has_actual_chars and not fallback_text and not any_ime_active:
-            final_text = ""
+        if confirmed_queries:
+            # Why: Tab補完やサジェストで選択された確定クエリを未確定ローマ字バッファより最優先
+            final_text = confirmed_queries[0]
         elif matched_future_query:
             final_text = matched_future_query
-        elif confirmed_queries:
-            final_text = confirmed_queries[0]
         elif (has_suggest_selection or any_ime_active) and latest_uia_text:
             final_text = latest_uia_text
         elif latest_uia_text and fallback_text and (fallback_text in latest_uia_text or latest_uia_text in fallback_text):

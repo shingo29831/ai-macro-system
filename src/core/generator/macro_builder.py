@@ -203,16 +203,28 @@ def build_and_save_macro(
             cmd = "MOUSE_CLICK"
             intent = "CLICK_UI_ELEMENT"
             desc = f"Click on the {final_semantic_role} element."
+            app_ctx = info.get("app_context") or {}
             params = ActionParameters(
-                target=UniversalSelector(semantic_role=final_semantic_role),
+                target=UniversalSelector(
+                    semantic_role=final_semantic_role,
+                    css_selector=app_ctx.get("css_selector"),
+                    xpath=app_ctx.get("xpath"),
+                    url_pattern=app_ctx.get("url")
+                ),
                 button=info["button"]
             )
         elif raw_action == "move":
             cmd = "MOUSE_MOVE"
             intent = "MOVE_CURSOR"
             desc = f"Move cursor to the {final_semantic_role} element."
+            app_ctx = info.get("app_context") or {}
             params = ActionParameters(
-                target=UniversalSelector(semantic_role=final_semantic_role)
+                target=UniversalSelector(
+                    semantic_role=final_semantic_role,
+                    css_selector=app_ctx.get("css_selector"),
+                    xpath=app_ctx.get("xpath"),
+                    url_pattern=app_ctx.get("url")
+                )
             )
         elif raw_action == "type_text":
             cmd = "TYPE_TEXT"
@@ -361,6 +373,12 @@ def build_and_save_macro(
                 except Exception as e:
                     logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
         cur_info = workflow_info_map.get(raw_event_id, {})
+        app_ctx = cur_info.get("app_context") or {}
+        elem_name = app_ctx.get("element_name") or cur_info.get("semantic_role") or ""
+        css_sel = app_ctx.get("css_selector")
+        xpath_sel = app_ctx.get("xpath")
+        target_url = app_ctx.get("url") or app_ctx.get("text")
+
         if cmd_type == "MOUSE_CLICK":
             # Why: UIA相対座標が欠落していても絶対座標フォールバックでクリック脱落を完全防止
             click_x = cur_info.get("cursor_x", 0)
@@ -378,6 +396,15 @@ def build_and_save_macro(
                 "target_id": target_id_for_healer,
                 "raw_event_id": raw_event_id
             }
+            if elem_name: cmd_args["element_name"] = elem_name
+            if css_sel:
+                cmd_args["selector"] = css_sel
+                cmd_args["selector_type"] = "css"
+            elif xpath_sel:
+                cmd_args["selector"] = xpath_sel
+                cmd_args["selector_type"] = "xpath"
+            if target_url and str(target_url).startswith("http"):
+                cmd_args["url"] = target_url
             if params.excel_dest_cell:
                 cmd_args["excel_dest_cell"] = params.excel_dest_cell
             raw_commands_data.append({
@@ -399,6 +426,15 @@ def build_and_save_macro(
                 "target_id": target_id_for_healer,
                 "raw_event_id": raw_event_id
             }
+            if elem_name: cmd_args["element_name"] = elem_name
+            if css_sel:
+                cmd_args["selector"] = css_sel
+                cmd_args["selector_type"] = "css"
+            elif xpath_sel:
+                cmd_args["selector"] = xpath_sel
+                cmd_args["selector_type"] = "xpath"
+            if target_url and str(target_url).startswith("http"):
+                cmd_args["url"] = target_url
             if params.excel_dest_cell:
                 cmd_args["excel_dest_cell"] = params.excel_dest_cell
             raw_commands_data.append({
