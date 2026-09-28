@@ -104,6 +104,31 @@ def _col_idx_to_letter(col_idx: int) -> str:
     return res
 
 
+def _extract_referenced_columns(commands_slice: list[dict]) -> set[str]:
+    # Why: 文字列テンプレートからExcel抽出参照列を網羅検出しデータ破壊を完全防止
+    import re
+    ref_cols = set()
+    pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
+
+    def _scan(val):
+        if isinstance(val, str):
+            for m in pattern.finditer(val):
+                token = (m.group(1) or m.group(2)).strip()
+                if "." in token:
+                    token = token.split(".")[-1].strip()
+                ref_cols.add(token.upper())
+        elif isinstance(val, dict):
+            for v in val.values():
+                _scan(v)
+        elif isinstance(val, list):
+            for item in val:
+                _scan(item)
+
+    for c in commands_slice:
+        _scan(c.get("args", {}))
+    return ref_cols
+
+
 def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True, target_dir: Path = None) -> list[dict]:
     # Why: 相対パス指定時もtarget_dirからのフォールバック解決によりファイル未検出を根絶
     if not file_path:
@@ -868,10 +893,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         first_excel_loop = next((c for c in commands if c.get("method") == "loop_start" and c.get("args", {}).get("data_source") == "excel"), None)
         if first_excel_loop:
             f_args = first_excel_loop.get("args", {})
+            f_st_col = f_args.get("status_column")
+            all_ref_cols = _extract_referenced_columns(commands)
+            # Why: 抽出対象列とステータス列が一致する場合はステータス列参照を解除
+            if f_st_col and f_st_col.strip().upper() in all_ref_cols:
+                f_st_col = None
             pre_records = _read_excel_records(
                 f_args.get("file_path"), f_args.get("sheet_name"),
                 f_args.get("start_row", 2), f_args.get("end_row"),
-                f_args.get("status_column"), f_args.get("skip_completed", True),
+                f_st_col, f_args.get("skip_completed", True),
                 target_dir=target_dir
             )
             # Why: 全件完了済みの場合も第1行の変数を解決可能にするため全レコードから先行取得
@@ -947,6 +977,21 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     ed_row = args.get("end_row")
                     st_col = args.get("status_column")
                     skip_comp = args.get("skip_completed", True)
+
+                    # Why: ループ内コマンドを走査し文字抽出対象セルへのステータス上書き破壊を完全遮断
+                    nest_sub = 1
+                    j_sub = i + 1
+                    sub_cmds = []
+                    while j_sub < len(commands) and nest_sub > 0:
+                        if commands[j_sub].get("method") == "loop_start": nest_sub += 1
+                        elif commands[j_sub].get("method") == "loop_end": nest_sub -= 1
+                        if nest_sub > 0: sub_cmds.append(commands[j_sub])
+                        j_sub += 1
+                    extracted_cols = _extract_referenced_columns(sub_cmds)
+                    if st_col and st_col.strip().upper() in extracted_cols:
+                        logger.warning(f"[{workflow_id}] status_column '{st_col}' overlaps with extracted data. Disabling status write to protect source cell text.")
+                        st_col = None
+
                     records = _read_excel_records(f_path, s_name, st_row, ed_row, st_col, skip_comp, target_dir=target_dir)
                     
                     # Why: 全件完了済み等で未処理行が0件の場合、テスト再試行のため全レコードから再取得
