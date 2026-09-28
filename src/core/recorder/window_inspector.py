@@ -164,7 +164,7 @@ def build_recording_window_fields(
         "Monitor": window_info.get("monitor"),
     }
 
-def _empty_window_info(error: str) -> dict:
+def get_window_title_at_point(x: int, y: int) -> dict:
     """カーソル指定地点にあるウィンドウのタイトルおよび祖先ウィンドウ情報を取得する"""
     try:
         user32 = ctypes.windll.user32
