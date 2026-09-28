@@ -62,7 +62,8 @@ def on_move(x, y):
     with _hover_timer_lock:
         if _hover_timer is not None:
             _hover_timer.cancel()
-        _hover_timer = threading.Timer(0.3, _on_hover_timeout, args=(int(x), int(y)))
+        # Why: ドロップダウン等の素早いホバー通過(180ms)を逃さず確実に捕捉
+        _hover_timer = threading.Timer(0.18, _on_hover_timeout, args=(int(x), int(y)))
         _hover_timer.daemon = True
         _hover_timer.start()
 

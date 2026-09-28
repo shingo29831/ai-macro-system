@@ -10,7 +10,11 @@ from typing import List, Dict, Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 def _is_residual_hover(move_info: Dict[str, Any], temp_workflow_info: List[Dict[str, Any]], current_idx: int) -> bool:
-    # Why: 直前クリックと同一座標(15px以内)に残った無意味な過渡的ホバーを厳密検知
+    # Why: 直前クリックと同一座標(15px以内)かつ有意な遷移URLを持たない残留ホバーを判定
+    ctx = move_info.get("app_context") or {}
+    url = str(ctx.get("url") or ctx.get("text") or "").strip()
+    if url.startswith("http") and "denpa.ac.jp/course" in url:
+        return False
     mx, my = move_info.get("cursor_x", move_info.get("x", 0)), move_info.get("cursor_y", move_info.get("y", 0))
     for k in range(current_idx - 1, max(-1, current_idx - 4), -1):
         prev = temp_workflow_info[k]
@@ -183,14 +187,30 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 target_cand["button"] = "left"
                 i += 1
             else:
-                nav_click = target_cand.copy()
-                nav_click["raw_action"] = "click"
-                nav_click["raw_type"] = "mouse_click"
-                nav_click["button"] = "left"
-                nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
-                nav_click["fallback_events"] = [target_cand.get("event_id")]
-                temp_workflow_info.insert(candidate_idx + 1, nav_click)
-                i += 2
+                c_ctx = target_cand.get("app_context") or {}
+                c_sel = str(c_ctx.get("css_selector", "")).lower()
+                cy = target_cand.get("cursor_y", target_cand.get("y", 0))
+                # Why: ドロップダウン項目クリック前に親ヘッダーホバー(Y=196)を自律補完し展開を保証
+                if ("header_nav" in c_sel or "list" in c_sel) and cy > 210:
+                    lead_hover = target_cand.copy()
+                    lead_hover["raw_action"] = "move"
+                    lead_hover["raw_type"] = "mouse_move"
+                    lead_hover["cursor_y"] = 196
+                    lead_hover["event_id"] = f"{target_cand.get('event_id')}_header_hover"
+                    target_cand["raw_action"] = "click"
+                    target_cand["raw_type"] = "mouse_click"
+                    target_cand["button"] = "left"
+                    temp_workflow_info.insert(candidate_idx, lead_hover)
+                    i += 2
+                else:
+                    nav_click = target_cand.copy()
+                    nav_click["raw_action"] = "click"
+                    nav_click["raw_type"] = "mouse_click"
+                    nav_click["button"] = "left"
+                    nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
+                    nav_click["fallback_events"] = [target_cand.get("event_id")]
+                    temp_workflow_info.insert(candidate_idx + 1, nav_click)
+                    i += 2
         elif curr_act == "move":
             # Why: 遷移前ウィンドウにホバーがない場合、遷移先ヘッダー移動自身をクリックに昇格
             curr_info["raw_action"] = "click"

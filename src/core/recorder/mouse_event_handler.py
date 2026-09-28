@@ -187,9 +187,7 @@ def process_click_event(event: dict, input_type: str, click_count: int):
 
 
 def run_click_process_thread(event: dict, input_type: str, click_count: int):
-    if state.is_click_processing:
-        return
-    state.is_click_processing = True
+    # Why: 前のクリック処理中であっても連続クリックを破棄せず確実に非同期記録
     threading.Thread(
         target=process_click_event, args=(event, input_type, click_count), daemon=True
     ).start()
@@ -265,10 +263,7 @@ def process_drag_event(event: dict):
 
 
 def run_drag_process_thread(event: dict):
-    if state.is_click_processing:
-        print("前のクリック/ドラッグ処理中のため、このドラッグは無視します")
-        return
-    state.is_click_processing = True
+    # Why: 前のクリック処理中であってもドラッグ操作を破棄せず確実に非同期記録
     threading.Thread(target=process_drag_event, args=(event,), daemon=True).start()
 
 
