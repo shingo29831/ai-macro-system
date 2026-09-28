@@ -7,6 +7,7 @@ import platform
 import ctypes
 import subprocess
 from pathlib import Path
+import numpy as np
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key, Listener as KeyboardListener
 
@@ -85,7 +86,7 @@ def _resolve_variables(data, variables: dict):
 
 
 def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int = 2, end_row: int = None, status_col: str = None, skip_completed: bool = True) -> list[dict]:
-    # Why: openpyxl直読によりExcel編集ロック(RPC拒否)やゾンビプロセスを完全回避
+    # Why: openpyxl直読を最優先し排他ロックや未インストール時はCOM経由で確実に取得
     resolved = str(Path(file_path).resolve())
     records = []
     try:
@@ -123,12 +124,45 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
         wb.close()
         return records
     except Exception as e:
-        logger.warning(f"openpyxl headless read failed: {e}. Falling back to COM...")
-        return []
+        logger.warning(f"openpyxl headless read failed ({e}), falling back to COM...")
+
+    if platform.system() == "Windows":
+        try:
+            import win32com.client
+            excel = win32com.client.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            wb = excel.Workbooks.Open(resolved, ReadOnly=True)
+            ws = wb.Sheets(sheet_name) if sheet_name else wb.ActiveSheet
+            vals = ws.UsedRange.Value
+            wb.Close(SaveChanges=False)
+            if vals and len(vals) >= start_row:
+                headers = vals[0]
+                header_map = {openpyxl.utils.get_column_letter(idx + 1) if 'openpyxl' in locals() else chr(ord('A') + idx): str(h).strip() for idx, h in enumerate(headers) if h is not None}
+                max_r = min(end_row, len(vals)) if end_row else len(vals)
+                for r in range(start_row, max_r + 1):
+                    row_data = vals[r - 1]
+                    if not any(c is not None and str(c).strip() != "" for c in row_data):
+                        continue
+                    row_dict = {"_row_idx": r}
+                    for idx, cell in enumerate(row_data):
+                        c_letter = chr(ord('A') + idx) if idx < 26 else f"A{chr(ord('A') + idx - 26)}"
+                        c_str = "" if cell is None else str(cell).strip()
+                        row_dict[c_letter] = c_str
+                        if c_letter in header_map:
+                            row_dict[header_map[c_letter]] = c_str
+                    if skip_completed and status_col:
+                        cur_status = row_dict.get(status_col.upper(), "")
+                        if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
+                            continue
+                    records.append(row_dict)
+        except Exception as com_err:
+            logger.error(f"COM fallback read also failed: {com_err}")
+    return records
 
 
 def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_col: str, status_text: str):
-    # Why: 1レコードごとにExcelへ実行結果を即時確定し二重登録リスクを排除
+    # Why: openpyxl保存失敗時もCOMで直接書き込み二重処理を確実に抑止
     if not file_path or not status_col or not row_idx:
         return
     resolved = str(Path(file_path).resolve())
@@ -140,12 +174,25 @@ def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_co
         ws.cell(row=row_idx, column=col_idx, value=status_text)
         wb.save(resolved)
         wb.close()
+        return
     except Exception as e:
-        logger.warning(f"Failed to write status via openpyxl: {e}")
+        logger.warning(f"openpyxl status update failed ({e}), falling back to COM...")
+
+    if platform.system() == "Windows":
+        try:
+            import win32com.client
+            excel = win32com.client.Dispatch("Excel.Application")
+            wb = excel.Workbooks.Open(resolved)
+            ws = wb.Sheets(sheet_name) if sheet_name else wb.ActiveSheet
+            ws.Range(f"{status_col}{row_idx}").Value = status_text
+            wb.Save()
+            wb.Close(SaveChanges=True)
+        except Exception as com_err:
+            logger.error(f"COM fallback status update failed: {com_err}")
 
 
-def _detect_unexpected_dialog(expected_hwnd: int = None) -> tuple[bool, str]:
-    # Why: 予期せぬエラーモーダルや重複警告の割り込みを非侵入検知
+def _detect_unexpected_dialog(expected_hwnd: int = None, auto_dismiss: bool = True) -> tuple[bool, str]:
+    # Why: エラーダイアログの割り込み検知時に自動でEscを送信しUIのフリーズ状態を脱出
     if platform.system() != "Windows":
         return False, ""
     try:
@@ -161,6 +208,11 @@ def _detect_unexpected_dialog(expected_hwnd: int = None) -> tuple[bool, str]:
         cls_name = cls_buf.value
         is_dialog = cls_name == "#32770" or any(kw in title for kw in ["エラー", "警告", "確認", "Notice", "Alert", "Error", "Warning"])
         if is_dialog:
+            if auto_dismiss:
+                ctypes.windll.user32.PostMessageW(fg_hwnd, 0x0100, 0x1B, 0)
+                time.sleep(0.04)
+                ctypes.windll.user32.PostMessageW(fg_hwnd, 0x0101, 0x1B, 0)
+                time.sleep(0.15)
             return True, f"[{cls_name}] {title}"
     except Exception:
         pass
@@ -707,10 +759,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         while i < len(commands):
             _check_stop()
             cmd = commands[i]
-                
             method = cmd.get("method")
             raw_args = cmd.get("args", {}).copy()
             args = _resolve_variables(raw_args, variables)
+
+            try:
 
             if loop_stack:
                 current_loop = loop_stack[-1]
@@ -783,7 +836,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         "file_path": f_path,
                         "sheet_name": s_name,
                         "status_column": st_col,
-                        "item_variable": item_var
+                        "item_variable": item_var,
+                        "continue_on_error": args.get("continue_on_error", False)
                     })
                 else:
                     loop_count = args.get("loop_count", 10)
@@ -1250,6 +1304,36 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 
             execution_log["steps"].append(step_log)
             i += 1
+
+            except Exception as step_err:
+                # Why: ループ内障害発生時にExcelへエラー原因を書き戻しバッチ継続または安全停止
+                if isinstance(step_err, WorkflowStoppedException):
+                    raise
+                if loop_stack and loop_stack[-1].get("data_source") == "excel":
+                    curr_loop = loop_stack[-1]
+                    rec = curr_loop["records"][curr_loop["current_iteration"]]
+                    s_col = curr_loop.get("status_column")
+                    fp = curr_loop.get("file_path")
+                    sn = curr_loop.get("sheet_name")
+                    err_msg = f"エラー: {str(step_err)[:35]}"
+                    if s_col and fp:
+                        _write_excel_status(fp, sn, rec.get("_row_idx"), s_col, err_msg)
+                    if curr_loop.get("continue_on_error"):
+                        logger.error(f"[{workflow_id}] Error in row {rec.get('_row_idx')}: {step_err}. Skipping to next record...")
+                        curr_loop["current_iteration"] += 1
+                        if curr_loop["current_iteration"] < curr_loop["total_count"]:
+                            next_rec = curr_loop["records"][curr_loop["current_iteration"]]
+                            item_var = curr_loop.get("item_variable", "row")
+                            for k, v in next_rec.items():
+                                variables[k] = v
+                            variables[item_var] = next_rec
+                            i = curr_loop["start_index"] + 1
+                            continue
+                        else:
+                            loop_stack.pop()
+                            i += 1
+                            continue
+                raise step_err
                 
         if macro_needs_save and temp_commands is None:
             try:
