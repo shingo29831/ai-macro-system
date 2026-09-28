@@ -173,10 +173,24 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
             j = i + 1
             while j < n and temp_workflow_info[j].get("raw_action") == "move":
                 nxt = temp_workflow_info[j]
+                # Why: 別ウィンドウや要素特定済みのホバーは別アクションとして保持
+                if nxt.get("window_name") != curr.get("window_name"):
+                    break
+                nxt_ctx = nxt.get("app_context") or {}
+                curr_ctx = curr.get("app_context") or {}
+                if nxt_ctx.get("element_name") and curr_ctx.get("element_name") and nxt_ctx.get("element_name") != curr_ctx.get("element_name"):
+                    break
+
                 bx, by = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
                 nx, ny = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                if ((nx - bx) ** 2 + (ny - by) ** 2) ** 0.5 <= 40:
-                    if nxt.get("diff_val", 0.0) >= best_move.get("diff_val", 0.0):
+                dist = ((nx - bx) ** 2 + (ny - by) ** 2) ** 0.5
+                # Why: 手振れ吸収は15px以内に限定しメニュー展開のトリガー座標を確実に保持
+                if dist <= 15:
+                    best_has_crop = bool(best_move.get("app_context", {}).get("element_name") or (best_move.get("pre_img_path") and best_move.get("diff_val", 0.0) >= 0.005))
+                    nxt_has_crop = bool(nxt.get("app_context", {}).get("element_name"))
+                    if not best_has_crop and nxt_has_crop:
+                        best_move = nxt
+                    elif not best_has_crop and nxt.get("diff_val", 0.0) > best_move.get("diff_val", 0.0):
                         best_move = nxt
                     j += 1
                 else:
@@ -548,8 +562,18 @@ def optimize_workflow_events(
 
     while temp_workflow_info:
         last_evt = temp_workflow_info[-1]
-        if _is_system_ui_event(last_evt) or last_evt.get("raw_action") in ["move", "scroll", "unknown", "uia_scan"]:
+        # Why: 意図的なスクロールや有為なホバーを保護し停止操作由来の移動・システムUIのみ末尾除去
+        if _is_system_ui_event(last_evt) or last_evt.get("raw_action") in ["unknown", "uia_scan"]:
             temp_workflow_info.pop()
+        elif last_evt.get("raw_action") == "move":
+            diff = last_evt.get("diff_val", 0.0)
+            cy = last_evt.get("cursor_y", last_evt.get("y", 0))
+            wy = last_evt.get("win_y", 0)
+            # Why: 画面上部ウィンドウ枠外や差分のない停止ボタンへの移動のみ除外
+            if diff < 0.005 or (cy - wy) <= 45:
+                temp_workflow_info.pop()
+            else:
+                break
         else:
             break
 

@@ -110,6 +110,8 @@ class MacroEditorScreen(QWidget):
         
         tools = [
             ("クリック", "click"),
+            ("マウス移動(ホバー)", "move"),
+            ("スクロール", "scroll"),
             ("テキスト入力", "type_text"),
             ("待機", "wait"),
             ("キー入力", "press_key")

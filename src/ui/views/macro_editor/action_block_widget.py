@@ -155,6 +155,35 @@ class ActionBlockWidget(QFrame):
             self.duration_spin.setValue(self.args.get("duration", 1.0))
             self.duration_spin.valueChanged.connect(lambda v: self._update_arg("duration", v))
             self.edit_layout.addRow("待機(秒):", self.duration_spin)
+            
+        elif self.method == "scroll":
+            self.dy_spin = QDoubleSpinBox()
+            self.dy_spin.setRange(-100.0, 100.0)
+            self.dy_spin.setValue(self.args.get("dy", -5.0))
+            self.dy_spin.valueChanged.connect(lambda v: self._update_arg("dy", v))
+            self.edit_layout.addRow("垂直スクロール量(dy):", self.dy_spin)
+            
+            self.sx_spin = QSpinBox()
+            self.sx_spin.setRange(-9999, 9999)
+            self.sx_spin.setValue(self.args.get("x", 0))
+            self.sx_spin.valueChanged.connect(lambda v: self._update_arg("x", v))
+            self.edit_layout.addRow("X座標:", self.sx_spin)
+            
+            self.sy_spin = QSpinBox()
+            self.sy_spin.setRange(-9999, 9999)
+            self.sy_spin.setValue(self.args.get("y", 0))
+            self.sy_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
+            self.edit_layout.addRow("Y座標:", self.sy_spin)
+
+        elif self.method == "press_key":
+            self.key_edit = QLineEdit(self.args.get("key", ""))
+            self.key_edit.textChanged.connect(lambda v: self._update_arg("key", v))
+            self.edit_layout.addRow("キー名:", self.key_edit)
+
+        elif self.method == "activate_window":
+            self.win_edit = QLineEdit(self.args.get("window_title", ""))
+            self.win_edit.textChanged.connect(lambda v: self._update_arg("window_title", v))
+            self.edit_layout.addRow("ウィンドウ名:", self.win_edit)
 
         # 詳細フォーム内に削除ボタンを配置
         delete_btn = QPushButton("このアクションを削除")
@@ -216,7 +245,21 @@ class ActionBlockWidget(QFrame):
         return method_map.get(self.method, self.method)
         
     def _get_info_text(self) -> str:
-        if self.method == "type_text":
+        if self.method == "click":
+            name = self.args.get("element_name", "")
+            btn = "左" if self.args.get("button") == "left" else "右"
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"対象: {name} | {btn}クリック {coords}" if name else f"{btn}クリック {coords}"
+        elif self.method == "move":
+            name = self.args.get("element_name", "")
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"ホバー対象: {name} {coords}" if name else f"カーソル移動 {coords}"
+        elif self.method == "scroll":
+            dy = self.args.get("dy", 0.0)
+            direction = "下スクロール" if dy < 0 else "上スクロール"
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"{direction}: {abs(dy)} {coords}"
+        elif self.method == "type_text":
             return f"入力内容: {self.args.get('text', '')}"
         elif self.method == "press_key":
             return f"キー: {self.args.get('key', '')}"

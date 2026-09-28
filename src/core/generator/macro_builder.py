@@ -456,7 +456,8 @@ def build_and_save_macro(
                             "dx": dx_val,
                             "dy": dy_val,
                             "x": int(x_val),
-                            "y": int(y_val)
+                            "y": int(y_val),
+                            "raw_event_id": raw_event_id
                         }
                     })
                 except Exception:
@@ -532,6 +533,8 @@ def build_and_save_macro(
                 if abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
                     last_cmd["args"]["dx"] = round(last_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
                     last_cmd["args"]["dy"] = round(last_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                    if not last_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
+                        last_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
                     merged = True
             elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
                 prev_cmd = commands_data[-2]
@@ -539,6 +542,8 @@ def build_and_save_macro(
                     if last_cmd["args"]["duration"] < 1.2 and abs(prev_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(prev_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
                         prev_cmd["args"]["dx"] = round(prev_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
                         prev_cmd["args"]["dy"] = round(prev_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                        if not prev_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
+                            prev_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
                         commands_data.pop()
                         merged = True
                         

@@ -114,6 +114,8 @@ class MacroVisualCanvas(QWidget):
     def _get_template_for_action(self, action_type: str) -> dict:
         templates = {
             "click": {"method": "click", "args": {"x": 0, "y": 0, "button": "left", "clicks": 1}},
+            "move": {"method": "move", "args": {"x": 0, "y": 0}},
+            "scroll": {"method": "scroll", "args": {"dx": 0.0, "dy": -5.0, "x": 0, "y": 0}},
             "type_text": {"method": "type_text", "args": {"text": ""}},
             "wait": {"method": "wait", "args": {"duration": 1.0}},
             "press_key": {"method": "press_key", "args": {"key": "enter"}}
