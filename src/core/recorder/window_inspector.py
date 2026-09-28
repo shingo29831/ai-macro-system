@@ -35,6 +35,8 @@ def _empty_window_info(error: str) -> dict:
         "rect": {"left": 0, "top": 0, "right": 0, "bottom": 0},
         "size": {"width": 0, "height": 0},
         "coordinates": {"x": 0, "y": 0},
+        "is_maximized": False,
+        "monitor": None,
         "error": error,
     }
 
@@ -65,6 +67,28 @@ def get_foreground_window_info() -> dict:
             height = max(0, bottom - top)
         else:
             left = top = right = bottom = width = height = 0
+
+        is_maximized = bool(user32.IsZoomed(hwnd))
+        monitor_info = {"left": 0, "top": 0, "right": 0, "bottom": 0, "is_primary": True}
+        try:
+            class _RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT), ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+            h_mon = user32.MonitorFromWindow(hwnd, 2)
+            if h_mon:
+                mi = _MONITORINFO()
+                mi.cbSize = ctypes.sizeof(_MONITORINFO)
+                if user32.GetMonitorInfoW(h_mon, ctypes.byref(mi)):
+                    monitor_info = {
+                        "left": int(mi.rcMonitor.left),
+                        "top": int(mi.rcMonitor.top),
+                        "right": int(mi.rcMonitor.right),
+                        "bottom": int(mi.rcMonitor.bottom),
+                        "is_primary": bool(mi.dwFlags & 1),
+                    }
+        except Exception:
+            pass
 
         pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -99,6 +123,8 @@ def get_foreground_window_info() -> dict:
             "rect": {"left": left, "top": top, "right": right, "bottom": bottom},
             "size": {"width": width, "height": height},
             "coordinates": {"x": left, "y": top},
+            "is_maximized": is_maximized,
+            "monitor": monitor_info,
             "error": None,
         }
 
@@ -134,9 +160,11 @@ def build_recording_window_fields(
             "y": top,
         },
         "CursorCoordinates": cursor_coordinates,
+        "IsMaximized": window_info.get("is_maximized", False),
+        "Monitor": window_info.get("monitor"),
     }
 
-def get_window_title_at_point(x: int, y: int) -> dict:
+def _empty_window_info(error: str) -> dict:
     """カーソル指定地点にあるウィンドウのタイトルおよび祖先ウィンドウ情報を取得する"""
     try:
         user32 = ctypes.windll.user32

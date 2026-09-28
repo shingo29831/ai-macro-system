@@ -797,7 +797,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         args.get("height", 0),
                         workflow_id,
                         args.get("launch_cmd", ""),
-                        args.get("mapped_hwnd")
+                        args.get("mapped_hwnd"),
+                        args.get("is_maximized")
                     )
                 except Exception as e:
                     has_subsequent_activate = any(c.get("method") == "activate_window" for c in commands[1:])
@@ -898,7 +899,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         args.get("height", 0),
                         workflow_id,
                         args.get("launch_cmd", ""),
-                        args.get("mapped_hwnd")
+                        args.get("mapped_hwnd"),
+                        args.get("is_maximized")
                     )
                     time.sleep(0.5)
                 
@@ -1244,7 +1246,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_alias = args.get("window_alias")
 
                 # Why: ループ内でのウィンドウ再アクティベート時もHWNDを追跡・固定
-                act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd)
+                act_hwnd = activate_and_restore_window(window_title, win_x, win_y, win_w, win_h, workflow_id, launch_cmd, mapped_hwnd, args.get("is_maximized"))
                 if act_hwnd:
                     if not loop_launch:
                         args["mapped_hwnd"] = act_hwnd
@@ -1287,7 +1289,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 last_win_args.get("height", 0),
                                 workflow_id,
                                 last_win_args.get("launch_cmd", ""),
-                                mapped_hwnd
+                                mapped_hwnd,
+                                last_win_args.get("is_maximized")
                             )
 
                 target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or (ctypes.windll.user32.GetForegroundWindow() if platform.system() == "Windows" else None)

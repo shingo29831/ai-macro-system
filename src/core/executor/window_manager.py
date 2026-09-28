@@ -191,7 +191,69 @@ def get_open_windows_info():
             
     return windows_info
 
-def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, launch_cmd: str = "", mapped_hwnd: int = None):
+def _restore_window_position_and_monitor(hwnd: int, win_x: int, win_y: int, win_w: int, win_h: int, is_maximized: bool = None) -> None:
+    if platform.system() != "Windows" or not hwnd:
+        return
+
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+
+    target_rect = RECT(win_x, win_y, win_x + win_w, win_y + win_h)
+    h_target_mon = user32.MonitorFromRect(ctypes.byref(target_rect), 2)
+    target_mi = MONITORINFO()
+    target_mi.cbSize = ctypes.sizeof(MONITORINFO)
+    has_target_mon = bool(user32.GetMonitorInfoW(h_target_mon, ctypes.byref(target_mi)))
+
+    h_curr_mon = user32.MonitorFromWindow(hwnd, 2)
+    curr_mi = MONITORINFO()
+    curr_mi.cbSize = ctypes.sizeof(MONITORINFO)
+    has_curr_mon = bool(user32.GetMonitorInfoW(h_curr_mon, ctypes.byref(curr_mi)))
+
+    should_maximize = is_maximized
+    if should_maximize is None and has_target_mon:
+        t_w = target_mi.rcMonitor.right - target_mi.rcMonitor.left
+        t_h = target_mi.rcMonitor.bottom - target_mi.rcMonitor.top
+        near_top_left = (abs(win_x - (target_mi.rcMonitor.left - 8)) <= 25 and abs(win_y - (target_mi.rcMonitor.top - 8)) <= 25)
+        near_full_size = (win_w >= t_w - 20 and win_h >= t_h - 20)
+        legacy_max = (win_x <= -8 and win_y <= -8 and win_w >= 1900)
+        should_maximize = (near_top_left and near_full_size) or legacy_max
+
+    is_diff_monitor = False
+    if has_target_mon and has_curr_mon:
+        is_diff_monitor = (
+            target_mi.rcMonitor.left != curr_mi.rcMonitor.left or
+            target_mi.rcMonitor.top != curr_mi.rcMonitor.top
+        )
+
+    currently_zoomed = bool(user32.IsZoomed(hwnd))
+
+    if should_maximize:
+        if is_diff_monitor or not currently_zoomed:
+            if currently_zoomed:
+                user32.ShowWindow(hwnd, 9)
+                time.sleep(0.05)
+            if has_target_mon:
+                temp_x = target_mi.rcWork.left + 50
+                temp_y = target_mi.rcWork.top + 50
+                temp_w = max(400, min(win_w, (target_mi.rcWork.right - target_mi.rcWork.left) - 100))
+                temp_h = max(300, min(win_h, (target_mi.rcWork.bottom - target_mi.rcWork.top) - 100))
+                user32.SetWindowPos(hwnd, 0, temp_x, temp_y, temp_w, temp_h, 0x0044)
+                time.sleep(0.05)
+            user32.ShowWindow(hwnd, 3)
+    else:
+        if currently_zoomed:
+            user32.ShowWindow(hwnd, 9)
+            time.sleep(0.05)
+        user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0044)
+
+
+def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, launch_cmd: str = "", mapped_hwnd: int = None, is_maximized: bool = None):
     global _browser_activated_once
     if not window_title or platform.system() != "Windows":
         return
@@ -395,16 +457,10 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
         
         if win_w > 0 and win_h > 0:
             try:
-                hwnd = win.handle
-                if win_x <= -8 and win_y <= -8 and win_w >= 1900:
-                    if not win.is_maximized():
-                        win.maximize()
-                else:
-                    if win.is_maximized():
-                        win.restore()
-                    ctypes.windll.user32.SetWindowPos(hwnd, 0, win_x, win_y, win_w, win_h, 0x0040)
+                # Why: 別モニタで起動・展開されたウィンドウを記録時モニタへ強制移送し配置復元
+                _restore_window_position_and_monitor(win.handle, win_x, win_y, win_w, win_h, is_maximized)
             except Exception as e:
-                logger.warning(f"Failed to resize window: {e}")
+                logger.warning(f"Failed to resize and move window: {e}")
                 
         time.sleep(0.5)
         # Why: アクティベートした正確なウィンドウハンドルを呼び出し元へ返し誤爆を防止

@@ -125,6 +125,11 @@ def build_and_save_macro(
             win_y = win_ctx.coordinates.y if win_ctx else info.get("win_y", 0)
             win_w = win_ctx.size.width if win_ctx else info.get("win_w", 0)
             win_h = win_ctx.size.height if win_ctx else info.get("win_h", 0)
+            is_max = info.get("is_maximized")
+            if is_max is None:
+                is_max = info.get("IsMaximized")
+            if is_max is None and (win_x <= -8 and win_y <= -8 and win_w >= 1900):
+                is_max = True
             
             current_win_rect = (win_x, win_y, win_w, win_h)
             
@@ -157,7 +162,8 @@ def build_and_save_macro(
                     "width": win_w,
                     "height": win_h,
                     "launch_cmd": command_line,
-                    "window_alias": get_window_alias(current_window, current_win_rect)
+                    "window_alias": get_window_alias(current_window, current_win_rect),
+                    "is_maximized": bool(is_max)
                 }, ensure_ascii=False)
 
                 workflow_steps.append(WorkflowStep(
@@ -368,7 +374,8 @@ def build_and_save_macro(
                             "launch_cmd": launch_cmd,
                             "target_id": target_id_for_healer,
                             "raw_event_id": raw_event_id,
-                            "window_alias": win_info.get("window_alias")
+                            "window_alias": win_info.get("window_alias"),
+                            "is_maximized": win_info.get("is_maximized", False)
                         }
                     })
                 except Exception as e:
