@@ -110,6 +110,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             nav_click["raw_type"] = "mouse_click"
             nav_click["button"] = "left"
             nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
+            nav_click["fallback_events"] = [target_cand.get("event_id")]
             temp_workflow_info.insert(candidate_idx + 1, nav_click)
             i += 2
         else:
@@ -130,15 +131,47 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
         act = curr.get("raw_action", "")
 
         if act == "move":
+            best_move = curr
+            j = i + 1
+            while j < n and temp_workflow_info[j].get("raw_action") == "move":
+                nxt = temp_workflow_info[j]
+                bx, by = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
+                nx, ny = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
+                if ((nx - bx) ** 2 + (ny - by) ** 2) ** 0.5 <= 40:
+                    if nxt.get("diff_val", 0.0) >= best_move.get("diff_val", 0.0):
+                        best_move = nxt
+                    j += 1
+                else:
+                    break
+
             next_act = None
-            for j in range(i + 1, min(n, i + 4)):
-                c_act = temp_workflow_info[j].get("raw_action", "")
+            next_info = None
+            for k in range(j, min(n, j + 4)):
+                c_act = temp_workflow_info[k].get("raw_action", "")
                 if c_act != "move":
                     next_act = c_act
+                    next_info = temp_workflow_info[k]
                     break
-            if next_act in ["click", "scroll"]:
-                i += 1
-                continue
+
+            diff_val = best_move.get("diff_val", 0.0)
+            is_meaningful_hover = diff_val >= 0.005
+
+            if next_act == "click" and next_info:
+                cx, cy = next_info.get("cursor_x", next_info.get("x", 0)), next_info.get("cursor_y", next_info.get("y", 0))
+                mx, my = best_move.get("cursor_x", best_move.get("x", 0)), best_move.get("cursor_y", best_move.get("y", 0))
+                dist = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5
+                # Why: クリック直前のブレ移動(差分無かつ近距離)のみ除外しホバー展開を保持
+                if not is_meaningful_hover and dist <= 35:
+                    i = j
+                    continue
+            elif next_act == "scroll":
+                if not is_meaningful_hover:
+                    i = j
+                    continue
+
+            result.append(best_move)
+            i = j
+            continue
 
         if act == "scroll":
             tot_dx = curr.get("dx", 0.0)

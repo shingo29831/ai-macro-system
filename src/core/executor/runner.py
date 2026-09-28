@@ -822,6 +822,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     if not skip_physical:
                         if platform.system() == "Windows":
                             ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                            # Why: MOUSEEVENTF_MOVEを発行しブラウザの:hover/mouseenterを確実に誘発
+                            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
                         else:
                             mouse.position = (x, y)
                             

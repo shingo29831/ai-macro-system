@@ -320,7 +320,8 @@ def build_and_save_macro(
             raise InterruptedError("Generation cancelled by user")
             
         raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
-        integ_evt = next((e for e in integrated_events if e.id == raw_event_id), None)
+        base_id = raw_event_id.replace("_nav_click", "") if raw_event_id else None
+        integ_evt = next((e for e in integrated_events if e.id in [raw_event_id, base_id]), None)
         
         cmd_type = step.action.command
         
@@ -334,7 +335,7 @@ def build_and_save_macro(
                 duration = min(duration, 1.5)
                 # Why: ホバー後のドロップダウンメニュー展開アニメーション時間を最低0.5秒確保
                 prev_step_cmd = raw_commands_data[-1].get("method") if raw_commands_data else ""
-                if prev_step_cmd == "move" and cmd_type == "MOUSE_CLICK":
+                if prev_step_cmd == "move" and cmd_type in ["MOUSE_CLICK", "MOUSE_SCROLL"]:
                     duration = max(duration, 0.5)
                 raw_commands_data.append({
                     "method": "wait",
