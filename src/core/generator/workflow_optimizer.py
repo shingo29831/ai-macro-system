@@ -48,6 +48,32 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
+        # Why: 直近3ステップ内にすでに確定クリックがあれば昇格不要
+        has_recent_click = any(temp_workflow_info[idx].get("raw_action") == "click" for idx in range(i - 1, max(-1, i - 4), -1))
+        if has_recent_click:
+            i += 1
+            continue
+
+        curr_act = curr_info.get("raw_action", "")
+        prev_act = prev_info.get("raw_action", "")
+
+        # Why: 親ホバー直後にメニュー項目へのカーソル移動がある場合、親をホバーに残し子項目位置をクリックに昇格
+        if curr_act == "move" and prev_act == "move":
+            cx, cy = curr_info.get("cursor_x", curr_info.get("x", 0)), curr_info.get("cursor_y", curr_info.get("y", 0))
+            px, py = prev_info.get("cursor_x", prev_info.get("x", 0)), prev_info.get("cursor_y", prev_info.get("y", 0))
+            dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+            if dist >= 15:
+                curr_info["raw_action"] = "click"
+                curr_info["raw_type"] = "mouse_click"
+                curr_info["button"] = "left"
+                if not curr_info.get("element_name") and target_title:
+                    clean_title = re.split(r"[\-—–―]", target_title)[0].strip()
+                    if clean_title:
+                        curr_info["element_name"] = clean_title
+                logger.info(f"Sub-menu item click promoted at ({cx}, {cy}) for Event: {curr_info.get('event_id')}")
+                i += 1
+                continue
+
         candidate_idx = None
         best_match_score = -1
 
@@ -55,7 +81,6 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             cand = temp_workflow_info[k]
             cand_act = cand.get("raw_action", "")
 
-            # Why: 直近がclickなら昇格不要だが、既に見つかったホバー候補を過去clickでNone破棄しない
             if cand_act == "click":
                 break
 
@@ -100,19 +125,22 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
 
         if candidate_idx is not None:
             target_cand = temp_workflow_info[candidate_idx]
-            logger.info(
-                f"Navigation transition detected (Step {candidate_idx} -> {i}). "
-                f"Preserving hover and inserting navigation click for Event: {target_cand.get('event_id')} (score: {best_match_score})."
-            )
-            # Why: ドロップダウン展開用のホバー(move)を維持し、直後に遷移トリガーのクリックを新設
-            nav_click = target_cand.copy()
-            nav_click["raw_action"] = "click"
-            nav_click["raw_type"] = "mouse_click"
-            nav_click["button"] = "left"
-            nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
-            nav_click["fallback_events"] = [target_cand.get("event_id")]
-            temp_workflow_info.insert(candidate_idx + 1, nav_click)
-            i += 2
+            # Why: 直前に親ホバーが存在する場合は子ホバー自身をクリック変換し、単独時のみクリック新設
+            has_parent = (candidate_idx > 0 and temp_workflow_info[candidate_idx - 1].get("raw_action") == "move")
+            if has_parent:
+                target_cand["raw_action"] = "click"
+                target_cand["raw_type"] = "mouse_click"
+                target_cand["button"] = "left"
+                i += 1
+            else:
+                nav_click = target_cand.copy()
+                nav_click["raw_action"] = "click"
+                nav_click["raw_type"] = "mouse_click"
+                nav_click["button"] = "left"
+                nav_click["event_id"] = f"{target_cand.get('event_id')}_nav_click"
+                nav_click["fallback_events"] = [target_cand.get("event_id")]
+                temp_workflow_info.insert(candidate_idx + 1, nav_click)
+                i += 2
         else:
             i += 1
 
