@@ -68,7 +68,17 @@ class MacroVisualCanvas(QWidget):
             block = ActionBlockWidget(cmd, i, self.workflow_dir, is_in_loop)
             block.delete_requested.connect(self._on_delete_requested)
             block.content_changed.connect(self.commands_changed.emit)
-            
+
+            # Why: ループ内ブロックへ親ループのExcel列一覧を渡し入力変数として選択可能化
+            if is_in_loop:
+                for loop in self.loops:
+                    if loop.get("start_action_idx", -1) <= i <= loop.get("end_action_idx", -1):
+                        loop_cmd = self.commands[loop["loop_start_idx"]]
+                        cols = loop_cmd.get("args", {}).get("columns_map", {})
+                        if cols:
+                            block.set_available_variables(cols)
+                        break
+
             self.main_layout.addWidget(block)
             self.blocks.append(block)
 

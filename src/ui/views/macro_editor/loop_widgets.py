@@ -199,14 +199,12 @@ class LoopCountWidget(QFrame):
         self.summary_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333333;")
         self.bar_layout.addWidget(self.summary_label)
 
-        # 固定回数時のインラインスピン
+        # Why: サブコントロールCSSを除外してQtネイティブの上下矢印を完全復元
         self.spin_box = QSpinBox()
         self.spin_box.setRange(1, 99999)
         self.spin_box.setValue(self.args.get("loop_count", 10))
-        self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        self.spin_box.setFixedWidth(44)
+        self.spin_box.setFixedWidth(58)
         self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # Why: 背景白に対して数字が高コントラストで視認できるよう文字色を明示指定
         self.spin_box.setStyleSheet("""
             QSpinBox {
                 border: 1px solid #c7c7c7;
@@ -215,10 +213,7 @@ class LoopCountWidget(QFrame):
                 color: #0078d4;
                 font-size: 12px;
                 font-weight: bold;
-                padding: 1px 3px;
-            }
-            QSpinBox:focus {
-                border: 1px solid #0078d4;
+                padding-right: 2px;
             }
         """)
         self.spin_box.valueChanged.connect(self._on_spin_changed)
@@ -230,7 +225,6 @@ class LoopCountWidget(QFrame):
 
         self.bar_layout.addStretch()
 
-        # 詳細トグルボタン
         self.toggle_btn = QPushButton("詳細 ▼")
         self.toggle_btn.setFixedSize(54, 22)
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -250,7 +244,6 @@ class LoopCountWidget(QFrame):
         self.toggle_btn.clicked.connect(self._toggle_expand)
         self.bar_layout.addWidget(self.toggle_btn)
 
-        # ループ解除ボタン
         self.del_btn = QPushButton("✕")
         self.del_btn.setFixedSize(22, 22)
         self.del_btn.setToolTip("このループを解除する")
@@ -277,7 +270,6 @@ class LoopCountWidget(QFrame):
         self.detail_layout = QFormLayout(self.detail_panel)
         self.detail_layout.setContentsMargins(4, 6, 4, 2)
         self.detail_layout.setSpacing(6)
-        # Why: QComboBoxドロップダウン項目やQSpinBox数字がテーマ色で白文字化する現象を完全防止
         self.detail_panel.setStyleSheet("""
             QLabel {
                 font-size: 11px;
@@ -296,7 +288,6 @@ class LoopCountWidget(QFrame):
             }
             QSpinBox {
                 font-size: 11px;
-                padding: 2px 18px 2px 4px;
                 border: 1px solid #c7c7c7;
                 border-radius: 3px;
                 background-color: #ffffff;
@@ -304,11 +295,6 @@ class LoopCountWidget(QFrame):
             }
             QSpinBox:focus {
                 border: 1px solid #0078d4;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 14px;
-                background-color: #f3f2f1;
-                border-left: 1px solid #d0d0d0;
             }
             QComboBox {
                 font-size: 11px;
@@ -364,7 +350,7 @@ class LoopCountWidget(QFrame):
         file_box = QHBoxLayout()
         self.file_edit = QLineEdit(self.args.get("file_path", ""))
         self.file_edit.setPlaceholderText("Excelファイル...")
-        self.file_edit.textChanged.connect(lambda v: self._update_field("file_path", v))
+        self.file_edit.textChanged.connect(self._on_file_changed)
         file_box.addWidget(self.file_edit)
 
         browse_btn = QPushButton("参照")
@@ -375,30 +361,35 @@ class LoopCountWidget(QFrame):
 
         self.sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
         self.sheet_edit.setPlaceholderText("空欄でアクティブシート")
-        self.sheet_edit.textChanged.connect(lambda v: self._update_field("sheet_name", v))
+        self.sheet_edit.textChanged.connect(self._on_sheet_changed)
         eg_layout.addRow("シート:", self.sheet_edit)
 
-        # Why: 矢印ボタンが数値テキストに重ならないよう最小幅と中央配置を明示確保
+        # Why: 検出された複数列の変数プレビューを表示
+        self.cols_preview_label = QLabel()
+        self.cols_preview_label.setWordWrap(True)
+        self.cols_preview_label.setStyleSheet("font-size: 10px; color: #107c41; background: #eaf6ee; padding: 4px; border-radius: 3px;")
+        eg_layout.addRow("検出列変数:", self.cols_preview_label)
+
         row_box = QHBoxLayout()
         row_box.setSpacing(4)
         self.st_row_spin = QSpinBox()
         self.st_row_spin.setRange(1, 99999)
         self.st_row_spin.setValue(self.args.get("start_row", 2))
-        self.st_row_spin.setMinimumWidth(58)
+        self.st_row_spin.setFixedWidth(64)
         self.st_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.st_row_spin.valueChanged.connect(lambda v: self._update_field("start_row", v))
         row_box.addWidget(QLabel("開始:"))
         row_box.addWidget(self.st_row_spin)
 
-        self.end_row_spin = QSpinBox()
-        self.end_row_spin.setRange(0, 99999)
-        self.end_row_spin.setValue(self.args.get("end_row") or 0)
-        self.end_row_spin.setSpecialValueText("末尾")
-        self.end_row_spin.setMinimumWidth(66)
-        self.end_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.end_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
+        self.ed_row_spin = QSpinBox()
+        self.ed_row_spin.setRange(0, 99999)
+        self.ed_row_spin.setValue(self.args.get("end_row") or 0)
+        self.ed_row_spin.setSpecialValueText("末尾")
+        self.ed_row_spin.setFixedWidth(68)
+        self.ed_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
         row_box.addWidget(QLabel("終了:"))
-        row_box.addWidget(self.end_row_spin)
+        row_box.addWidget(self.ed_row_spin)
         eg_layout.addRow("行範囲:", row_box)
 
         self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
@@ -419,6 +410,30 @@ class LoopCountWidget(QFrame):
         self.detail_layout.addRow(self.excel_group)
         self.detail_panel.hide()
         self.main_layout.addWidget(self.detail_panel)
+
+        self._refresh_columns_preview()
+
+    def _refresh_columns_preview(self):
+        f_path = self.args.get("file_path", "")
+        s_name = self.args.get("sheet_name")
+        cols_map = get_excel_columns_map(f_path, s_name)
+        self.args["columns_map"] = cols_map
+        preview_texts = [f"{{{{{col}}}}} {name}" for col, name in list(cols_map.items())[:6]]
+        if len(cols_map) > 6:
+            preview_texts.append(f"...他{len(cols_map)-6}列")
+        self.cols_preview_label.setText(" | ".join(preview_texts) if preview_texts else "列未検出")
+
+    def _on_file_changed(self, v):
+        self.args["file_path"] = v
+        self._refresh_columns_preview()
+        self._update_appearance()
+        self.settings_changed.emit()
+
+    def _on_sheet_changed(self, v):
+        self.args["sheet_name"] = v
+        self._refresh_columns_preview()
+        self._update_appearance()
+        self.settings_changed.emit()
 
     def _update_appearance(self):
         is_excel = self.args.get("data_source") == "excel"
@@ -459,14 +474,15 @@ class LoopCountWidget(QFrame):
         self.is_expanded = not self.is_expanded
         self.detail_panel.setVisible(self.is_expanded)
         self.toggle_btn.setText("閉じる ▲" if self.is_expanded else "詳細 ▼")
-        # Why: 開始/終了行の入力コントロールが圧迫されないよう展開時幅を300pxへ拡張
-        self.setFixedWidth(300 if self.is_expanded else 210)
+        self.setFixedWidth(310 if self.is_expanded else 210)
         self.adjustSize()
         self.settings_changed.emit()
 
     def _on_mode_changed(self, idx):
         mode = "excel" if idx == 1 else "static"
         self.args["data_source"] = mode
+        if mode == "excel":
+            self._refresh_columns_preview()
         self._update_appearance()
         self.settings_changed.emit()
 
@@ -485,4 +501,24 @@ class LoopCountWidget(QFrame):
         )
         if fp:
             self.file_edit.setText(fp)
-            self._update_field("file_path", fp)
+            self._on_file_changed(fp)
+def get_excel_columns_map(file_path: str, sheet_name: str = None) -> dict[str, str]:
+    """Excelの1行目を軽量スキャンし、列文字とヘッダー名の辞書を返す"""
+    if not file_path or not Path(file_path).exists():
+        return {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+    try:
+        import openpyxl
+        resolved = str(Path(file_path).resolve())
+        wb = openpyxl.load_workbook(resolved, read_only=True, data_only=True)
+        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+        cols = {}
+        max_col = min(ws.max_column or 8, 26)
+        for col_idx in range(1, max_col + 1):
+            letter = openpyxl.utils.get_column_letter(col_idx)
+            val = ws.cell(row=1, column=col_idx).value
+            cols[letter] = str(val).strip() if val is not None else f"列{letter}"
+        wb.close()
+        return cols if cols else {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+    except Exception:
+        return {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+

@@ -27,6 +27,7 @@ class ActionBlockWidget(QFrame):
         
         self.is_expanded = False
         self.drag_start_pos = None
+        self.available_vars = {}
         
         self.setObjectName("ActionBlock")
         # Why: ループ内ブロックの左端にアクセントカラーを付与し実行範囲を明瞭化
@@ -187,9 +188,18 @@ class ActionBlockWidget(QFrame):
                 self.edit_layout.addRow("Y差分(ループ毎):", self.dy_spin)
                 
         elif self.method == "type_text":
+            text_row = QHBoxLayout()
             self.text_edit = QLineEdit(self.args.get("text", ""))
             self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
-            self.edit_layout.addRow("テキスト(初期値):", self.text_edit)
+            text_row.addWidget(self.text_edit)
+
+            # Why: ループ所属のExcel列変数を直接選択してテキスト入力欄へワンクリック挿入
+            self.var_combo = QComboBox()
+            self.var_combo.setFixedWidth(136)
+            self._populate_var_combo()
+            self.var_combo.currentIndexChanged.connect(self._on_var_selected)
+            text_row.addWidget(self.var_combo)
+            self.edit_layout.addRow("テキスト(初期値):", text_row)
 
             self.clear_check = QCheckBox("入力前に既存テキストを全消去する")
             self.clear_check.setChecked(bool(self.args.get("clear_before_typing", False)))
@@ -338,6 +348,31 @@ class ActionBlockWidget(QFrame):
         self.info_label.setText(self._get_info_text())
         self.content_changed.emit()
         
+    def set_available_variables(self, var_map: dict):
+        # Why: キャンバスから渡されたExcel列変数をコンボボックスへバインド
+        self.available_vars = var_map or {}
+        if hasattr(self, 'var_combo'):
+            self._populate_var_combo()
+
+    def _populate_var_combo(self):
+        if not hasattr(self, 'var_combo'):
+            return
+        self.var_combo.blockSignals(True)
+        self.var_combo.clear()
+        self.var_combo.addItem("+ 変数を挿入...", "")
+        vars_dict = getattr(self, 'available_vars', {}) or {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+        for col, desc in vars_dict.items():
+            self.var_combo.addItem(f"{{{{{col}}}}} ({desc})", f"{{{{{col}}}}}")
+        self.var_combo.blockSignals(False)
+
+    def _on_var_selected(self, idx):
+        if idx <= 0:
+            return
+        var_text = self.var_combo.itemData(idx)
+        if var_text and hasattr(self, 'text_edit'):
+            self.text_edit.insert(var_text)
+        self.var_combo.setCurrentIndex(0)
+
     def _browse_excel_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Excelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
