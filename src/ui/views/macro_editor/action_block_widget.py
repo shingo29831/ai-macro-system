@@ -3,7 +3,8 @@
 import json
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
-                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox)
+                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox,
+                               QComboBox, QCheckBox, QFileDialog)
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QDrag, QMouseEvent
 from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
 
@@ -140,6 +141,16 @@ class ActionBlockWidget(QFrame):
             self.text_edit = QLineEdit(self.args.get("text", ""))
             self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
             self.edit_layout.addRow("テキスト(初期値):", self.text_edit)
+
+            self.clear_check = QCheckBox("入力前に既存テキストを全消去する")
+            self.clear_check.setChecked(bool(self.args.get("clear_before_typing", False)))
+            self.clear_check.toggled.connect(lambda v: self._update_arg("clear_before_typing", v))
+            self.edit_layout.addRow("", self.clear_check)
+
+            self.clip_check = QCheckBox("クリップボード経由で貼り付ける (IME誤作動防止)")
+            self.clip_check.setChecked(bool(self.args.get("use_clipboard", False)))
+            self.clip_check.toggled.connect(lambda v: self._update_arg("use_clipboard", v))
+            self.edit_layout.addRow("", self.clip_check)
             
             if self.is_in_loop:
                 text_seq = self.args["seq_vars"].setdefault("text", {"step": 1})
@@ -148,6 +159,88 @@ class ActionBlockWidget(QFrame):
                 self.seq_step_spin.setValue(text_seq.get("step", 1))
                 self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "step", v))
                 self.edit_layout.addRow("テキスト加算(ループ毎):", self.seq_step_spin)
+
+        elif self.method == "loop_start":
+            self.mode_combo = QComboBox()
+            self.mode_combo.addItem("固定回数ループ", "static")
+            self.mode_combo.addItem("Excelデータ連携ループ", "excel")
+            cur_mode = self.args.get("data_source", "static")
+            self.mode_combo.setCurrentIndex(1 if cur_mode == "excel" else 0)
+            self.edit_layout.addRow("ループ種別:", self.mode_combo)
+
+            self.static_widget = QWidget()
+            s_layout = QFormLayout(self.static_widget)
+            s_layout.setContentsMargins(0, 0, 0, 0)
+            self.count_spin = QSpinBox()
+            self.count_spin.setRange(1, 99999)
+            self.count_spin.setValue(self.args.get("loop_count", 1))
+            self.count_spin.valueChanged.connect(lambda v: self._update_arg("loop_count", v))
+            s_layout.addRow("リピート回数:", self.count_spin)
+            self.edit_layout.addRow(self.static_widget)
+
+            self.excel_widget = QWidget()
+            e_layout = QFormLayout(self.excel_widget)
+            e_layout.setContentsMargins(0, 0, 0, 0)
+
+            file_box = QHBoxLayout()
+            self.file_edit = QLineEdit(self.args.get("file_path", ""))
+            self.file_edit.setPlaceholderText("Excelファイルパス...")
+            self.file_edit.textChanged.connect(lambda v: self._update_arg("file_path", v))
+            file_box.addWidget(self.file_edit)
+
+            browse_btn = QPushButton("参照...")
+            browse_btn.setFixedWidth(60)
+            browse_btn.clicked.connect(self._browse_excel_file)
+            file_box.addWidget(browse_btn)
+            e_layout.addRow("Excelファイル:", file_box)
+
+            self.sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
+            self.sheet_edit.setPlaceholderText("空欄でアクティブシート")
+            self.sheet_edit.textChanged.connect(lambda v: self._update_arg("sheet_name", v))
+            e_layout.addRow("シート名:", self.sheet_edit)
+
+            row_box = QHBoxLayout()
+            self.start_row_spin = QSpinBox()
+            self.start_row_spin.setRange(1, 99999)
+            self.start_row_spin.setValue(self.args.get("start_row", 2))
+            self.start_row_spin.valueChanged.connect(lambda v: self._update_arg("start_row", v))
+            row_box.addWidget(QLabel("開始:"))
+            row_box.addWidget(self.start_row_spin)
+
+            self.end_row_spin = QSpinBox()
+            self.end_row_spin.setRange(0, 99999)
+            self.end_row_spin.setValue(self.args.get("end_row") or 0)
+            self.end_row_spin.setSpecialValueText("末尾まで")
+            self.end_row_spin.valueChanged.connect(lambda v: self._update_arg("end_row", v if v > 0 else None))
+            row_box.addWidget(QLabel("終了:"))
+            row_box.addWidget(self.end_row_spin)
+            e_layout.addRow("対象行範囲:", row_box)
+
+            self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
+            self.status_col_edit.setPlaceholderText("例: E")
+            self.status_col_edit.textChanged.connect(lambda v: self._update_arg("status_column", v.upper()))
+            e_layout.addRow("ステータス記録列:", self.status_col_edit)
+
+            self.skip_check = QCheckBox("完了ステータス済みの行をスキップ")
+            self.skip_check.setChecked(bool(self.args.get("skip_completed", True)))
+            self.skip_check.toggled.connect(lambda v: self._update_arg("skip_completed", v))
+            e_layout.addRow("", self.skip_check)
+
+            self.cont_check = QCheckBox("エラー発生時に中断せず次の行へ継続")
+            self.cont_check.setChecked(bool(self.args.get("continue_on_error", False)))
+            self.cont_check.toggled.connect(lambda v: self._update_arg("continue_on_error", v))
+            e_layout.addRow("", self.cont_check)
+
+            self.edit_layout.addRow(self.excel_widget)
+
+            def _toggle_mode(idx):
+                is_excel = idx == 1
+                self.static_widget.setVisible(not is_excel)
+                self.excel_widget.setVisible(is_excel)
+                self._update_arg("data_source", "excel" if is_excel else "static")
+
+            self.mode_combo.currentIndexChanged.connect(_toggle_mode)
+            _toggle_mode(self.mode_combo.currentIndex())
                 
         elif self.method == "wait":
             self.duration_spin = QDoubleSpinBox()
@@ -196,6 +289,14 @@ class ActionBlockWidget(QFrame):
         self.info_label.setText(self._get_info_text())
         self.content_changed.emit()
         
+    def _browse_excel_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Excelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if file_path:
+            self.file_edit.setText(file_path)
+            self._update_arg("file_path", file_path)
+
     def _update_seq_var(self, target_key, param_key, value):
         if "seq_vars" not in self.args:
             self.args["seq_vars"] = {}
@@ -237,6 +338,8 @@ class ActionBlockWidget(QFrame):
             dialog.exec()
 
     def _get_title(self) -> str:
+        if self.method == "loop_start" and self.args.get("data_source") == "excel":
+            return "Excelデータ連携ループ"
         method_map = {
             "click": "クリック", "move": "マウス移動", "type_text": "テキスト入力",
             "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", 
@@ -260,7 +363,13 @@ class ActionBlockWidget(QFrame):
             coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
             return f"{direction}: {abs(dy)} {coords}"
         elif self.method == "type_text":
-            return f"入力内容: {self.args.get('text', '')}"
+            info = f"入力内容: {self.args.get('text', '')}"
+            flags = []
+            if self.args.get("clear_before_typing"):
+                flags.append("クリア有")
+            if self.args.get("use_clipboard"):
+                flags.append("貼付")
+            return f"{info} ({', '.join(flags)})" if flags else info
         elif self.method == "press_key":
             return f"キー: {self.args.get('key', '')}"
         elif self.method == "wait":
@@ -268,6 +377,10 @@ class ActionBlockWidget(QFrame):
         elif self.method == "activate_window":
             return f"対象: {self.args.get('window_title', '')}"
         elif self.method == "loop_start":
+            if self.args.get("data_source") == "excel":
+                f_name = Path(self.args.get("file_path", "")).name if self.args.get("file_path") else "未選択"
+                st_col = self.args.get("status_column") or "-"
+                return f"Excel: {f_name} | ステータス列: {st_col}"
             return f"回数: {self.args.get('loop_count', 1)} 回"
         return ""
         

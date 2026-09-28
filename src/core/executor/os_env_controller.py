@@ -27,6 +27,16 @@ def set_dpi_awareness():
                 pass
 
 
+def is_running_as_admin() -> bool:
+    """現在のプロセスがWindows管理者権限で実行されているかを判定する"""
+    if platform.system() != "Windows":
+        return True
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
 def set_ime_state(text: str = "", target_state: bool | None = None):
     """アクティブウィンドウのIME状態（全角/半角）を制御する"""
     if platform.system() != "Windows":

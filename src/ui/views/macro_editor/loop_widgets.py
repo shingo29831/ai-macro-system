@@ -69,13 +69,52 @@ class LoopCountWidget(QFrame):
         self.spin_box.setFixedWidth(40)
         self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        label = QLabel("回")
-        label.setStyleSheet("color: #333333; font-weight: bold; font-size: 13px;")
+        self.label = QLabel("回")
+        self.label.setStyleSheet("color: #333333; font-weight: bold; font-size: 13px;")
+
+        self.excel_badge = QLabel("Excel連携")
+        self.excel_badge.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                background-color: #107c41;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: 4px;
+            }
+        """)
+        self.excel_badge.hide()
 
         layout.addWidget(self.spin_box)
-        layout.addWidget(label)
+        layout.addWidget(self.label)
+        layout.addWidget(self.excel_badge)
 
         self.spin_box.valueChanged.connect(self._on_value_changed)
+
+    def set_data_source(self, data_source: str):
+        # Why: データ駆動ループ時に回数スピンを隠しExcel連携バッジへ切り替え
+        if data_source == "excel":
+            self.spin_box.hide()
+            self.label.hide()
+            self.excel_badge.show()
+            self.setStyleSheet("""
+                #LoopCountWidget {
+                    background-color: #ffffff;
+                    border: 2px solid #107c41;
+                    border-radius: 6px;
+                }
+            """)
+        else:
+            self.excel_badge.hide()
+            self.spin_box.show()
+            self.label.show()
+            self.setStyleSheet("""
+                #LoopCountWidget {
+                    background-color: #ffffff;
+                    border: 2px solid #0078d4;
+                    border-radius: 6px;
+                }
+            """)
 
     def _on_value_changed(self, val):
         self.count_changed.emit(self.loop_start_idx, val)
