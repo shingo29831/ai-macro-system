@@ -206,14 +206,19 @@ class LoopCountWidget(QFrame):
         self.spin_box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.spin_box.setFixedWidth(44)
         self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Why: 背景白に対して数字が高コントラストで視認できるよう文字色を明示指定
         self.spin_box.setStyleSheet("""
             QSpinBox {
-                border: 1px solid #d0d0d0;
+                border: 1px solid #c7c7c7;
                 border-radius: 3px;
-                background: #ffffff;
+                background-color: #ffffff;
+                color: #0078d4;
                 font-size: 12px;
                 font-weight: bold;
                 padding: 1px 3px;
+            }
+            QSpinBox:focus {
+                border: 1px solid #0078d4;
             }
         """)
         self.spin_box.valueChanged.connect(self._on_spin_changed)
@@ -272,16 +277,57 @@ class LoopCountWidget(QFrame):
         self.detail_layout = QFormLayout(self.detail_panel)
         self.detail_layout.setContentsMargins(4, 6, 4, 2)
         self.detail_layout.setSpacing(6)
+        # Why: QComboBoxドロップダウン項目やQSpinBox数字がテーマ色で白文字化する現象を完全防止
         self.detail_panel.setStyleSheet("""
-            QLabel { font-size: 11px; color: #444444; }
-            QLineEdit, QSpinBox, QComboBox {
+            QLabel {
+                font-size: 11px;
+                color: #2b2b2b;
+            }
+            QLineEdit, QSpinBox {
                 font-size: 11px;
                 padding: 2px 4px;
-                border: 1px solid #d0d0d0;
+                border: 1px solid #c7c7c7;
                 border-radius: 3px;
-                background: #ffffff;
+                background-color: #ffffff;
+                color: #1f2937;
             }
-            QCheckBox { font-size: 11px; color: #333333; }
+            QLineEdit:focus, QSpinBox:focus {
+                border: 1px solid #0078d4;
+            }
+            QComboBox {
+                font-size: 11px;
+                padding: 2px 6px;
+                border: 1px solid #c7c7c7;
+                border-radius: 3px;
+                background-color: #ffffff;
+                color: #1f2937;
+            }
+            QComboBox:hover {
+                border: 1px solid #0078d4;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #1f2937;
+                selection-background-color: #0078d4;
+                selection-color: #ffffff;
+                border: 1px solid #c7c7c7;
+                outline: none;
+            }
+            QCheckBox {
+                font-size: 11px;
+                color: #2b2b2b;
+            }
+            QPushButton {
+                font-size: 11px;
+                color: #2b2b2b;
+                background-color: #f3f2f1;
+                border: 1px solid #c7c7c7;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #e1dfdd;
+                color: #0078d4;
+            }
         """)
 
         # モード選択
@@ -361,6 +407,7 @@ class LoopCountWidget(QFrame):
             f_name = Path(self.args.get("file_path", "")).name if self.args.get("file_path") else "未選択"
             st_col = self.args.get("status_column") or "-"
             self.summary_label.setText(f"{f_name} [{st_col}列]")
+            self.summary_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #107c41;")
             self.spin_box.hide()
             self.unit_label.hide()
             self.setStyleSheet("""
@@ -373,6 +420,8 @@ class LoopCountWidget(QFrame):
         else:
             self.icon_label.setText("🔁")
             self.summary_label.setText("固定ループ:")
+            self.summary_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #0078d4;")
+            self.unit_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333333;")
             self.spin_box.show()
             self.unit_label.show()
             self.setStyleSheet("""

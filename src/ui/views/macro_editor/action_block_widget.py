@@ -108,10 +108,43 @@ class ActionBlockWidget(QFrame):
         
         # 4. インライン編集フォーム（初期状態は非表示）
         self.edit_container = QWidget()
+        # Why: アクションブロック内の入力・メニュー項目の文字色とコントラストを明示固定
         self.edit_container.setStyleSheet("""
-            QLabel, QSpinBox, QLineEdit, QDoubleSpinBox {
-                color: #333333;
+            QLabel {
+                color: #2b2b2b;
+                font-size: 13px;
+            }
+            QSpinBox, QDoubleSpinBox, QLineEdit {
+                color: #1f2937;
                 background-color: #ffffff;
+                border: 1px solid #c7c7c7;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 13px;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {
+                border: 1px solid #0078d4;
+            }
+            QComboBox {
+                color: #1f2937;
+                background-color: #ffffff;
+                border: 1px solid #c7c7c7;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                border: 1px solid #0078d4;
+            }
+            QComboBox QAbstractItemView {
+                color: #1f2937;
+                background-color: #ffffff;
+                selection-background-color: #0078d4;
+                selection-color: #ffffff;
+                border: 1px solid #c7c7c7;
+            }
+            QCheckBox {
+                color: #2b2b2b;
                 font-size: 13px;
             }
         """)
