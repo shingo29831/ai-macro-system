@@ -128,7 +128,16 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                 raw_v = ws.cell(row=r, column=col_idx).value
                 if raw_v is not None and str(raw_v).strip() != "":
                     row_has_val = True
-                v_str = "" if raw_v is None else (raw_v.strftime("%Y-%m-%d") if hasattr(raw_v, "strftime") else str(raw_v).strip())
+                # Why: Excel数値のfloat化(100 -> 100.0)や指数表記を防ぎコード値の整合性を担保
+                if raw_v is None:
+                    v_str = ""
+                elif hasattr(raw_v, "strftime"):
+                    v_str = raw_v.strftime("%Y-%m-%d")
+                elif isinstance(raw_v, float) and raw_v.is_integer():
+                    v_str = str(int(raw_v))
+                else:
+                    v_str = str(raw_v).strip()
+
                 row_dict[col_letter] = v_str
                 if col_letter in header_map:
                     row_dict[header_map[col_letter]] = v_str
@@ -137,7 +146,7 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                 continue
             if skip_completed and status_col:
                 cur_status = row_dict.get(status_col.upper(), "")
-                if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
+                if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS", "処理中"]:
                     continue
             records.append(row_dict)
         wb.close()
@@ -167,13 +176,22 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                     row_dict = {"_row_idx": r}
                     for idx, cell in enumerate(row_data):
                         c_letter = _col_idx_to_letter(idx + 1)
-                        c_str = "" if cell is None else str(cell).strip()
+                        # Why: COM経由取得時も数値のfloat化(100.0)を整数へ正規化
+                        if cell is None:
+                            c_str = ""
+                        elif hasattr(cell, "strftime"):
+                            c_str = cell.strftime("%Y-%m-%d")
+                        elif isinstance(cell, float) and cell.is_integer():
+                            c_str = str(int(cell))
+                        else:
+                            c_str = str(cell).strip()
+
                         row_dict[c_letter] = c_str
                         if c_letter in header_map:
                             row_dict[header_map[c_letter]] = c_str
                     if skip_completed and status_col:
                         cur_status = row_dict.get(status_col.upper(), "")
-                        if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS"]:
+                        if cur_status in ["完了", "DONE", "済", "スキップ", "SUCCESS", "処理中"]:
                             continue
                     records.append(row_dict)
         except Exception as com_err:
@@ -260,6 +278,22 @@ def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_co
                 except Exception:
                     pass
                 del excel
+
+
+def _wait_for_screen_settle(timeout: float = 6.0, settle_threshold: float = 0.003) -> bool:
+    # Why: スピナー回転やページロードが完了し画面が静止するまで動的適応待機
+    from core.recorder.screen_capturer import take_screenshot
+    start_t = time.time()
+    last_img, _ = take_screenshot()
+    time.sleep(0.15)
+    while (time.time() - start_t) < timeout:
+        curr_img, _ = take_screenshot()
+        diff = (np.array(last_img) != np.array(curr_img)).mean()
+        if diff <= settle_threshold:
+            return True
+        last_img = curr_img
+        time.sleep(0.2)
+    return False
 
 
 def _detect_unexpected_dialog(expected_hwnd: int = None, auto_dismiss: bool = True) -> tuple[bool, str]:
@@ -839,8 +873,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             if has_dlg:
                 logger.warning(f"[{workflow_id}] Unexpected dialog detected and dismissed before step {i+1}: {dlg_title}")
 
-            try:
-
             if loop_stack:
                 current_loop = loop_stack[-1]
                 iteration = current_loop["current_iteration"]
@@ -903,6 +935,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         variables[k] = v
                     variables[item_var] = records[0]
 
+                    # Why: クラッシュ時の二重登録を防ぐため開始直後に行ステータスを処理中に更新
+                    if st_col and f_path:
+                        _write_excel_status(f_path, s_name, records[0].get("_row_idx"), st_col, "処理中")
+
                     max_iter = args.get("max_iterations", 10000)
                     clamped_records = records[:max_iter]
                     loop_stack.append({
@@ -947,6 +983,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             for k, v in next_rec.items():
                                 variables[k] = v
                             variables[item_var] = next_rec
+                            st_col = current_loop.get("status_column")
+                            f_path = current_loop.get("file_path")
+                            s_name = current_loop.get("sheet_name")
+                            if st_col and f_path:
+                                _write_excel_status(f_path, s_name, next_rec.get("_row_idx"), st_col, "処理中")
                         i = current_loop["start_index"] + 1
                         continue
                     else:
@@ -966,14 +1007,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     if method == "press_key" and args.get("key") == "enter":
                         force_skip_match_until_enter = False
                 elif loop_stack:
-                    # Why: ループ内でも画面描画の収束待機を行いサーバー遅延による空振りを抑止
-                    from core.recorder.screen_capturer import take_screenshot
-                    p_img, _ = take_screenshot()
-                    time.sleep(0.12)
-                    c_img, _ = take_screenshot()
-                    d_ratio = ((np.array(p_img) != np.array(c_img)).mean())
-                    if d_ratio > 0.02:
-                        time.sleep(0.35)
+                    # Why: スピナーやサーバー応答待機を動的収束監視で自動同期
+                    _wait_for_screen_settle(timeout=5.0, settle_threshold=0.004)
                 else:
                     match_eid = args.get("match_event_id") or raw_event_id
                     match_info = wait_for_screen_match(
@@ -1386,36 +1421,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 
             execution_log["steps"].append(step_log)
             i += 1
-
-            except Exception as step_err:
-                # Why: ループ内障害発生時にExcelへエラー原因を書き戻しバッチ継続または安全停止
-                if isinstance(step_err, WorkflowStoppedException):
-                    raise
-                if loop_stack and loop_stack[-1].get("data_source") == "excel":
-                    curr_loop = loop_stack[-1]
-                    rec = curr_loop["records"][curr_loop["current_iteration"]]
-                    s_col = curr_loop.get("status_column")
-                    fp = curr_loop.get("file_path")
-                    sn = curr_loop.get("sheet_name")
-                    err_msg = f"エラー: {str(step_err)[:35]}"
-                    if s_col and fp:
-                        _write_excel_status(fp, sn, rec.get("_row_idx"), s_col, err_msg)
-                    if curr_loop.get("continue_on_error"):
-                        logger.error(f"[{workflow_id}] Error in row {rec.get('_row_idx')}: {step_err}. Skipping to next record...")
-                        curr_loop["current_iteration"] += 1
-                        if curr_loop["current_iteration"] < curr_loop["total_count"]:
-                            next_rec = curr_loop["records"][curr_loop["current_iteration"]]
-                            item_var = curr_loop.get("item_variable", "row")
-                            for k, v in next_rec.items():
-                                variables[k] = v
-                            variables[item_var] = next_rec
-                            i = curr_loop["start_index"] + 1
-                            continue
-                        else:
-                            loop_stack.pop()
-                            i += 1
-                            continue
-                raise step_err
                 
         if macro_needs_save and temp_commands is None:
             try:
@@ -1432,6 +1437,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         execution_log["status"] = "stopped"
         logger.warning(f"[{workflow_id}] {e}")
     except Exception as e:
+        # Why: 異常停止時にExcelのステータス列へエラー詳細を即時書き戻し二重処理を抑止
+        if 'loop_stack' in locals() and loop_stack and loop_stack[-1].get("data_source") == "excel":
+            try:
+                curr_loop = loop_stack[-1]
+                rec = curr_loop["records"][curr_loop["current_iteration"]]
+                s_col = curr_loop.get("status_column")
+                fp = curr_loop.get("file_path")
+                sn = curr_loop.get("sheet_name")
+                if s_col and fp:
+                    _write_excel_status(fp, sn, rec.get("_row_idx"), s_col, f"エラー: {str(e)[:30]}")
+            except Exception:
+                pass
         execution_log["status"] = "failed"
         execution_log["error"] = str(e)
         logger.error(f"[{workflow_id}] Execution failed: {e}")
