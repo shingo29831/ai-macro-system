@@ -122,32 +122,37 @@ class BrowserInspector(BaseInspector):
                 except Exception:
                     pass
 
-            # Why: 多言語・ブラウザバージョン差異に対応するため上部Edit候補をスコアリング走査
+            # Why: 全子孫走査によるUIフリーズを回避し、上部ツールバー内のEditのみを高速走査
             candidates = []
             try:
-                edits = window.descendants(control_type="Edit")
+                top_edits = []
+                for child in window.children():
+                    c_type = getattr(child.element_info, "control_type", "")
+                    if c_type in ["ToolBar", "Pane", "Custom"]:
+                        top_edits.extend(child.children(control_type="Edit"))
+                if not top_edits:
+                    top_edits = window.children(control_type="Edit")
             except Exception:
-                edits = []
+                top_edits = []
 
-            for edit in edits[:25]:
+            for edit in top_edits[:10]:
                 try:
-                    name = edit.window_text() or ""
-                    auto_id = getattr(edit.element_info, "automation_id", "") or ""
-                    val = self._extract_value_from_elem(edit)
                     rect = edit.rectangle()
+                    if rect.top > 250:
+                        continue
+                    auto_id = getattr(edit.element_info, "automation_id", "") or ""
+                    name = edit.window_text() or ""
+                    val = self._extract_value_from_elem(edit)
 
                     score = 0
-                    if any(kw in auto_id.lower() for kw in ["url", "address"]):
+                    if any(kw in auto_id.lower() for kw in ["url", "address", "omnibox"]):
                         score += 50
-                    if any(kw in name.lower() for kw in ["アドレス", "address", "url", "検索または", "search or enter"]):
+                    if any(kw in name.lower() for kw in ["アドレス", "address", "url", "検索"]):
                         score += 40
-                    if val and any(ind in val for ind in ["http", "www.", ".com", ".org", ".jp", ".net", "search?"]):
-                        score += 40
-                    if rect.top < 300:
-                        score += 20
-
+                    if val and any(ind in val for ind in ["http", "www.", ".com", ".jp"]):
+                        score += 30
                     if val and score > 0:
-                        candidates.append((score, val))
+                        candidates.append((score, val, rect))
                 except Exception:
                     continue
 
@@ -155,6 +160,7 @@ class BrowserInspector(BaseInspector):
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 best_val = candidates[0][1]
                 result["address_bar_text"] = best_val
+                result["address_bar_rect"] = {"left": candidates[0][2].left, "top": candidates[0][2].top, "right": candidates[0][2].right, "bottom": candidates[0][2].bottom}
                 parsed = self.parse_url_details(best_val)
                 if parsed:
                     result["url"] = parsed.get("full_url", "")
@@ -273,23 +279,34 @@ class BrowserInspector(BaseInspector):
 
             # 4. UIAアドレスバー探索による確定URL・検索クエリの取得
             addr_info = self.get_address_bar_info(window_info, desktop=desktop)
-            if addr_info.get("url"):
-                result["url"] = addr_info["url"]
+            result["page_url"] = addr_info.get("url", "")
+            
+            # Why: クリック座標がアドレスバー内か判定し、Web内要素とアドレスバー操作を明確に分離
+            is_address_bar = False
+            addr_rect = addr_info.get("address_bar_rect")
+            if addr_rect and x is not None and y is not None:
+                if addr_rect["left"] <= x <= addr_rect["right"] and addr_rect["top"] <= y <= addr_rect["bottom"]:
+                    is_address_bar = True
+            elif primary_elem:
+                aid = getattr(primary_elem.element_info, "automation_id", "").lower()
+                aname = (primary_elem.window_text() or "").lower()
+                if any(k in aid for k in ["urlbar", "address", "omnibox"]) or any(k in aname for k in ["アドレス", "address bar"]):
+                    is_address_bar = True
+
+            result["is_address_bar"] = is_address_bar
+            if is_address_bar:
+                result["url"] = addr_info.get("url", "")
                 result["query"] = addr_info.get("query")
                 result["url_details"] = addr_info.get("url_details", {})
-                log_debug(f"アドレスバーからURL取得成功: {result['url']}, クエリ: '{result['query']}'")
-            elif extracted_text:
-                parsed = self.parse_url_details(extracted_text)
-                if parsed:
-                    result["url"] = parsed.get("full_url", "")
-                    result["query"] = parsed.get("query")
-                    result["url_details"] = parsed
-                    log_debug(f"抽出テキストからURL識別: '{result['url']}'")
-
-            # Why: 入力補完確定直後などで要素テキストが空の場合、クエリ文字列で安全に補完
-            if not result["text"] and result["query"]:
-                result["text"] = result["query"]
-                result["value"] = result["query"]
+                if not result["text"]:
+                    result["text"] = addr_info.get("address_bar_text", "")
+                    result["value"] = result["text"]
+            else:
+                # Webページ内操作時は要素独自のURLがある場合のみ設定しページURL混入を防止
+                if extracted_text and (extracted_text.startswith("http://") or extracted_text.startswith("https://")):
+                    result["url"] = extracted_text
+                else:
+                    result["url"] = ""
 
         except ImportError:
             error_msg = "pywinauto がインストールされていません"
