@@ -109,6 +109,7 @@ class MacroEditorScreen(QWidget):
         tool_layout.addWidget(tool_title)
         
         tools = [
+            ("ループ (繰り返し)", "loop"),
             ("クリック", "click"),
             ("マウス移動(ホバー)", "move"),
             ("スクロール", "scroll"),

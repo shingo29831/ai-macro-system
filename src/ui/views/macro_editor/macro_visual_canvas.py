@@ -72,7 +72,10 @@ class MacroVisualCanvas(QWidget):
             self.blocks.append(block)
 
         for loop in self.loops:
+            cmd = self.commands[loop["loop_start_idx"]]
+            data_source = cmd.get("args", {}).get("data_source", "static")
             w = LoopCountWidget(loop["loop_start_idx"], loop["loop_count"], self)
+            w.set_data_source(data_source)
             if loop.get("is_reversed"):
                 w.setStyleSheet("""
                     #LoopCountWidget {
@@ -84,6 +87,7 @@ class MacroVisualCanvas(QWidget):
                 w.spin_box.setStyleSheet(w.spin_box.styleSheet().replace("#0078d4", "#d13438"))
                 
             w.count_changed.connect(self._on_loop_count_changed)
+            w.setting_requested.connect(self._open_loop_setting_dialog)
             w.show()
             self.loop_widgets.append(w)
             
@@ -95,6 +99,16 @@ class MacroVisualCanvas(QWidget):
                 self.warning_widgets.append(None)
             
         self.update()
+
+    def _open_loop_setting_dialog(self, loop_start_idx: int):
+        # Why: 矢印バッジの設定ボタンからExcelファイル指定・列マッピングダイアログを起動
+        if 0 <= loop_start_idx < len(self.commands):
+            cmd = self.commands[loop_start_idx]
+            from .loop_widgets import LoopSettingDialog
+            dlg = LoopSettingDialog(cmd, self.workflow_dir, self)
+            if dlg.exec():
+                self.commands_changed.emit()
+                self.rebuild()
 
     def _on_loop_count_changed(self, loop_start_idx: int, new_count: int):
         if 0 <= loop_start_idx < len(self.commands):
@@ -280,8 +294,25 @@ class MacroVisualCanvas(QWidget):
             
         elif mime_text.startswith("new_action:"):
             action_type = mime_text.split(":")[1]
-            cmd_template = self._get_template_for_action(action_type)
-            self.commands.insert(target_idx, copy.deepcopy(cmd_template))
+            if action_type == "loop":
+                # Why: ループ配置時はloop_startとloop_endをペアで生成し整合性を保証
+                new_id = f"loop_{len(self.loops) + 1}"
+                start_cmd = {
+                    "method": "loop_start",
+                    "loop_id": new_id,
+                    "args": {"loop_count": 10, "data_source": "static"}
+                }
+                end_cmd = {
+                    "method": "loop_end",
+                    "loop_id": new_id,
+                    "args": {}
+                }
+                ins_start = max(0, min(target_idx, len(self.commands)))
+                self.commands.insert(ins_start, start_cmd)
+                self.commands.append(end_cmd)
+            else:
+                cmd_template = self._get_template_for_action(action_type)
+                self.commands.insert(target_idx, copy.deepcopy(cmd_template))
             
         elif mime_text.startswith("loop_handle:"):
             parts = mime_text.split(":")
