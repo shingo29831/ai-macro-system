@@ -25,8 +25,8 @@ class MacroVisualCanvas(QWidget):
         self.setAcceptDrops(True)
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        # Why: 線の横に配置される詳細設定カード(幅270px)がはみ出さないよう右余白を拡張
-        self.main_layout.setContentsMargins(60, 40, 360, 40)
+        # Why: 幅380pxに拡大した詳細設定カードが無理なく収まるよう右余白を460pxへ拡張
+        self.main_layout.setContentsMargins(60, 40, 460, 40)
         self.main_layout.setSpacing(40)
         
         self.rebuild()

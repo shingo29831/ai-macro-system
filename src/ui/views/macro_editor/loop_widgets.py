@@ -184,8 +184,8 @@ class LoopCountWidget(QFrame):
 
     def _build_ui(self):
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(8, 6, 8, 6)
-        self.main_layout.setSpacing(6)
+        self.main_layout.setContentsMargins(10, 8, 10, 8)
+        self.main_layout.setSpacing(8)
 
         # 1. サマリー表示バー
         self.bar_layout = QHBoxLayout()
@@ -199,21 +199,22 @@ class LoopCountWidget(QFrame):
         self.summary_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #333333;")
         self.bar_layout.addWidget(self.summary_label)
 
-        # Why: サブコントロールCSSを除外してQtネイティブの上下矢印を完全復元
+        # Why: 十分な幅と右パディングを確保し上下矢印が数値テキストに重なるのを完全防止
         self.spin_box = QSpinBox()
         self.spin_box.setRange(1, 99999)
         self.spin_box.setValue(self.args.get("loop_count", 10))
-        self.spin_box.setFixedWidth(58)
+        self.spin_box.setFixedWidth(70)
         self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.spin_box.setStyleSheet("""
             QSpinBox {
                 border: 1px solid #c7c7c7;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #ffffff;
                 color: #0078d4;
                 font-size: 12px;
                 font-weight: bold;
-                padding-right: 2px;
+                padding-right: 20px;
+                padding-left: 4px;
             }
         """)
         self.spin_box.valueChanged.connect(self._on_spin_changed)
@@ -226,7 +227,7 @@ class LoopCountWidget(QFrame):
         self.bar_layout.addStretch()
 
         self.toggle_btn = QPushButton("詳細 ▼")
-        self.toggle_btn.setFixedSize(54, 22)
+        self.toggle_btn.setFixedSize(56, 24)
         self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_btn.setStyleSheet("""
             QPushButton {
@@ -268,18 +269,18 @@ class LoopCountWidget(QFrame):
         # 2. インライン詳細設定パネル（展開式）
         self.detail_panel = QWidget()
         self.detail_layout = QFormLayout(self.detail_panel)
-        self.detail_layout.setContentsMargins(4, 6, 4, 2)
-        self.detail_layout.setSpacing(6)
+        self.detail_layout.setContentsMargins(4, 8, 4, 4)
+        self.detail_layout.setSpacing(8)
         self.detail_panel.setStyleSheet("""
             QLabel {
-                font-size: 11px;
+                font-size: 12px;
                 color: #2b2b2b;
             }
             QLineEdit {
-                font-size: 11px;
-                padding: 2px 4px;
+                font-size: 12px;
+                padding: 4px 6px;
                 border: 1px solid #c7c7c7;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #ffffff;
                 color: #1f2937;
             }
@@ -287,9 +288,10 @@ class LoopCountWidget(QFrame):
                 border: 1px solid #0078d4;
             }
             QSpinBox {
-                font-size: 11px;
+                font-size: 12px;
+                padding: 3px 22px 3px 6px;
                 border: 1px solid #c7c7c7;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #ffffff;
                 color: #1f2937;
             }
@@ -297,10 +299,10 @@ class LoopCountWidget(QFrame):
                 border: 1px solid #0078d4;
             }
             QComboBox {
-                font-size: 11px;
-                padding: 2px 6px;
+                font-size: 12px;
+                padding: 4px 8px;
                 border: 1px solid #c7c7c7;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #ffffff;
                 color: #1f2937;
             }
@@ -316,15 +318,16 @@ class LoopCountWidget(QFrame):
                 outline: none;
             }
             QCheckBox {
-                font-size: 11px;
+                font-size: 12px;
                 color: #2b2b2b;
             }
             QPushButton {
-                font-size: 11px;
+                font-size: 12px;
                 color: #2b2b2b;
                 background-color: #f3f2f1;
                 border: 1px solid #c7c7c7;
-                border-radius: 3px;
+                border-radius: 4px;
+                padding: 3px 8px;
             }
             QPushButton:hover {
                 background-color: #e1dfdd;
@@ -345,7 +348,7 @@ class LoopCountWidget(QFrame):
         self.excel_group = QWidget()
         eg_layout = QFormLayout(self.excel_group)
         eg_layout.setContentsMargins(0, 0, 0, 0)
-        eg_layout.setSpacing(5)
+        eg_layout.setSpacing(7)
 
         file_box = QHBoxLayout()
         self.file_edit = QLineEdit(self.args.get("file_path", ""))
@@ -354,7 +357,7 @@ class LoopCountWidget(QFrame):
         file_box.addWidget(self.file_edit)
 
         browse_btn = QPushButton("参照")
-        browse_btn.setFixedWidth(42)
+        browse_btn.setFixedWidth(50)
         browse_btn.clicked.connect(self._browse_excel_file)
         file_box.addWidget(browse_btn)
         eg_layout.addRow("ファイル:", file_box)
@@ -364,36 +367,33 @@ class LoopCountWidget(QFrame):
         self.sheet_edit.textChanged.connect(self._on_sheet_changed)
         eg_layout.addRow("シート:", self.sheet_edit)
 
-        # Why: 検出された複数列の変数プレビューを表示
+        # 検出列変数プレビュー
         self.cols_preview_label = QLabel()
         self.cols_preview_label.setWordWrap(True)
-        self.cols_preview_label.setStyleSheet("font-size: 10px; color: #107c41; background: #eaf6ee; padding: 4px; border-radius: 3px;")
+        self.cols_preview_label.setStyleSheet("font-size: 11px; color: #107c41; background: #eaf6ee; padding: 6px; border-radius: 4px;")
         eg_layout.addRow("検出列変数:", self.cols_preview_label)
 
-        row_box = QHBoxLayout()
-        row_box.setSpacing(4)
+        # Why: 1行詰め込み過密を解消し開始行と終了行を独立行にしてスピン矢印の被りを根本撲滅
         self.st_row_spin = QSpinBox()
         self.st_row_spin.setRange(1, 99999)
         self.st_row_spin.setValue(self.args.get("start_row", 2))
-        self.st_row_spin.setFixedWidth(64)
-        self.st_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.st_row_spin.setFixedWidth(110)
+        self.st_row_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.st_row_spin.valueChanged.connect(lambda v: self._update_field("start_row", v))
-        row_box.addWidget(QLabel("開始:"))
-        row_box.addWidget(self.st_row_spin)
+        eg_layout.addRow("開始行:", self.st_row_spin)
 
         self.ed_row_spin = QSpinBox()
         self.ed_row_spin.setRange(0, 99999)
         self.ed_row_spin.setValue(self.args.get("end_row") or 0)
-        self.ed_row_spin.setSpecialValueText("末尾")
-        self.ed_row_spin.setFixedWidth(68)
-        self.ed_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ed_row_spin.setSpecialValueText("末尾まで")
+        self.ed_row_spin.setFixedWidth(110)
+        self.ed_row_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
-        row_box.addWidget(QLabel("終了:"))
-        row_box.addWidget(self.ed_row_spin)
-        eg_layout.addRow("行範囲:", row_box)
+        eg_layout.addRow("終了行:", self.ed_row_spin)
 
         self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
         self.status_col_edit.setPlaceholderText("例: E")
+        self.status_col_edit.setFixedWidth(110)
         self.status_col_edit.textChanged.connect(lambda v: self._update_field("status_column", v.upper()))
         eg_layout.addRow("ステータス列:", self.status_col_edit)
 
@@ -451,7 +451,7 @@ class LoopCountWidget(QFrame):
                 #LoopCountWidget {
                     background-color: #f6fcf8;
                     border: 2px solid #107c41;
-                    border-radius: 6px;
+                    border-radius: 8px;
                 }
             """)
         else:
@@ -465,7 +465,7 @@ class LoopCountWidget(QFrame):
                 #LoopCountWidget {
                     background-color: #f7faff;
                     border: 2px solid #0078d4;
-                    border-radius: 6px;
+                    border-radius: 8px;
                 }
             """)
         self.adjustSize()
@@ -474,7 +474,8 @@ class LoopCountWidget(QFrame):
         self.is_expanded = not self.is_expanded
         self.detail_panel.setVisible(self.is_expanded)
         self.toggle_btn.setText("閉じる ▲" if self.is_expanded else "詳細 ▼")
-        self.setFixedWidth(310 if self.is_expanded else 210)
+        # Why: 展開時幅を380pxに拡張し十分な余白と操作エリアを確保
+        self.setFixedWidth(380 if self.is_expanded else 260)
         self.adjustSize()
         self.settings_changed.emit()
 
@@ -521,4 +522,3 @@ def get_excel_columns_map(file_path: str, sheet_name: str = None) -> dict[str, s
         return cols if cols else {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
     except Exception:
         return {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
-
