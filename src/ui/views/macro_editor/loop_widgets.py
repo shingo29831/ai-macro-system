@@ -283,7 +283,7 @@ class LoopCountWidget(QFrame):
                 font-size: 11px;
                 color: #2b2b2b;
             }
-            QLineEdit, QSpinBox {
+            QLineEdit {
                 font-size: 11px;
                 padding: 2px 4px;
                 border: 1px solid #c7c7c7;
@@ -291,8 +291,24 @@ class LoopCountWidget(QFrame):
                 background-color: #ffffff;
                 color: #1f2937;
             }
-            QLineEdit:focus, QSpinBox:focus {
+            QLineEdit:focus {
                 border: 1px solid #0078d4;
+            }
+            QSpinBox {
+                font-size: 11px;
+                padding: 2px 18px 2px 4px;
+                border: 1px solid #c7c7c7;
+                border-radius: 3px;
+                background-color: #ffffff;
+                color: #1f2937;
+            }
+            QSpinBox:focus {
+                border: 1px solid #0078d4;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 14px;
+                background-color: #f3f2f1;
+                border-left: 1px solid #d0d0d0;
             }
             QComboBox {
                 font-size: 11px;
@@ -362,21 +378,27 @@ class LoopCountWidget(QFrame):
         self.sheet_edit.textChanged.connect(lambda v: self._update_field("sheet_name", v))
         eg_layout.addRow("シート:", self.sheet_edit)
 
+        # Why: 矢印ボタンが数値テキストに重ならないよう最小幅と中央配置を明示確保
         row_box = QHBoxLayout()
+        row_box.setSpacing(4)
         self.st_row_spin = QSpinBox()
         self.st_row_spin.setRange(1, 99999)
         self.st_row_spin.setValue(self.args.get("start_row", 2))
+        self.st_row_spin.setMinimumWidth(58)
+        self.st_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.st_row_spin.valueChanged.connect(lambda v: self._update_field("start_row", v))
         row_box.addWidget(QLabel("開始:"))
         row_box.addWidget(self.st_row_spin)
 
-        self.ed_row_spin = QSpinBox()
-        self.ed_row_spin.setRange(0, 99999)
-        self.ed_row_spin.setValue(self.args.get("end_row") or 0)
-        self.ed_row_spin.setSpecialValueText("末尾まで")
-        self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
+        self.end_row_spin = QSpinBox()
+        self.end_row_spin.setRange(0, 99999)
+        self.end_row_spin.setValue(self.args.get("end_row") or 0)
+        self.end_row_spin.setSpecialValueText("末尾")
+        self.end_row_spin.setMinimumWidth(66)
+        self.end_row_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.end_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
         row_box.addWidget(QLabel("終了:"))
-        row_box.addWidget(self.ed_row_spin)
+        row_box.addWidget(self.end_row_spin)
         eg_layout.addRow("行範囲:", row_box)
 
         self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
@@ -437,7 +459,8 @@ class LoopCountWidget(QFrame):
         self.is_expanded = not self.is_expanded
         self.detail_panel.setVisible(self.is_expanded)
         self.toggle_btn.setText("閉じる ▲" if self.is_expanded else "詳細 ▼")
-        self.setFixedWidth(270 if self.is_expanded else 210)
+        # Why: 開始/終了行の入力コントロールが圧迫されないよう展開時幅を300pxへ拡張
+        self.setFixedWidth(300 if self.is_expanded else 210)
         self.adjustSize()
         self.settings_changed.emit()
 
