@@ -604,21 +604,24 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         # Why: 汎用セレクトボックス/コンボボックスの集約
         is_select = "combobox" in c_type or "select" in sel.lower() or "list" in c_type
         if is_select:
-            # Why: 操作イベント自身が保持する選択テキストをスナップショット初期値より最優先
+            # Why: スナップショット確定値およびイベント自身の選択テキストを最優先
+            snap_val = global_form_snapshot.get(sel)
             cur_val = info.get("value") or info.get("text")
-            snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
-            cands = selector_candidates.get(sel, []) + selector_candidates.get(f"name:{elem_name}", [])
             opt_val = ""
-            if cur_val and str(cur_val).strip() not in ["left_click", "move", elem_name, ""]:
+            if snap_val and str(snap_val).strip() and str(snap_val).strip() not in ["left_click", "move", elem_name]:
+                opt_val = str(snap_val).strip()
+            elif cur_val and str(cur_val).strip() and str(cur_val).strip() not in ["left_click", "move", elem_name]:
                 opt_val = str(cur_val).strip()
-            elif cands:
-                valid_cands = [str(c).strip() for c in cands if str(c).strip() not in ["left_click", "move", elem_name, ""]]
-                if valid_cands:
-                    opt_val = valid_cands[-1]
-            if not opt_val:
-                opt_val = element_final_values.get(sel) or str(snap_val or "").strip()
+            else:
+                opt_val = element_final_values.get(sel) or ""
 
             if str(opt_val).strip() and str(opt_val).strip() not in ["left_click", "move", elem_name]:
+                # Why: 有効な物理座標を履歴から確実に復元
+                if sel in selector_coords:
+                    cx, cy = selector_coords[sel]
+                    info["cursor_x"], info["cursor_y"] = cx, cy
+                    info["x"], info["y"] = cx, cy
+
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "select_option"
@@ -663,7 +666,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"]))
         )
         if is_input_field:
-            final_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
+            # Why: スナップショット確定値を途中タイピングより最優先
+            snap_val = global_form_snapshot.get(sel)
+            final_val = snap_val or element_final_values.get(sel)
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
 
@@ -733,7 +738,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
     # スナップショットキーのうち、ブラウザ内部UIを除外した真の未処理IDセレクタを抽出
     snapshot_items = []
-    internal_ui_keywords = ["contentselectdropdown", "select-popup", "datalist", "popup", "moz-", "chrome://"]
+    internal_ui_keywords = [
+        "contentselectdropdown", "select-popup", "datalist", "popup", "moz-", "chrome://",
+        "urlbar", "addressbar", "omnibox", "identity-box", "tracking-protection"
+    ]
     for k, v in global_form_snapshot.items():
         if not k.startswith("#") or k in processed_selectors:
             continue
@@ -741,6 +749,13 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             continue
         v_str = str(v).strip()
         if not v_str:
+            continue
+        # Why: ユーザーが一度も操作しておらず初期値から無変更の要素は勝手に復元しない
+        has_interaction = any(
+            (e.get("app_context") or {}).get("css_selector") == k or e.get("selector") == k
+            for e in temp_workflow_info
+        )
+        if not has_interaction and v_str.lower() in ["false", ""]:
             continue
         snapshot_items.append((k, v_str))
 
@@ -871,50 +886,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         insert_pos += 1
         processed_selectors.add(sel_id)
 
-    # 5. フォーム送信アクションの保証（未存在時のみ安全に補完）
-    has_submit_btn = any(
-        r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])
-        for r in result
-    )
-    if not has_submit_btn:
-        target_btn_sel = ""
-        target_btn_name = ""
-        for e in temp_workflow_info:
-            ctx = e.get("app_context") or {}
-            c_type = str(ctx.get("control_type") or "").lower()
-            ename = str(ctx.get("element_name") or e.get("element_name") or "").strip()
-            esel = str(ctx.get("css_selector") or e.get("selector") or "").strip()
-            if "window" in c_type or "document" in c_type or any(cls in esel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
-                continue
-            if "button" in c_type or any(k in esel.lower() for k in ["submit", "btn"]):
-                target_btn_sel = esel
-                target_btn_name = ename
-                break
-
-        final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
-        final_name = target_btn_name or "登録する"
-        base_x = ref_evt.get("cursor_x", ref_evt.get("x", 0))
-        base_y = ref_evt.get("cursor_y", ref_evt.get("y", 0))
-        btn_coords = selector_coords.get(final_sel, (base_x, base_y))
-        submit_eid = f"{ref_eid}_submit_btn"
-        result.append({
-            "raw_action": "browser_action",
-            "raw_type": "browser_action",
-            "action": "click_element",
-            "selector": final_sel,
-            "selector_type": "css",
-            "element_name": final_name,
-            "semantic_role": final_name,
-            "text": final_name,
-            "window_name": ref_win,
-            "event_id": submit_eid,
-            "fallback_events": [submit_eid, ref_eid],
-            "cursor_x": btn_coords[0],
-            "cursor_y": btn_coords[1],
-            "x": btn_coords[0],
-            "y": btn_coords[1]
-        })
-        logger.info(f"Appended generic form submit button: {final_sel} ({final_name})")
 
     # Why: フォーム各要素を物理y座標順に並び替え、送信ボタンを常に末尾に保証
     form_inputs = []
@@ -1475,9 +1446,16 @@ def optimize_workflow_events(
             is_win_match = (w_name == last_clk_win) or not last_clk_win or not w_name or any(b in (w_name + last_clk_win).lower() for b in ["firefox", "chrome", "edge"])
             if is_win_match:
                 i_ctx = info.setdefault("app_context", {})
-                for k in ["css_selector", "xpath", "element_name", "control_type"]:
-                    if not i_ctx.get(k) and last_clk_ctx.get(k):
-                        i_ctx[k] = last_clk_ctx[k]
+                # Why: 自身がセレクタを持たない場合のみ直前クリックの全コンテキストを安全に継承
+                if not i_ctx.get("css_selector") and not i_ctx.get("xpath"):
+                    for k in ["css_selector", "xpath", "element_name", "control_type"]:
+                        if last_clk_ctx.get(k):
+                            i_ctx[k] = last_clk_ctx[k]
+                elif i_ctx.get("css_selector") == last_clk_ctx.get("css_selector"):
+                    if not i_ctx.get("element_name") and last_clk_ctx.get("element_name"):
+                        i_ctx["element_name"] = last_clk_ctx["element_name"]
+                    if not i_ctx.get("control_type") and last_clk_ctx.get("control_type"):
+                        i_ctx["control_type"] = last_clk_ctx["control_type"]
 
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 
