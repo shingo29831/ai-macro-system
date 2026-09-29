@@ -31,38 +31,16 @@ class ActionBlockWidget(QFrame):
         
         self.setObjectName("ActionBlock")
         # Why: ループ内ブロックの左端にアクセントカラーを付与し実行範囲を明瞭化
-        accent_color = None
-        if self.method == "browser_action":
-            accent_color = "#0284c7"
-        elif self.method == "excel_action":
-            accent_color = "#16a34a"
-        elif self.is_in_loop:
-            accent_color = "#107c41" if self.args.get("data_source") == "excel" else "#0078d4"
-
-        if accent_color:
-            self.setStyleSheet(f"""
-                #ActionBlock {{
-                    background-color: #ffffff;
-                    border: 1px solid #d0d0d0;
-                    border-left: 5px solid {accent_color};
-                    border-radius: 8px;
-                }}
-                #ActionBlock:hover {{
-                    border: 1px solid #0078d4;
-                    border-left: 5px solid {accent_color};
-                }}
-            """)
-        else:
-            self.setStyleSheet("""
-                #ActionBlock {
-                    background-color: #ffffff;
-                    border: 1px solid #d0d0d0;
-                    border-radius: 8px;
-                }
-                #ActionBlock:hover {
-                    border: 2px solid #0078d4;
-                }
-            """)
+        self.setStyleSheet("""
+            #ActionBlock {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+            #ActionBlock:hover {
+                border: 1px solid #0078d4;
+            }
+        """)
         self.setFixedWidth(480)
         
         self._build_ui()
@@ -345,83 +323,75 @@ class ActionBlockWidget(QFrame):
             self.edit_layout.addRow("ウィンドウ名:", self.win_edit)
 
         elif self.method == "browser_action":
-            self.b_action_combo = QComboBox()
-            b_actions = [
-                ("URLを開く (open_url)", "open_url"),
-                ("要素をクリック (click_element)", "click_element"),
-                ("テキスト入力 (type_text)", "type_text"),
-                ("テキスト取得 (read_text)", "read_text"),
-                ("要素待機 (wait_element)", "wait_element"),
-                ("タブを閉じる (close_tab)", "close_tab"),
-                ("タブ切り替え (switch_tab)", "switch_tab")
-            ]
-            for lbl, val in b_actions:
-                self.b_action_combo.addItem(lbl, val)
-            cur_b_act = self.args.get("action", "open_url")
-            idx = next((i for i, (_, val) in enumerate(b_actions) if val == cur_b_act), 0)
-            self.b_action_combo.setCurrentIndex(idx)
-            self.b_action_combo.currentIndexChanged.connect(lambda i: self._update_arg("action", self.b_action_combo.itemData(i)))
-            self.edit_layout.addRow("ブラウザ操作:", self.b_action_combo)
+            cur_act = self.args.get("action", "open_url")
+            if cur_act == "open_url":
+                self.b_url_edit = QLineEdit(self.args.get("url", ""))
+                self.b_url_edit.setPlaceholderText("https://example.com")
+                self.b_url_edit.textChanged.connect(lambda v: self._update_arg("url", v))
+                self.edit_layout.addRow("URL:", self.b_url_edit)
+            elif cur_act in ["click_element", "wait_element"]:
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+            elif cur_act == "type_text":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
 
-            self.b_url_edit = QLineEdit(self.args.get("url", ""))
-            self.b_url_edit.setPlaceholderText("https://example.com")
-            self.b_url_edit.textChanged.connect(lambda v: self._update_arg("url", v))
-            self.edit_layout.addRow("URL:", self.b_url_edit)
+                self.b_text_edit = QLineEdit(self.args.get("text", ""))
+                self.b_text_edit.setPlaceholderText("入力テキスト または 変数名")
+                self.b_text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
+                self.edit_layout.addRow("入力テキスト:", self.b_text_edit)
+            elif cur_act == "read_text":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
 
-            self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
-            self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
-            self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
-            self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
-
-            self.b_text_edit = QLineEdit(self.args.get("text", ""))
-            self.b_text_edit.setPlaceholderText("入力テキスト または 変数名")
-            self.b_text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
-            self.edit_layout.addRow("入力テキスト:", self.b_text_edit)
+                self.b_var_edit = QLineEdit(self.args.get("variable_name", "extracted_val"))
+                self.b_var_edit.setPlaceholderText("格納変数名")
+                self.b_var_edit.textChanged.connect(lambda v: self._update_arg("variable_name", v))
+                self.edit_layout.addRow("格納変数名:", self.b_var_edit)
 
         elif self.method == "excel_action":
-            self.e_action_combo = QComboBox()
-            e_actions = [
-                ("セル書き込み (write_cell)", "write_cell"),
-                ("セル読み取り (read_cell)", "read_cell"),
-                ("ブックを開く (open_workbook)", "open_workbook"),
-                ("ブックを保存 (save_workbook)", "save_workbook"),
-                ("ブックを閉じる (close_workbook)", "close_workbook"),
-                ("シート選択 (select_sheet)", "select_sheet")
-            ]
-            for lbl, val in e_actions:
-                self.e_action_combo.addItem(lbl, val)
-            cur_e_act = self.args.get("action", "write_cell")
-            idx = next((i for i, (_, val) in enumerate(e_actions) if val == cur_e_act), 0)
-            self.e_action_combo.setCurrentIndex(idx)
-            self.e_action_combo.currentIndexChanged.connect(lambda i: self._update_arg("action", self.e_action_combo.itemData(i)))
-            self.edit_layout.addRow("Excel操作:", self.e_action_combo)
+            cur_act = self.args.get("action", "write_cell")
+            if cur_act in ["open_workbook", "write_cell", "read_cell"]:
+                e_file_box = QHBoxLayout()
+                self.e_file_edit = QLineEdit(self.args.get("file_path", ""))
+                self.e_file_edit.setPlaceholderText("Excelファイルパス（空欄で現在のアクティブブック）")
+                self.e_file_edit.textChanged.connect(lambda v: self._update_arg("file_path", v))
+                e_file_box.addWidget(self.e_file_edit)
 
-            e_file_box = QHBoxLayout()
-            self.e_file_edit = QLineEdit(self.args.get("file_path", ""))
-            self.e_file_edit.setPlaceholderText("Excelファイルパス...")
-            self.e_file_edit.textChanged.connect(lambda v: self._update_arg("file_path", v))
-            e_file_box.addWidget(self.e_file_edit)
+                e_browse_btn = QPushButton("参照...")
+                e_browse_btn.setFixedWidth(60)
+                e_browse_btn.clicked.connect(self._browse_excel_file_for_action)
+                e_file_box.addWidget(e_browse_btn)
+                self.edit_layout.addRow("Excelファイル:", e_file_box)
 
-            e_browse_btn = QPushButton("参照...")
-            e_browse_btn.setFixedWidth(60)
-            e_browse_btn.clicked.connect(self._browse_excel_file_for_action)
-            e_file_box.addWidget(e_browse_btn)
-            self.edit_layout.addRow("Excelファイル:", e_file_box)
+            if cur_act in ["write_cell", "read_cell", "select_sheet"]:
+                self.e_sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
+                self.e_sheet_edit.setPlaceholderText("空欄でアクティブシート")
+                self.e_sheet_edit.textChanged.connect(lambda v: self._update_arg("sheet_name", v))
+                self.edit_layout.addRow("シート名:", self.e_sheet_edit)
 
-            self.e_sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
-            self.e_sheet_edit.setPlaceholderText("空欄でアクティブシート")
-            self.e_sheet_edit.textChanged.connect(lambda v: self._update_arg("sheet_name", v))
-            self.edit_layout.addRow("シート名:", self.e_sheet_edit)
+            if cur_act in ["write_cell", "read_cell"]:
+                self.e_cell_edit = QLineEdit(self.args.get("cell", ""))
+                self.e_cell_edit.setPlaceholderText("例: A1")
+                self.e_cell_edit.textChanged.connect(lambda v: self._update_arg("cell", v))
+                self.edit_layout.addRow("セル番地:", self.e_cell_edit)
 
-            self.e_cell_edit = QLineEdit(self.args.get("cell", ""))
-            self.e_cell_edit.setPlaceholderText("例: A1")
-            self.e_cell_edit.textChanged.connect(lambda v: self._update_arg("cell", v))
-            self.edit_layout.addRow("セル番地:", self.e_cell_edit)
-
-            self.e_val_edit = QLineEdit(str(self.args.get("value", "")))
-            self.e_val_edit.setPlaceholderText("書き込む値 または 変数")
-            self.e_val_edit.textChanged.connect(lambda v: self._update_arg("value", v))
-            self.edit_layout.addRow("書込値/変数名:", self.e_val_edit)
+            if cur_act == "write_cell":
+                self.e_val_edit = QLineEdit(str(self.args.get("value", "")))
+                self.e_val_edit.setPlaceholderText("書き込む値 または {{変数名}}")
+                self.e_val_edit.textChanged.connect(lambda v: self._update_arg("value", v))
+                self.edit_layout.addRow("書き込み値:", self.e_val_edit)
+            elif cur_act == "read_cell":
+                self.e_var_edit = QLineEdit(self.args.get("variable_name", "cell_val"))
+                self.e_var_edit.setPlaceholderText("格納変数名")
+                self.e_var_edit.textChanged.connect(lambda v: self._update_arg("variable_name", v))
+                self.edit_layout.addRow("格納変数名:", self.e_var_edit)
 
         # 詳細フォーム内に削除ボタンを配置
         delete_btn = QPushButton("このアクションを削除")

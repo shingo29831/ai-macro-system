@@ -79,7 +79,7 @@ class MacroEditorScreen(QWidget):
         # 1. ツールパネル（左側）
         self.tool_panel = QWidget()
         self.tool_panel.setFixedWidth(270)
-        self.tool_panel.setStyleSheet("background-color: #ffffff; border-right: 1px solid #e0e0e0;")
+        self.tool_panel.setStyleSheet("background-color: #ffffff; border: none;")
         tool_layout = QVBoxLayout(self.tool_panel)
         tool_layout.setContentsMargins(12, 16, 12, 16)
         tool_layout.setSpacing(10)
@@ -224,7 +224,7 @@ class MacroEditorScreen(QWidget):
         # 4. 目次パネル（右側）
         self.index_panel = QWidget()
         self.index_panel.setFixedWidth(240)
-        self.index_panel.setStyleSheet("background-color: #ffffff; border-left: 1px solid #e0e0e0;")
+        self.index_panel.setStyleSheet("background-color: #ffffff; border: none;")
         index_layout = QVBoxLayout(self.index_panel)
         index_layout.setContentsMargins(12, 16, 12, 16)
         index_layout.setSpacing(10)
