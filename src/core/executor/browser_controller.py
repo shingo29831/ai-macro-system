@@ -196,7 +196,7 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"), url=url)
+            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"), url=url)
             if not clicked:
                 x = args.get("x")
                 y = args.get("y")
@@ -209,7 +209,7 @@ class BrowserController:
 
         elif action == "type_text":
             elem_name = attr_name or args.get("element_name")
-            typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=elem_name)
+            typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.6), element_name=elem_name)
             if not typed:
                 x = args.get("x")
                 y = args.get("y")
@@ -410,9 +410,12 @@ class BrowserController:
         last_win_args: Optional[Dict[str, Any]],
         timeout: float = 0.5,
         element_name: Optional[str] = None,
-        url: Optional[str] = None
+        url: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+        **kwargs
     ) -> bool:
-        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout, 0.5), element_name=element_name, url=url)
+        effective_timeout = timeout_sec if timeout_sec is not None else timeout
+        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(effective_timeout, 0.5), element_name=element_name, url=url)
         if elem:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2
@@ -437,12 +440,15 @@ class BrowserController:
         self,
         selector: Optional[str],
         text: str,
-        clear_before: bool,
-        last_win_args: Optional[Dict[str, Any]],
-        timeout: float,
-        element_name: Optional[str] = None
+        clear_before: bool = True,
+        last_win_args: Optional[Dict[str, Any]] = None,
+        timeout: float = 0.6,
+        element_name: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+        **kwargs
     ) -> bool:
-        clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout, element_name=element_name)
+        effective_timeout = timeout_sec if timeout_sec is not None else timeout
+        clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=effective_timeout, element_name=element_name)
         if not clicked:
             return False
         self._perform_typing_input(text, clear_before)
