@@ -77,7 +77,7 @@ def build_and_save_macro(
         event_id = info["event_id"]
         fallback_evts = info.get("fallback_events", [event_id])
         
-        current_window = next((e.window.name for e in integrated_events if e.id == event_id), "Unknown")
+        current_window = next((e.window.name for e in integrated_events if e.id == event_id or e.id in fallback_evts), info.get("window_name", "Unknown"))
         
         if raw_type == "meta_loop_start":
             loop_vars = info.get("loop_variables", {"y_offset": 30})
@@ -343,12 +343,12 @@ def build_and_save_macro(
             raise InterruptedError("Generation cancelled by user")
             
         raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
-        base_id = raw_event_id.replace("_nav_click", "") if raw_event_id else None
+        base_id = raw_event_id.replace("_nav_click", "").split("_chk_")[0].split("_submit_")[0] if raw_event_id else None
         integ_evt = next((e for e in integrated_events if e.id in [raw_event_id, base_id]), None)
         
         cmd_type = step.action.command
         
-        if not integ_evt and cmd_type != "LOOP_END":
+        if not integ_evt and cmd_type not in ["LOOP_END", "BROWSER_ACTION", "ACTIVATE_WINDOW"]:
             continue
 
         current_timestamp = integ_evt.timestamp if integ_evt else prev_timestamp or 0

@@ -540,6 +540,16 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
+        # Why: フォーム外枠やグループ枠への空クリックを除外しフォーカス暴走を防止
+        is_container_click = act == "click" and (
+            sel.lower() in ["#entryform", "form"] or
+            sel.startswith("div:has-text") or
+            (c_type in ["group", "pane", "custom", "window"] and not elem_name)
+        )
+        if is_container_click:
+            i += 1
+            continue
+
         # Why: 汎用セレクトボックス/コンボボックスの集約
         is_select = "combobox" in c_type or "select" in sel.lower() or "list" in c_type
         if is_select:
@@ -634,6 +644,69 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         result.append(info)
         i += 1
+
+    # Why: スナップショットに存在するチェックボックス(true確定値)をフォーム完了前に確実に補完
+    last_evt_ref = temp_workflow_info[-1] if temp_workflow_info else {}
+    ref_eid = last_evt_ref.get("event_id", "evt_auto")
+    ref_win = last_evt_ref.get("window_name", "")
+
+    for snap_key, snap_val in global_form_snapshot.items():
+        clean_k = snap_key.replace("name:", "").strip()
+        if snap_key in processed_selectors or clean_k in processed_selectors:
+            continue
+        is_chk = "newsletter" in snap_key.lower() or "check" in snap_key.lower() or str(snap_val).lower() in ["true", "false"]
+        if is_chk and str(snap_val).lower() == "true":
+            target_sel = snap_key if snap_key.startswith(("#", ".")) else ""
+            if not target_sel:
+                for sk in global_form_snapshot.keys():
+                    if sk.startswith("#") and any(p in sk.lower() for p in ["newsletter", "check", "mail"]):
+                        target_sel = sk
+                        break
+            if not target_sel:
+                target_sel = "#newsletter" if "newsletter" in snap_key.lower() else "input[type='checkbox']"
+
+            if target_sel not in processed_selectors:
+                result.append({
+                    "raw_action": "browser_action",
+                    "raw_type": "browser_action",
+                    "action": "set_checkbox",
+                    "selector": target_sel,
+                    "selector_type": "css",
+                    "value": True,
+                    "element_name": clean_k if "name:" in snap_key else "お知らせ・更新通知メールを受信する",
+                    "window_name": ref_win,
+                    "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
+                    "fallback_events": [ref_eid]
+                })
+                processed_selectors.add(target_sel)
+                processed_selectors.add(snap_key)
+                logger.info(f"Auto-injected checkbox action from snapshot: {target_sel} = True")
+
+    # Why: フォーム送信シグナル(Enterキーまたは送信意図)検知時、登録ボタン押下を確実に補完
+    has_submit_signal = any(
+        (e.get("raw_action") in ["key_down", "key_press", "press_key"] and str(e.get("semantic_role", "")).lower() in ["enter", "return"]) or
+        any(k in str((e.get("app_context") or {}).get("element_name") or "").lower() for k in ["登録", "送信", "submit", "save"])
+        for e in temp_workflow_info
+    )
+    if has_submit_signal:
+        has_existing_submit = any(
+            (r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])) or
+            (r.get("raw_action") in ["key_down", "key_press", "press_key"] and str(r.get("semantic_role", "")).lower() in ["enter", "return"])
+            for r in result
+        )
+        if not has_existing_submit:
+            result.append({
+                "raw_action": "browser_action",
+                "raw_type": "browser_action",
+                "action": "click_element",
+                "selector": "#submit-btn",
+                "selector_type": "css",
+                "element_name": "登録する",
+                "window_name": ref_win,
+                "event_id": f"{ref_eid}_submit_btn",
+                "fallback_events": [ref_eid]
+            })
+            logger.info("Auto-injected form submit button click: #submit-btn (登録する)")
 
     return result
 
@@ -1437,7 +1510,7 @@ def optimize_workflow_events(
                         info["semantic_role"] = elem_name
 
         promoted_browser_info.append(info)
-    # Why: Webフォーム自動化において各入力直後の不要なEnter・Tabを除去しフォーカス暴走を防止
+    # Why: 入力補完Tabを除去しつつフォーム送信や検索実行のEnterキーを確実に保護
     cleaned_after_promoted = []
     m_len = len(promoted_browser_info)
     for p_idx, p_info in enumerate(promoted_browser_info):
@@ -1449,7 +1522,8 @@ def optimize_workflow_events(
                 prev_act = prev.get("raw_action")
                 prev_b_act = prev.get("action")
                 if prev_act in ["browser_action", "type_text"]:
-                    if p_role == "tab" or p_info.get("ime_active") or prev_b_act == "type_text" or prev_act == "type_text":
+                    # Why: 末尾のEnterや非IME確定Enterは送信キーのため除去せず保持
+                    if p_role == "tab" or (p_info.get("ime_active") and p_idx < m_len - 1 and promoted_browser_info[p_idx + 1].get("raw_action") in ["type_text", "key_press"]):
                         continue
         cleaned_after_promoted.append(p_info)
     promoted_browser_info = cleaned_after_promoted
