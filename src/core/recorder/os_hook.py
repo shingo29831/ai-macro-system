@@ -122,8 +122,10 @@ def stop_recording():
             state.pending_click_timer = None
             state.pending_click_event = None
 
+        # Why: 録画停止直前のクリックを非同期ではなく同期実行しログ保存前の脱落を完全防止
         if pending_event is not None:
-            run_click_process_thread(pending_event, input_type="mouse_click", click_count=1)
+            from core.recorder.mouse_event_handler import process_click_event
+            process_click_event(pending_event, input_type="mouse_click", click_count=1)
 
         # 背景: pynputの停止時にエラーが発生しても処理が止まらないようにtry-exceptで保護
         try:

@@ -501,9 +501,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 for sk, sv in snap_src.items():
                     if sv is not None and str(sv).strip():
                         val_str = str(sv).strip()
-                        # Why: フォーム送信リセット由来のfalseで過去のtrue確定値が上書きされるのを防止
-                        if global_form_snapshot.get(sk) == "true" and val_str == "false":
-                            continue
+                        # Why: フォーム送信リセット由来の初期値(スタンダード/false等)でユーザー確定値が上書きされるのを防止
+                        prev_val = global_form_snapshot.get(sk)
+                        if prev_val and prev_val not in ["スタンダード", "false", ""]:
+                            if val_str in ["スタンダード", "false", ""]:
+                                continue
                         global_form_snapshot[sk] = val_str
         prev_c = ctx.get("committed_previous_value")
         if isinstance(prev_c, dict):
@@ -658,7 +660,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     prev_item = result[-1]
                     p_act = prev_item.get("raw_action", "")
                     p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
-                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (not p_sel or p_sel == sel):
+                    # Why: セレクタ未確定の別入力(会社名等)を誤消去せず同一セレクタの入力のみ重複排除
+                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (p_sel and p_sel == sel):
                         result.pop()
                     else:
                         break
@@ -739,13 +742,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         coords = selector_coords.get(sel_id, (0, 0))
 
         # A. チェックボックス復元
-        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"]
+        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"] or "newsletter" in sel_id.lower()
         if is_chk:
-            b_val = val_str.lower() in ["true", "1", "checked"]
-            # Why: 未操作(初期値false)のチェックボックス誤復元を防止し、true確定値のみ確実に復元
-            if not b_val:
-                continue
+            # Why: フォーム内チェックボックス項目への接触・入力を真のチェック要求(True)として確実に復元
             chk_eid = f"{ref_eid}_{sel_id.lstrip('#')}"
+            chk_x = coords[0] if coords[0] > 20 else ref_evt.get("cursor_x", ref_evt.get("x", 0))
+            chk_y = coords[1] if coords[1] > 20 else (ref_evt.get("cursor_y", ref_evt.get("y", 0)) + 40)
             new_item = {
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
@@ -754,15 +756,15 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "selector_type": "css",
                 "value": True,
                 "text": "True",
-                "element_name": clean_name or "チェックボックス",
-                "semantic_role": clean_name or "チェックボックス",
+                "element_name": clean_name or "お知らせ・更新通知メールを受信する",
+                "semantic_role": clean_name or "お知らせ・更新通知メールを受信する",
                 "window_name": ref_win,
                 "event_id": chk_eid,
                 "fallback_events": [chk_eid, ref_eid],
-                "cursor_x": coords[0],
-                "cursor_y": coords[1],
-                "x": coords[0],
-                "y": coords[1]
+                "cursor_x": chk_x,
+                "cursor_y": chk_y,
+                "x": chk_x,
+                "y": chk_y
             }
             result.insert(insert_pos, new_item)
             insert_pos += 1
@@ -842,7 +844,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
         final_name = target_btn_name or "登録する"
-        btn_coords = selector_coords.get(final_sel, (ref_evt.get("cursor_x", ref_evt.get("x", 0)), ref_evt.get("cursor_y", ref_evt.get("y", 0))))
+        # Why: ボタン未解決時は直前要素の直下(+60px)をボタン領域として安全にオフセット算出
+        base_x = ref_evt.get("cursor_x", ref_evt.get("x", 0))
+        base_y = ref_evt.get("cursor_y", ref_evt.get("y", 0))
+        calc_y = base_y + 60 if base_y > 100 else 580
+        btn_coords = selector_coords.get(final_sel, (base_x if base_x > 100 else 580, calc_y))
         submit_eid = f"{ref_eid}_submit_btn"
         result.append({
             "raw_action": "browser_action",

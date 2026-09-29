@@ -170,7 +170,8 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
+            # Why: タイムアウトを極小制限せずUIA探索時間を確保し確実にボタンを特定
+            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
             if not clicked:
                 x = args.get("x")
                 y = args.get("y")
@@ -186,9 +187,9 @@ class BrowserController:
             x = args.get("x")
             y = args.get("y")
             typed = False
-            # Why: セレクタや要素名がある場合は物理座標ズレを回避するためUI特定を最優先
+            # Why: タイムアウトを確保しUIA探索による確実な対象要素特定とフォーカスを最優先
             if selector or elem_name:
-                typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.8), element_name=elem_name)
+                typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name)
                 if typed:
                     res_data["status"] = "selector_typing_succeeded"
 
@@ -199,9 +200,13 @@ class BrowserController:
                 res_data["status"] = "coords_typing_succeeded"
 
             if not typed:
-                self._click_physical_coords(x, y, last_win_args)
-                self._perform_typing_input(text, clear_before)
-                res_data["status"] = "fallback_typing_succeeded"
+                # Why: フォーカス移動できない場合に直前項目へ誤入力するのを防止しセレクタ再探索で保護
+                if self._click_by_uia_or_selector(selector, last_win_args, timeout=2.0, element_name=elem_name):
+                    self._perform_typing_input(text, clear_before)
+                    res_data["status"] = "retry_typing_succeeded"
+                else:
+                    self._perform_typing_input(text, clear_before)
+                    res_data["status"] = "fallback_typing_succeeded"
 
         elif action == "read_text":
             content = self._read_text_by_uia_or_selector(selector, last_win_args, timeout_sec)
@@ -217,7 +222,7 @@ class BrowserController:
 
         elif action == "select_option":
             target_val = str(value if value is not None else text)
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"))
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name"))
             if elem:
                 try:
                     elem.click_input()
@@ -246,7 +251,7 @@ class BrowserController:
 
         elif action == "set_checkbox":
             desired = True if value is None else (value in [True, "True", "true", 1, "1"])
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name") or text)
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text)
             if elem:
                 try:
                     is_checked = False
@@ -358,7 +363,7 @@ class BrowserController:
                     search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
-                # Why: uiautomationのダイレクトID探索および深層走査で目的要素を瞬時に検出
+                # Why: uiautomationの高速ネイティブ直接検索と深層走査で要素を瞬時に検出
                 try:
                     import uiautomation as auto
                     win_ctrl = auto.ControlFromHandle(int(target_hwnd)) if target_hwnd else None
@@ -372,6 +377,12 @@ class BrowserController:
                             found_ctrl = win_ctrl.Control(AutomationId=did)
                             if found_ctrl and found_ctrl.Exists(0, 0):
                                 return UIAWrapper(found_ctrl.Element)
+                        # ボタン名直接探索(登録する/送信/Submit等)
+                        for term in search_terms:
+                            if any(k in term for k in ["登録", "送信", "submit", "btn"]):
+                                btn_c = win_ctrl.ButtonControl(SubName=term)
+                                if btn_c and btn_c.Exists(0, 0):
+                                    return UIAWrapper(btn_c.Element)
                         for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=14):
                             aid = str(getattr(ctrl, "AutomationId", "") or "").lower()
                             name = str(getattr(ctrl, "Name", "") or "").lower()
