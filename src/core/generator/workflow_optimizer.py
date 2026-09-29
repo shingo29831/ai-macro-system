@@ -483,9 +483,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     global_form_snapshot: Dict[str, str] = {}
     selector_coords: Dict[str, Tuple[int, int]] = {}
     selector_names: Dict[str, str] = {}
-
-    # Why: 網羅的DOMスキャン情報から物理座標・型・確定値を優先バインド
     scanned_elements_map: Dict[str, Dict[str, Any]] = {}
+    selector_candidates: Dict[str, List[str]] = {}
 
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
@@ -538,6 +537,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 prev_val = global_form_snapshot.get(ps)
                 if not (prev_val and str(pv).strip() in ["", "None"]):
                     global_form_snapshot[ps] = str(pv).strip()
+
+    # 2. 各要素セレクタごとに全履歴から確定値候補を収集
+    selector_candidates = {}
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
