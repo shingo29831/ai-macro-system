@@ -73,6 +73,73 @@ class BrowserController:
             pass
         return None
 
+    def _click_physical_coords(self, x: Optional[int], y: Optional[int], last_win_args: Optional[Dict[str, Any]] = None) -> bool:
+        # Why: ウィンドウ移動オフセットを自動加算し物理座標を確実にクリック
+        if x is None or y is None or (x <= 20 and y <= 20):
+            return False
+        off_x, off_y = 0, 0
+        if last_win_args and platform.system() == "Windows":
+            try:
+                target_hwnd = last_win_args.get("mapped_hwnd") or ctypes.windll.user32.GetForegroundWindow()
+                rec_x = last_win_args.get("x", 0)
+                rec_y = last_win_args.get("y", 0)
+                from core.executor.runner import _get_window_offset
+                off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+            except Exception:
+                pass
+
+        actual_x = int(x + off_x)
+        actual_y = int(y + off_y)
+        if platform.system() == "Windows":
+            ctypes.windll.user32.SetCursorPos(actual_x, actual_y)
+            ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
+            time.sleep(0.04)
+            set_system_cursor("run_click")
+            time.sleep(0.03)
+            ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
+            ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+            time.sleep(0.06)
+            set_system_cursor("run_idle")
+        time.sleep(0.1)
+        return True
+
+    def _perform_typing_input(self, text: str, clear_before: bool = True):
+        # Why: 既存テキストを消去しクリップボード貼付と仮想DOM通知キーで確実に入力
+        if clear_before:
+            self._keyboard.press(Key.ctrl)
+            self._keyboard.press('a')
+            self._keyboard.release('a')
+            self._keyboard.release(Key.ctrl)
+            time.sleep(0.04)
+            self._keyboard.press(Key.backspace)
+            self._keyboard.release(Key.backspace)
+            time.sleep(0.04)
+
+        from core.executor.os_env_controller import ensure_ime_state, is_link_or_url, normalize_text_width, should_input_as_halfwidth, should_input_as_fullwidth
+        from core.executor.runner import _set_clipboard_text
+        norm_text = normalize_text_width(text)
+        if is_link_or_url(norm_text) or should_input_as_halfwidth(norm_text):
+            ensure_ime_state(target_state=False, timeout=0.6)
+        elif should_input_as_fullwidth(norm_text):
+            ensure_ime_state(target_state=True, timeout=0.6)
+        time.sleep(0.04)
+
+        if _set_clipboard_text(norm_text):
+            self._keyboard.press(Key.ctrl)
+            self._keyboard.press('v')
+            self._keyboard.release('v')
+            self._keyboard.release(Key.ctrl)
+            time.sleep(0.04)
+            # Why: React/Vue等の仮想DOM inputイベントを右矢印キーで強制発火
+            self._keyboard.press(Key.right)
+            self._keyboard.release(Key.right)
+            time.sleep(0.06)
+        else:
+            for char in norm_text:
+                self._keyboard.type(char)
+                time.sleep(0.02)
+        time.sleep(0.15)
+
     def execute_action(
         self,
         args: Dict[str, Any],
@@ -129,31 +196,27 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout_sec, element_name=attr_name or args.get("element_name"), url=url)
-            # Why: クリック未成功時にURL直接遷移すると未開リンクの誤起動を招くため物理座標クリックへ安全フォールバック
+            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"), url=url)
             if not clicked:
                 x = args.get("x")
                 y = args.get("y")
-                if x is not None and y is not None and (x != 0 or y != 0):
-                    logger.info(f"[{workflow_id}] Selector click not resolved. Falling back to physical click at ({x}, {y})")
-                    if platform.system() == "Windows":
-                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
-                        ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
-                        time.sleep(0.04)
-                        set_system_cursor("run_click")
-                        time.sleep(0.03)
-                        ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
-                        ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
-                        time.sleep(0.06)
-                        set_system_cursor("run_idle")
-                    time.sleep(0.2)
+                if self._click_physical_coords(x, y, last_win_args):
+                    logger.info(f"[{workflow_id}] Selector click fell back to physical click at ({x}, {y})")
                     res_data["status"] = "fallback_click_succeeded"
                 else:
-                    logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no fallback coordinates available.")
+                    logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no valid fallback coordinates.")
                     res_data["status"] = "click_failed"
 
         elif action == "type_text":
-            self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout_sec)
+            elem_name = attr_name or args.get("element_name")
+            typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=elem_name)
+            if not typed:
+                x = args.get("x")
+                y = args.get("y")
+                # Why: UIA未検出時は物理座標をクリックして入力欄フォーカスを取り確実に入力
+                self._click_physical_coords(x, y, last_win_args)
+                self._perform_typing_input(text, clear_before)
+                res_data["status"] = "fallback_typing_succeeded"
 
         elif action == "read_text":
             content = self._read_text_by_uia_or_selector(selector, last_win_args, timeout_sec)
@@ -169,7 +232,7 @@ class BrowserController:
 
         elif action == "select_option":
             target_val = str(value if value is not None else text)
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 1.0), element_name=attr_name or args.get("element_name"))
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"))
             if elem:
                 try:
                     elem.click_input()
@@ -184,11 +247,21 @@ class BrowserController:
                     logger.warning(f"select_option failed: {e}")
                     res_data["status"] = "failed"
             else:
-                res_data["status"] = "element_not_found"
+                x = args.get("x")
+                y = args.get("y")
+                if self._click_physical_coords(x, y, last_win_args):
+                    time.sleep(0.1)
+                    self._keyboard.type(target_val)
+                    time.sleep(0.05)
+                    self._keyboard.press(Key.enter)
+                    self._keyboard.release(Key.enter)
+                    res_data["selected"] = target_val
+                else:
+                    res_data["status"] = "element_not_found"
 
         elif action == "set_checkbox":
-            desired = True if value is None else bool(value)
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 1.0), element_name=attr_name or args.get("element_name"))
+            desired = True if value is None else (value in [True, "True", "true", 1, "1"])
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"))
             if elem:
                 try:
                     toggle_state = getattr(elem.element_info, "toggle_state", None)
@@ -201,7 +274,12 @@ class BrowserController:
                     logger.warning(f"set_checkbox failed: {e}")
                     res_data["status"] = "failed"
             else:
-                res_data["status"] = "element_not_found"
+                x = args.get("x")
+                y = args.get("y")
+                if self._click_physical_coords(x, y, last_win_args):
+                    res_data["checked"] = desired
+                else:
+                    res_data["status"] = "element_not_found"
 
         elif action == "wait_element":
             found = self._wait_element_exist(selector, last_win_args, timeout_sec)
@@ -367,33 +445,7 @@ class BrowserController:
         clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout, element_name=element_name)
         if not clicked:
             return False
-        if clear_before:
-            self._keyboard.press(Key.ctrl)
-            self._keyboard.press('a')
-            self._keyboard.release('a')
-            self._keyboard.release(Key.ctrl)
-            time.sleep(0.05)
-            self._keyboard.press(Key.backspace)
-            self._keyboard.release(Key.backspace)
-            time.sleep(0.05)
-        from core.executor.os_env_controller import ensure_ime_state, is_link_or_url, normalize_text_width, should_input_as_halfwidth, should_input_as_fullwidth
-        from core.executor.runner import _set_clipboard_text
-        norm_text = normalize_text_width(text)
-        if is_link_or_url(norm_text) or should_input_as_halfwidth(norm_text):
-            ensure_ime_state(target_state=False, timeout=0.6)
-        elif should_input_as_fullwidth(norm_text):
-            ensure_ime_state(target_state=True, timeout=0.6)
-        time.sleep(0.03)
-        if _set_clipboard_text(norm_text):
-            self._keyboard.press(Key.ctrl)
-            self._keyboard.press('v')
-            self._keyboard.release('v')
-            self._keyboard.release(Key.ctrl)
-        else:
-            for char in norm_text:
-                self._keyboard.type(char)
-                time.sleep(0.02)
-        time.sleep(0.2)
+        self._perform_typing_input(text, clear_before)
         return True
 
     def _read_text_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float) -> str:
