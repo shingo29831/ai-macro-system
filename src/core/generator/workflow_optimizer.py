@@ -571,16 +571,7 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     nxt_dx = nxt.get("dx", 0.0)
                     nxt_dy = nxt.get("dy", 0.0)
 
-                    is_opp_y = (tot_dy * nxt_dy < 0)
-                    is_opp_x = (tot_dx * nxt_dx < 0)
-
-                    # Why: 50ms以内の単発逆ノッチ(チャタリング)を主方向から相殺させず除外
-                    if is_opp_y or is_opp_x:
-                        if is_opp_y and abs(nxt_dy) <= 1.0 and abs(tot_dy) >= 1.0 and ts_gap < 50:
-                            j += 1
-                            continue
-                        break
-
+                    # Why: 行き過ぎ戻し等の逆方向スクロールも合算し正味移動量を完全集約
                     tot_dx += nxt_dx
                     tot_dy += nxt_dy
                     last_eid = nxt.get("event_id")
