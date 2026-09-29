@@ -322,13 +322,13 @@ def process_scroll_event(event: dict):
         source = event.get("source", "unknown")
 
         with _scroll_dedup_lock:
-            # Why: 30ms以内の同一スクロールの二重記録を完全排除
+            # Why: 異なるフックソースからの二重受信(15ms以内)のみ除外し正規の高速連続ノッチを保護
             if _last_scroll_info is not None:
-                lx, ly, ldx, ldy = _last_scroll_info
-                if (now - _last_scroll_time < 0.03) and abs(x - lx) <= 5 and abs(y - ly) <= 5 and (dx == ldx) and (dy == ldy):
+                lx, ly, ldx, ldy, lsrc = _last_scroll_info
+                if (now - _last_scroll_time < 0.015) and (source != lsrc) and abs(x - lx) <= 5 and abs(y - ly) <= 5 and (dx == ldx) and (dy == ldy):
                     return
             _last_scroll_time = now
-            _last_scroll_info = (x, y, dx, dy)
+            _last_scroll_info = (x, y, dx, dy, source)
 
         point_window = window_inspector.get_window_title_at_point(x, y)
         if window_inspector.should_ignore_window(point_window.get("title")):

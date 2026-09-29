@@ -539,7 +539,9 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
             tot_dy = curr.get("dy", 0.0)
             base_x = curr.get("cursor_x", curr.get("x", 0))
             base_y = curr.get("cursor_y", curr.get("y", 0))
+            curr_win = curr.get("window_name", "")
             last_eid = curr.get("event_id")
+            last_ts = curr.get("timestamp", 0)
             evts = list(curr.get("fallback_events", [curr.get("event_id")]))
 
             j = i + 1
@@ -547,24 +549,47 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                 nxt = deduped[j]
                 n_act = nxt.get("raw_action", "")
                 if n_act == "scroll":
-                    # Why: 同一ウィンドウ内でのスクロールであれば座標の揺れを許容して単一アクションに集約
+                    n_win = nxt.get("window_name", "")
+                    if curr_win and n_win and curr_win != n_win:
+                        break
                     sx, sy = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                    if abs(sx - base_x) <= 80 and abs(sy - base_y) <= 80:
-                        tot_dx += nxt.get("dx", 0.0)
-                        tot_dy += nxt.get("dy", 0.0)
-                        last_eid = nxt.get("event_id")
-                        evts.extend(nxt.get("fallback_events", [last_eid]))
-                        j += 1
-                        continue
-                    break
+                    if abs(sx - base_x) > 250 or abs(sy - base_y) > 350:
+                        break
+
+                    nxt_dx = nxt.get("dx", 0.0)
+                    nxt_dy = nxt.get("dy", 0.0)
+                    nxt_ts = nxt.get("timestamp", 0)
+                    ts_gap = abs(nxt_ts - last_ts) if (nxt_ts and last_ts) else 999
+
+                    is_opp_y = (tot_dy * nxt_dy < 0)
+                    is_opp_x = (tot_dx * nxt_dx < 0)
+
+                    # Why: 50ms以内の単発逆ノッチ(チャタリング)を主方向から相殺させず除外
+                    if is_opp_y or is_opp_x:
+                        if is_opp_y and abs(nxt_dy) <= 1.0 and abs(tot_dy) >= 1.0 and ts_gap < 50:
+                            j += 1
+                            continue
+                        break
+
+                    tot_dx += nxt_dx
+                    tot_dy += nxt_dy
+                    last_eid = nxt.get("event_id")
+                    last_ts = nxt_ts or last_ts
+                    evts.extend(nxt.get("fallback_events", [last_eid]))
+                    j += 1
+                    continue
                 break
 
-            merged = curr.copy()
-            merged["dx"] = round(tot_dx, 2)
-            merged["dy"] = round(tot_dy, 2)
-            merged["event_id"] = last_eid
-            merged["fallback_events"] = evts
-            result.append(merged)
+            fin_dx = round(tot_dx, 2)
+            fin_dy = round(tot_dy, 2)
+            # Why: 相殺や微小入力でゼロとなった無効スクロールは出力から完全除外
+            if fin_dx != 0.0 or fin_dy != 0.0:
+                merged = curr.copy()
+                merged["dx"] = fin_dx
+                merged["dy"] = fin_dy
+                merged["event_id"] = last_eid
+                merged["fallback_events"] = evts
+                result.append(merged)
             i = j
             continue
 

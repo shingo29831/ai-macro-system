@@ -1479,6 +1479,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     x = args.get("x")
                     y = args.get("y")
                     
+                    if dx == 0.0 and dy == 0.0:
+                        i += 1
+                        continue
+
                     if x is not None and y is not None and (x != 0 or y != 0):
                         sx, sy = int(x + off_x), int(y + off_y)
                         if platform.system() == "Windows":
@@ -1498,7 +1502,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             for _ in range(total_notches):
                                 _check_stop()
                                 ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, raw_val, 0)
-                                time.sleep(0.035)
+                                time.sleep(0.02)
                         if dx != 0.0:
                             direction_x = 1 if dx > 0 else -1
                             total_notches_x = max(1, int(round(abs(dx))))
@@ -1506,16 +1510,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             for _ in range(total_notches_x):
                                 _check_stop()
                                 ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, raw_val_x, 0)
-                                time.sleep(0.035)
+                                time.sleep(0.02)
                         # Why: スクロール後のスムーズアニメーションおよび描画完了を待機
-                        time.sleep(0.35)
+                        time.sleep(0.2)
                     else:
                         steps = max(1, int(round(abs(dy))))
                         dir_y = 1 if dy > 0 else -1
                         for _ in range(steps):
                             mouse.scroll(0, dir_y)
-                            time.sleep(0.035)
-                        time.sleep(0.35)
+                            time.sleep(0.02)
+                        time.sleep(0.2)
                         
                 elif method == "type_text":
                     raw_text = args.get("text", "")

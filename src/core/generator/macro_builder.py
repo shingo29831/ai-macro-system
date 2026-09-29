@@ -485,16 +485,17 @@ def build_and_save_macro(
                     dy_val = float(parts[1])
                     x_val = float(parts[2]) if len(parts) > 2 else 0.0
                     y_val = float(parts[3]) if len(parts) > 3 else 0.0
-                    raw_commands_data.append({
-                        "method": "scroll",
-                        "args": {
-                            "dx": dx_val,
-                            "dy": dy_val,
-                            "x": int(x_val),
-                            "y": int(y_val),
-                            "raw_event_id": raw_event_id
-                        }
-                    })
+                    if dx_val != 0.0 or dy_val != 0.0:
+                        raw_commands_data.append({
+                            "method": "scroll",
+                            "args": {
+                                "dx": dx_val,
+                                "dy": dy_val,
+                                "x": int(x_val),
+                                "y": int(y_val),
+                                "raw_event_id": raw_event_id
+                            }
+                        })
                 except Exception:
                     pass
         elif cmd_type == "KEYBOARD_SHORTCUT":
@@ -598,23 +599,34 @@ def build_and_save_macro(
             continue
         
         if cmd["method"] == "scroll":
+            c_dx = cmd["args"].get("dx", 0.0)
+            c_dy = cmd["args"].get("dy", 0.0)
+            if c_dx == 0.0 and c_dy == 0.0:
+                continue
+
             merged = False
             last_cmd = commands_data[-1]
             
             if last_cmd["method"] == "scroll":
-                # Why: 座標完全一致ではなく微小な揺れ(25px以内)を許容してスクロールを集約
-                if abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
-                    last_cmd["args"]["dx"] = round(last_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
-                    last_cmd["args"]["dy"] = round(last_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                l_dx = last_cmd["args"].get("dx", 0.0)
+                l_dy = last_cmd["args"].get("dy", 0.0)
+                # Why: 同方向スクロールのみ集約し逆方向相殺による消失を完全防止
+                is_same_dir = (l_dy * c_dy >= 0) and (l_dx * c_dx >= 0)
+                if is_same_dir and abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 200 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 300:
+                    last_cmd["args"]["dx"] = round(l_dx + c_dx, 2)
+                    last_cmd["args"]["dy"] = round(l_dy + c_dy, 2)
                     if not last_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
                         last_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
                     merged = True
             elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
                 prev_cmd = commands_data[-2]
                 if prev_cmd["method"] == "scroll":
-                    if last_cmd["args"]["duration"] < 1.2 and abs(prev_cmd["args"]["x"] - cmd["args"]["x"]) <= 25 and abs(prev_cmd["args"]["y"] - cmd["args"]["y"]) <= 25:
-                        prev_cmd["args"]["dx"] = round(prev_cmd["args"]["dx"] + cmd["args"]["dx"], 2)
-                        prev_cmd["args"]["dy"] = round(prev_cmd["args"]["dy"] + cmd["args"]["dy"], 2)
+                    p_dx = prev_cmd["args"].get("dx", 0.0)
+                    p_dy = prev_cmd["args"].get("dy", 0.0)
+                    is_same_dir = (p_dy * c_dy >= 0) and (p_dx * c_dx >= 0)
+                    if is_same_dir and last_cmd["args"]["duration"] < 1.2 and abs(prev_cmd["args"]["x"] - cmd["args"]["x"]) <= 200 and abs(prev_cmd["args"]["y"] - cmd["args"]["y"]) <= 300:
+                        prev_cmd["args"]["dx"] = round(p_dx + c_dx, 2)
+                        prev_cmd["args"]["dy"] = round(p_dy + c_dy, 2)
                         if not prev_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
                             prev_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
                         commands_data.pop()
