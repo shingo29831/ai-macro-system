@@ -595,13 +595,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: フォーム外枠やグループ枠への空クリックを除外しフォーカス暴走を防止
-        is_container_click = act == "click" and (
+        # Why: 入力要素への重複空クリックやフォーム枠クリックを除去
+        is_redundant_input_click = act == "click" and (
+            sel in processed_selectors or
             sel.lower() in ["#entryform", "form"] or
             sel.startswith("div:has-text") or
             (c_type in ["group", "pane", "custom", "window"] and not elem_name)
         )
-        if is_container_click:
+        if is_redundant_input_click:
             i += 1
             continue
 
@@ -694,8 +695,16 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             scanned_val = scanned_item.get("value")
             snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
             final_val = scanned_val or snap_val or element_final_values.get(sel)
+            # Why: 不正なNaN値を排除しイベント履歴の有効数値を救出
+            if final_val and str(final_val).strip().lower() in ["nan", "none"]:
+                final_val = ""
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
+            if not final_val:
+                for cand in reversed(selector_candidates.get(sel, [])):
+                    if cand and str(cand).strip().lower() not in ["nan", "none", elem_name.lower()]:
+                        final_val = str(cand).strip()
+                        break
 
             if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
                 clean_txt = str(final_val).strip()
@@ -815,16 +824,16 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         win_w = ref_evt.get("win_w", 0)
         win_h = ref_evt.get("win_h", 0)
 
-        # Why: 値の真偽値特性とUIAコントロール種別履歴に基づく普遍的な動作決定
-        is_chk = val_str.lower() in ["true", "false"]
-        is_combo = False
-        for info in temp_workflow_info:
-            i_ctx = info.get("app_context") or {}
-            c_type = str(i_ctx.get("control_type", "")).lower()
-            if (i_ctx.get("css_selector") == sel_id or i_ctx.get("form_snapshot", {}).get(sel_id) == val_str):
-                if any(t in c_type for t in ["combo", "select", "list", "dropdown"]):
-                    is_combo = True
-                    break
+        # Why: スキャンされた真の要素型に基づき他要素の型誤感染を完全排除
+        scanned_elem = scanned_elements_map.get(sel_id) or scanned_elements_map.get(f"name:{clean_name}") or {}
+        scanned_type = str(scanned_elem.get("control_type", "")).lower()
+
+        # Why: ボタン要素はselect_optionへ誤変換せずクリックアクションへ委譲
+        if "button" in scanned_type or "btn" in sel_id.lower():
+            continue
+
+        is_chk = "check" in scanned_type or val_str.lower() in ["true", "false"]
+        is_combo = any(t in scanned_type for t in ["combo", "select", "list", "dropdown"])
 
         if is_chk:
             chk_eid = f"{ref_eid}_{sel_id.lstrip('#')}"

@@ -114,7 +114,11 @@ class BrowserInspector(BaseInspector):
         try:
             r_val = ctrl.GetRangeValuePattern().Value
             if r_val is not None:
-                return str(int(r_val) if float(r_val).is_integer() else r_val).strip()
+                import math
+                f_val = float(r_val)
+                # Why: 未入力数値欄が返すNaN(非数)を除外し不正文字列化を防止
+                if not math.isnan(f_val):
+                    return str(int(f_val) if f_val.is_integer() else f_val).strip()
         except Exception:
             pass
 
@@ -181,7 +185,8 @@ class BrowserInspector(BaseInspector):
                 }
                 elements_detail.append(elem_data)
 
-                if val and str(val).strip():
+                # Why: ボタンやNaN値は入力キャッシュに混入させず純粋な入力値のみ保持
+                if val and str(val).strip() and str(val).strip().lower() != "nan" and c_type != "ButtonControl":
                     v_str = str(val).strip()
                     if sel:
                         snapshot[sel] = v_str
