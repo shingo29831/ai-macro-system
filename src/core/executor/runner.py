@@ -950,6 +950,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         
         while i < len(commands):
             _check_stop()
+            set_system_cursor("run_idle")
             cmd = commands[i]
             method = cmd.get("method")
             raw_args = cmd.get("args", {}).copy()
@@ -1259,7 +1260,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 if future_cmd.get("method") == "activate_window" and future_cmd.get("args", {}).get("window_alias") == current_alias:
                                     future_cmd.setdefault("args", {})["mapped_hwnd"] = act_hwnd
                     last_win_args["mapped_hwnd"] = act_hwnd
-                    last_win_args["mapped_hwnd"] = act_hwnd
+                set_system_cursor("run_idle")
 
             elif method in ["click", "move", "scroll", "type_text", "press_key"]:
                 if last_win_args:

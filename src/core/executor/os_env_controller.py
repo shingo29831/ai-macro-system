@@ -23,19 +23,13 @@ SPI_SETCURSORS = 0x0057
 SPIF_UPDATEINIFILE = 0x0001
 SPIF_SENDCHANGE = 0x0002
 
-# Why: Win10/11で有効な13種類の公式システムカーソルIDに限定（Win95時代の廃止IDを排除）
-SYSTEM_CURSOR_IDS = [
+# Why: 待機時(WAIT)・起動時(APPSTARTING)・文字選択(IBEAM)等でのユーザーカーソルチラつきを完全排除
+RUN_RECORD_CURSOR_IDS = [
     32512,  # OCR_NORMAL
     32513,  # OCR_IBEAM
     32514,  # OCR_WAIT
     32515,  # OCR_CROSS
     32516,  # OCR_UPARROW
-    32642,  # OCR_SIZENWSE
-    32643,  # OCR_SIZENESW
-    32644,  # OCR_SIZEWE
-    32645,  # OCR_SIZENS
-    32646,  # OCR_SIZEALL
-    32648,  # OCR_NO
     32649,  # OCR_HAND
     32650,  # OCR_APPSTARTING
 ]
@@ -201,6 +195,22 @@ def _schedule_auto_revert(target_idle_mode: str, delay: float = 0.25):
     _auto_revert_timer.start()
 
 
+def _force_cursor_update():
+    # Why: SetSystemCursor変更直後に即座にOSへWM_SETCURSORを促し画面上の表示を即時更新
+    if platform.system() != "Windows":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        pt = POINT()
+        if user32.GetCursorPos(ctypes.byref(pt)):
+            user32.SetCursorPos(pt.x, pt.y)
+            user32.mouse_event(0x0001, 0, 0, 0, 0)
+    except Exception:
+        pass
+
+
 def restore_system_cursor(force: bool = True):
     """OSシステムカーソルを標準設定へ完全復元する（レジストリ・フォールバック網羅）"""
     global _current_cursor_mode, _auto_revert_timer
@@ -216,14 +226,7 @@ def restore_system_cursor(force: bool = True):
             user32 = ctypes.windll.user32
             # Why: レジストリから全カーソルを再読込しユーザー本来の設定へ完全復帰
             user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE)
-
-            # Why: 現在座標を再送してOS・ウィンドウに即時カーソル再評価を強制
-            class POINT(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-            pt = POINT()
-            if user32.GetCursorPos(ctypes.byref(pt)):
-                user32.SetCursorPos(pt.x, pt.y)
-
+            _force_cursor_update()
             _current_cursor_mode = "default"
         except Exception as e:
             logger.warning(f"Failed to restore system cursor: {e}")
@@ -231,7 +234,7 @@ def restore_system_cursor(force: bool = True):
 
 def set_system_cursor(mode: str = "default"):
     """
-    Why: 照準の残留防止タイマーとOCR_NORMAL/HANDの統一適用でチラつきと残留を両立解決
+    Why: 主要カーソルID網羅と即時WM_SETCURSOR強制によりブラウザ操作前や待機中のチラつきを完全根絶
     """
     global _current_cursor_mode, _auto_revert_timer
     if platform.system() != "Windows":
@@ -252,14 +255,13 @@ def set_system_cursor(mode: str = "default"):
         try:
             cur_file = _get_or_create_cur_file(mode)
             user32 = ctypes.windll.user32
-            # Why: 矢印とリンク手の両方に適用しボタン上でのユーザーカーソルチラつきを防止
-            target_ids = [32512, 32649]
-            for cid in target_ids:
+            for cid in RUN_RECORD_CURSOR_IDS:
                 hcur = user32.LoadImageW(None, str(cur_file), 2, 0, 0, 0x0010)
                 if hcur:
                     user32.SetSystemCursor(hcur, cid)
 
             _current_cursor_mode = mode
+            _force_cursor_update()
 
             if mode in ("run_down", "run_click"):
                 _schedule_auto_revert("run_idle", delay=0.25)

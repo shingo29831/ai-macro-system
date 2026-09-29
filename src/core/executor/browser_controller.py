@@ -8,6 +8,7 @@ import platform
 import ctypes
 import urllib.request
 from pynput.keyboard import Controller as KeyboardController, Key
+from core.executor.os_env_controller import set_system_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -165,9 +166,14 @@ class BrowserController:
             cy = (rect.top + rect.bottom) // 2
             if platform.system() == "Windows":
                 ctypes.windll.user32.SetCursorPos(cx, cy)
-                time.sleep(0.05)
+                ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
+                time.sleep(0.04)
+                set_system_cursor("run_click")
+                time.sleep(0.03)
                 ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
                 ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+                time.sleep(0.06)
+                set_system_cursor("run_idle")
             time.sleep(0.2)
         else:
             raise RuntimeError(f"Browser element not found for selector: {selector}")
