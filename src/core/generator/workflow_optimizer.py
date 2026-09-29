@@ -470,16 +470,28 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     if not temp_workflow_info:
         return temp_workflow_info
 
+    # 1. 各要素セレクタの真の確定値を集約（タイピング値を最優先し初期値の誤爆を根絶）
     element_final_values = {}
+    has_typing_for_selector = set()
+
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector")
-        val = ctx.get("value") or ctx.get("text")
-        if sel and val and str(val).strip():
-            clean_val = str(val).strip()
-            name = str(ctx.get("element_name") or "").strip()
-            if clean_val != name and clean_val not in ["検索", "Search", "クリア", "×"]:
-                element_final_values[sel] = clean_val
+        act = info.get("raw_action", "")
+        if not sel:
+            continue
+        if act == "type_text":
+            role_text = str(info.get("semantic_role") or info.get("text") or "").strip()
+            if role_text and role_text.lower() not in ["enter", "tab", "esc", "backspace", "delete"]:
+                element_final_values[sel] = role_text
+                has_typing_for_selector.add(sel)
+        elif sel not in has_typing_for_selector:
+            val = ctx.get("value") or ctx.get("text")
+            if val and str(val).strip():
+                clean_val = str(val).strip()
+                name = str(ctx.get("element_name") or "").strip()
+                if clean_val != name and clean_val not in ["検索", "Search", "クリア", "×"]:
+                    element_final_values[sel] = clean_val
 
     result = []
     processed_selectors = set()
@@ -512,7 +524,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["element_name"] = ctx.get("element_name") or "セレクト項目"
                 result.append(info)
                 j = i + 1
-                # Why: 同一セレクタ以外の別UI要素クリックを巻き込んで削除するのを完全阻止
                 while j < n:
                     nxt_ctx = temp_workflow_info[j].get("app_context") or {}
                     nxt_sel = nxt_ctx.get("css_selector") or temp_workflow_info[j].get("selector") or ""
@@ -525,7 +536,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         # Why: テキスト/数値入力コントロール(Edit/Spinner)の最終確定値を汎用統合
         if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or sel.startswith("#")):
-            final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
+            final_val = element_final_values.get(sel)
+            if not final_val and act == "type_text":
+                final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
+
             if final_val and str(final_val).strip() and str(final_val).strip() != str(ctx.get("element_name", "")).strip() and sel not in processed_selectors:
                 clean_txt = str(final_val).strip()
                 info["raw_action"] = "browser_action"
@@ -547,9 +561,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     if n_sel == sel:
                         j += 1
                         continue
-                    if n_act in ["type_text", "key_down", "key_press"] and (n_role in ["enter", "tab", "shift", "space"] or len(n_role) <= 3):
-                        j += 1
-                        continue
+                    if n_act in ["type_text", "key_down", "key_press"] and (n_role in ["enter", "tab", "shift", "space"] or len(n_role) <= 3 or n_act == "type_text"):
+                        if not n_sel or n_sel == sel:
+                            j += 1
+                            continue
                     if n_act == "move":
                         j += 1
                         continue
@@ -1096,6 +1111,24 @@ def optimize_workflow_events(
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
+
+    # Why: フォーム統合前に直前クリックの要素セレクタを入力イベントへ確実に伝播
+    last_clk_ctx = {}
+    last_clk_win = ""
+    for info in temp_workflow_info:
+        act = info.get("raw_action", "")
+        w_name = info.get("window_name", "")
+        if act == "click":
+            c = info.get("app_context") or {}
+            if c.get("css_selector") or c.get("xpath") or c.get("element_name"):
+                last_clk_ctx = c.copy()
+                last_clk_win = w_name
+        elif act in ["type_text", "key_combo"] and last_clk_ctx and w_name == last_clk_win:
+            i_ctx = info.setdefault("app_context", {})
+            for k in ["css_selector", "xpath", "element_name", "control_type"]:
+                if not i_ctx.get(k) and last_clk_ctx.get(k):
+                    i_ctx[k] = last_clk_ctx[k]
+
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 
     # Why: 参照Excelから合致する列名を検知し入力値を{{row.列名}}へゼロ入力自動バインド
@@ -1387,8 +1420,13 @@ def optimize_workflow_events(
         p_act = p_info.get("raw_action", "")
         p_role = str(p_info.get("semantic_role", "")).lower()
         if p_act in ["key_down", "key_press", "press_key"] and p_role in ["enter", "tab"]:
-            if p_idx > 0 and promoted_browser_info[p_idx - 1].get("raw_action") == "browser_action":
-                continue
+            if p_idx > 0:
+                prev = promoted_browser_info[p_idx - 1]
+                prev_act = prev.get("raw_action")
+                prev_b_act = prev.get("action")
+                if prev_act in ["browser_action", "type_text"]:
+                    if p_role == "tab" or p_info.get("ime_active") or prev_b_act == "type_text" or prev_act == "type_text":
+                        continue
         cleaned_after_promoted.append(p_info)
     promoted_browser_info = cleaned_after_promoted
     temp_workflow_info = promoted_browser_info

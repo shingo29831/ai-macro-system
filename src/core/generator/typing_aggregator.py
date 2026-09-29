@@ -26,6 +26,24 @@ class TypingSessionAggregator:
                     return 0.0
             return 0.0
 
+        # Why: フォーカス直後のキー入力へクリック要素コンテキストを確実に引き継ぎ
+        last_click_ctx = {}
+        last_click_win = ""
+        for ev in raw_events:
+            ev_act = ev.get("raw_action", "")
+            ev_win = ev.get("window_name", "")
+            if ev_act in ["click", "mouse_click"]:
+                ctx = ev.get("app_context") or ev.get("AppSpecificContext") or ev.get("appSpecificContext") or {}
+                if ctx.get("element_name") or ctx.get("css_selector") or ctx.get("xpath"):
+                    last_click_ctx = ctx.copy()
+                    last_click_win = ev_win
+            elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
+                if ev_win == last_click_win:
+                    e_ctx = ev.setdefault("app_context", {})
+                    for k in ["element_name", "css_selector", "xpath", "control_type"]:
+                        if not e_ctx.get(k) and last_click_ctx.get(k):
+                            e_ctx[k] = last_click_ctx[k]
+
         global_uia_texts_map = {}
         for event in raw_events:
             app_ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext")
@@ -499,19 +517,30 @@ class TypingSessionAggregator:
         confirmed_future_queries = []
         future_elem_text = ""
         if future_events:
-            target_elem = (session[0].get("app_context") or session[0].get("AppSpecificContext") or {}).get("element_name", "")
+            first_ctx = session[0].get("app_context") or session[0].get("AppSpecificContext") or {}
+            target_elem = first_ctx.get("element_name", "")
+            target_sel = first_ctx.get("css_selector", "")
             for f_evt in future_events[:15]:
                 f_win = f_evt.get("window_name") or f_evt.get("WindowName", "")
                 title_q = _extract_query_from_title(f_win)
                 if title_q and title_q not in confirmed_future_queries:
                     confirmed_future_queries.append(title_q)
 
+                f_act = f_evt.get("raw_action", "")
                 f_ctx = f_evt.get("app_context") or f_evt.get("AppSpecificContext") or f_evt.get("appSpecificContext") or {}
                 f_name = f_ctx.get("element_name", "")
+                f_sel = f_ctx.get("css_selector", "")
                 f_val = f_ctx.get("value") or f_ctx.get("text")
-                # Why: 直後フレームの確定入力値(50000等)を未確定バッファ(50)より優先採用
+
+                # Why: 別要素クリックや別画面遷移時は未来走査を即座に中断
+                if f_act in ["click", "mouse_click"]:
+                    if (target_elem and f_name and f_name != target_elem) or (target_sel and f_sel and f_sel != target_sel):
+                        break
+
+                # Why: 同一要素であることが確実な場合のみ直後フレームの確定入力値を採用
                 if f_val and isinstance(f_val, str) and str(f_val).strip() and not future_elem_text:
-                    if not target_elem or f_name == target_elem:
+                    is_same_target = (target_elem and f_name == target_elem) or (target_sel and f_sel == target_sel)
+                    if is_same_target:
                         future_elem_text = str(f_val).strip()
 
                 for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
@@ -555,12 +584,12 @@ class TypingSessionAggregator:
             final_text = confirmed_queries[0]
         elif matched_future_query:
             final_text = matched_future_query
-        elif future_elem_text:
-            final_text = future_elem_text
         elif (has_suggest_selection or any_ime_active) and latest_uia_text:
             final_text = latest_uia_text
         elif latest_uia_text and fallback_text and (fallback_text in latest_uia_text or latest_uia_text in fallback_text):
             final_text = latest_uia_text
+        elif future_elem_text:
+            final_text = future_elem_text
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
@@ -617,6 +646,9 @@ class TypingSessionAggregator:
             
             if final_text:
                 if role_lower == "tab":
+                    continue
+                # Why: 文字確定やIME確定のためのEnterはテキスト直接入力マクロでは不要かつ誤送信防止のため除外
+                if role_lower in ["enter", "return"] and (any_ime_active or e.get("ime_active")):
                     continue
 
             trailing_special_keys.append(e)
