@@ -75,17 +75,18 @@ class BrowserController:
         
         if action == "open_url":
             if url:
-                from core.executor.os_env_controller import set_ime_state, normalize_text_width
+                from core.executor.os_env_controller import ensure_ime_state, normalize_text_width
                 norm_url = normalize_text_width(url)
-                set_ime_state(target_state=False)
+                # Why: IME状況を監視し半角状態を確認してからアドレスバーへ遷移
+                ensure_ime_state(target_state=False, timeout=0.6)
                 time.sleep(0.05)
-                # Why: CDP未開放時も全ブラウザ共通でCtrl+Lからアドレスバーへ高精度ナビゲーション
                 self._keyboard.press(Key.ctrl)
                 self._keyboard.press('l')
                 self._keyboard.release('l')
                 self._keyboard.release(Key.ctrl)
-                time.sleep(0.1)
-                # Why: IMEオン状態でのキータイプによる全角化を防ぐためクリップボード貼付を優先
+                time.sleep(0.08)
+                # フォーカス移動後も半角状態を再確認
+                ensure_ime_state(target_state=False, timeout=0.4)
                 from core.executor.runner import _set_clipboard_text
                 if _set_clipboard_text(norm_url):
                     time.sleep(0.04)
@@ -282,13 +283,13 @@ class BrowserController:
             self._keyboard.press(Key.backspace)
             self._keyboard.release(Key.backspace)
             time.sleep(0.05)
-        from core.executor.os_env_controller import set_ime_state, is_link_or_url, normalize_text_width
+        from core.executor.os_env_controller import ensure_ime_state, is_link_or_url, normalize_text_width, should_input_as_halfwidth, should_input_as_fullwidth
         from core.executor.runner import _set_clipboard_text
         norm_text = normalize_text_width(text)
-        if is_link_or_url(norm_text):
-            set_ime_state(target_state=False)
-        else:
-            set_ime_state(norm_text)
+        if is_link_or_url(norm_text) or should_input_as_halfwidth(norm_text):
+            ensure_ime_state(target_state=False, timeout=0.6)
+        elif should_input_as_fullwidth(norm_text):
+            ensure_ime_state(target_state=True, timeout=0.6)
         time.sleep(0.03)
         if _set_clipboard_text(norm_text):
             self._keyboard.press(Key.ctrl)
