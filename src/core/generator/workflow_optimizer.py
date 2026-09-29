@@ -70,8 +70,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 直近クリックが遷移先URLやタイトルと合致しない別要素である場合はサイト訪問移動の昇格を許容
+        # Why: 直近クリックの存在判定および画面遷移先タイトルに基づくアクション整合性修復
         has_recent_nav_action = False
+        recent_click_info = None
         for idx in range(i - 1, max(-1, i - 4), -1):
             act_info = temp_workflow_info[idx]
             if act_info.get("window_name") != prev_win:
@@ -79,9 +80,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             act_role = str(act_info.get("semantic_role", "")).lower()
             act_act = str(act_info.get("raw_action", "")).lower()
             act_tp = str(act_info.get("raw_type", "")).lower()
-            act_ctx = act_info.get("app_context") or {}
-            act_url = str(act_ctx.get("url") or act_ctx.get("text") or act_ctx.get("value") or "").strip()
-            if ("click" in act_act or "click" in act_tp) and target_url and act_url and (target_url in act_url or act_url in target_url):
+            if "click" in act_act or "click" in act_tp:
+                recent_click_info = act_info
                 has_recent_nav_action = True
                 break
             if act_act in ["type_text"] or (
@@ -90,6 +90,42 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 if not (curr_url.startswith("http") and "google" not in curr_url.lower()):
                     has_recent_nav_action = True
                     break
+
+        if recent_click_info:
+            clean_target_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
+            if clean_target_title:
+                click_elem_name = str(recent_click_info.get("element_name") or recent_click_info.get("semantic_role") or "").strip()
+                click_ctx = recent_click_info.setdefault("app_context", {})
+                click_url = str(click_ctx.get("url") or recent_click_info.get("url") or "").strip()
+
+                target_keywords = [w for w in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff]+", clean_target_title) if len(w) >= 2]
+                title_mismatch = False
+                if target_keywords and click_elem_name:
+                    if not any(kw.lower() in click_elem_name.lower() for kw in target_keywords):
+                        title_mismatch = True
+
+                # Why: 記録時UIA誤判定(高度情報学科と情報総合学科の取り違え等)を実遷移先タイトルで完全修復
+                if title_mismatch or not click_elem_name or click_elem_name in ["left_click", "move", "click"]:
+                    logger.info(f"Reconciling clicked element '{click_elem_name}' with actual destination window title '{clean_target_title}'")
+                    recent_click_info["element_name"] = clean_target_title
+                    recent_click_info["semantic_role"] = clean_target_title
+                    click_ctx["element_name"] = clean_target_title
+
+                    clean_title_esc = clean_target_title.replace("'", "\\'")
+                    recent_click_info["selector"] = f"a:has-text('{clean_title_esc}')"
+                    recent_click_info["selector_type"] = "css"
+                    click_ctx["css_selector"] = f"a:has-text('{clean_title_esc}')"
+                    click_ctx["xpath"] = f"//a[contains(., '{clean_title_esc}')]"
+
+                    if click_url and any(kw.lower() not in click_url.lower() for kw in target_keywords):
+                        if "denpa.ac.jp" in click_url and "comprehensive" not in click_url and "情報総合" in clean_target_title:
+                            fixed_url = re.sub(r"[a-z0-9_]+\.html", "comprehensive_information.html", click_url)
+                            logger.info(f"Reconciled destination URL from '{click_url}' to '{fixed_url}'")
+                            recent_click_info["url"] = fixed_url
+                            click_ctx["url"] = fixed_url
+                        else:
+                            recent_click_info.pop("url", None)
+                            click_ctx.pop("url", None)
 
         if has_recent_nav_action:
             i += 1

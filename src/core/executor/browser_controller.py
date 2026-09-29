@@ -190,11 +190,26 @@ class BrowserController:
                     clean_sel = selector.lstrip("#").lstrip(".").strip().lower()
                     has_text_match = re.search(r"has-text\(['\"]([^'\"]+)['\"]\)", selector)
                     if has_text_match:
-                        search_terms.append(has_text_match.group(1).lower())
-                    search_terms.append(clean_sel)
-                if element_name:
+                        ht_val = has_text_match.group(1).lower()
+                        # Why: URLドメイン等ではなく有為なテキストの場合のみ検索語へ追加
+                        if not ht_val.startswith("http"):
+                            search_terms.append(ht_val)
+                    href_match = re.search(r"href\*=['\"]([^'\"]+)['\"]", selector)
+                    if href_match:
+                        search_terms.append(href_match.group(1).lower())
+                    if not clean_sel.startswith("a:has-text") and not clean_sel.startswith("http"):
+                        search_terms.append(clean_sel)
+                if element_name and not element_name.startswith("http"):
                     search_terms.append(element_name.strip().lower())
                 if url:
+                    # Why: URL全体だけでなくパス識別子(comprehensive_information等)も抽出して検索
+                    try:
+                        parsed_u = urllib.parse.urlsplit(url)
+                        path_stem = parsed_u.path.rstrip("/").split("/")[-1].replace(".html", "").replace(".php", "")
+                        if len(path_stem) >= 3:
+                            search_terms.append(path_stem.lower())
+                    except Exception:
+                        pass
                     search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None

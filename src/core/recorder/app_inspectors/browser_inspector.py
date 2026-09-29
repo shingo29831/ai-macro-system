@@ -202,8 +202,17 @@ class BrowserInspector(BaseInspector):
             if x is not None and y is not None:
                 try:
                     elem = desktop.from_point(int(x), int(y))
-                    target_elements.append(("PointElement", elem))
-                    log_debug("座標からのUI要素特定に成功しました")
+                    if elem:
+                        try:
+                            # Why: from_pointが近傍要素を誤返却した場合に備えクリック座標包含を厳密検証
+                            r = elem.rectangle()
+                            if r.left <= x <= r.right and r.top <= y <= r.bottom:
+                                target_elements.append(("PointElement", elem))
+                                log_debug("座標からのUI要素特定に成功しました")
+                            else:
+                                log_debug(f"PointElementが座標({x}, {y})を含まないためスキップ (rect: {r.left},{r.top},{r.right},{r.bottom})")
+                        except Exception:
+                            target_elements.append(("PointElement", elem))
                 except Exception as e:
                     log_debug(f"座標からの要素特定に失敗: {e}")
                     # Why: desktop.from_point失敗時に対象ウィンドウ経由で要素特定を再試行
@@ -289,6 +298,7 @@ class BrowserInspector(BaseInspector):
                     tag_map = {"button": "button", "edit": "input", "hyperlink": "a", "combobox": "select", "checkbox": "input[type='checkbox']"}
                     tag = tag_map.get(ctrl_type, "div")
 
+                    elem_text = result.get("element_name") or ""
                     if auto_id:
                         result["css_selector"] = f"#{auto_id}"
                         result["xpath"] = f"//*[@id='{auto_id}']"
@@ -296,9 +306,29 @@ class BrowserInspector(BaseInspector):
                         first_class = class_name.split()[0]
                         result["css_selector"] = f"{tag}.{first_class}"
                         result["xpath"] = f"//{tag}[contains(@class, '{first_class}')]"
+                    elif elem_text and not elem_text.startswith("http"):
+                        # Why: 表示テキストが存在する場合はURLではなく有為なテキストでセレクタ生成
+                        clean_elem_text = elem_text.strip().replace("'", "\\'")[:30]
+                        result["css_selector"] = f"{tag}:has-text('{clean_elem_text}')"
+                        result["xpath"] = f"//{tag}[contains(text(), '{clean_elem_text}')]"
+                    elif extracted_text and extracted_text.startswith(("http://", "https://")):
+                        # Why: URLの場合はhas-textではなくhref属性一致セレクタを安全に生成
+                        try:
+                            parsed_u = urllib.parse.urlsplit(extracted_text)
+                            u_path = parsed_u.path.rstrip("/")
+                            if u_path:
+                                result["css_selector"] = f"{tag}[href*='{u_path}']"
+                                result["xpath"] = f"//{tag}[contains(@href, '{u_path}')]"
+                            else:
+                                result["css_selector"] = f"{tag}[href*='{parsed_u.netloc}']"
+                                result["xpath"] = f"//{tag}[contains(@href, '{parsed_u.netloc}')]"
+                        except Exception:
+                            result["css_selector"] = tag
+                            result["xpath"] = f"//{tag}"
                     elif extracted_text:
-                        result["css_selector"] = f"{tag}:has-text('{extracted_text[:20]}')"
-                        result["xpath"] = f"//{tag}[contains(text(), '{extracted_text[:20]}')]"
+                        clean_ext = extracted_text.strip().replace("'", "\\'")[:25]
+                        result["css_selector"] = f"{tag}:has-text('{clean_ext}')"
+                        result["xpath"] = f"//{tag}[contains(text(), '{clean_ext}')]"
                     else:
                         result["css_selector"] = tag
                         result["xpath"] = f"//{tag}"
