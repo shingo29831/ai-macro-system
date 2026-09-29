@@ -1340,9 +1340,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
                         time.sleep(0.08)
-                        set_system_cursor("run_down")
-                        mouse.click(btn, clicks)
-                        set_system_cursor("run_idle")
+                        try:
+                            set_system_cursor("run_down")
+                            mouse.click(btn, clicks)
+                        finally:
+                            # Why: クリック後の青照準スタックを防止し確実にrun_idleへ復帰
+                            set_system_cursor("run_idle")
                         time.sleep(0.1)
 
                 elif method == "move":
@@ -1570,7 +1573,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
-        restore_system_cursor()
+        restore_system_cursor(force=True)
         try:
             execution_log["end_time"] = datetime.now().isoformat()
             log_dir = target_dir / "execution_logs"

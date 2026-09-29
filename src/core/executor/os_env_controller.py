@@ -19,12 +19,24 @@ logger = logging.getLogger(__name__)
 WM_IME_CONTROL = 0x0283
 IMC_SETOPENSTATUS = 0x0006
 SPI_SETCURSORS = 0x0057
+SPIF_UPDATEINIFILE = 0x0001
+SPIF_SENDCHANGE = 0x0002
 
-# Why: 全16種類のシステムカーソルを一括置換することでアプリホバー時のチカチカを完全根絶
+# Why: Win10/11で有効な13種類の公式システムカーソルIDに限定（Win95時代の廃止IDを排除）
 SYSTEM_CURSOR_IDS = [
-    32512, 32513, 32514, 32515, 32516,
-    32640, 32641, 32642, 32643, 32644, 32645, 32646,
-    32648, 32649, 32650, 32651
+    32512,  # OCR_NORMAL
+    32513,  # OCR_IBEAM
+    32514,  # OCR_WAIT
+    32515,  # OCR_CROSS
+    32516,  # OCR_UPARROW
+    32642,  # OCR_SIZENWSE
+    32643,  # OCR_SIZENESW
+    32644,  # OCR_SIZEWE
+    32645,  # OCR_SIZENS
+    32646,  # OCR_SIZEALL
+    32648,  # OCR_NO
+    32649,  # OCR_HAND
+    32650,  # OCR_APPSTARTING
 ]
 
 _current_cursor_mode: str = "default"
@@ -173,13 +185,18 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
         logger.warning(f"Failed to set IME state: {e}")
 
 
-def restore_system_cursor():
+def restore_system_cursor(force: bool = False):
     """OSシステムカーソルを標準設定へ完全復元する"""
     global _current_cursor_mode
-    if platform.system() != "Windows" or _current_cursor_mode == "default":
+    if platform.system() != "Windows":
+        return
+    if not force and _current_cursor_mode == "default":
         return
     try:
-        ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
+        # Why: SPIF_SENDCHANGEを指定し全プロセス・DWMにカーソル再描画を即時ブロードキャスト
+        ctypes.windll.user32.SystemParametersInfoW(
+            SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+        )
         _current_cursor_mode = "default"
     except Exception as e:
         logger.warning(f"Failed to restore system cursor: {e}")
@@ -197,20 +214,26 @@ def set_system_cursor(mode: str = "default"):
         restore_system_cursor()
         return
 
-    # Why: 状態が変わっていない場合の重複呼び出しを遮断しCPU負荷と描画遅延をゼロ化
     if _current_cursor_mode == mode:
         return
 
     try:
         user32 = ctypes.windll.user32
         cur_path = _get_or_create_cur_file(mode)
+        if not cur_path.exists():
+            return
 
-        # Why: 全16種類のシステムカーソルを一括差し替えしてアプリ毎の切り替え点滅を完全根絶
+        # Why: 1回ロードしたハンドルをCopyIconで複製して渡しディスクI/O負荷を極小化
+        base_hcur = user32.LoadCursorFromFileW(str(cur_path))
+        if not base_hcur:
+            return
+
         for cid in SYSTEM_CURSOR_IDS:
-            h_cur = user32.LoadCursorFromFileW(str(cur_path))
-            if h_cur:
-                user32.SetSystemCursor(h_cur, cid)
+            copy_hcur = user32.CopyIcon(base_hcur)
+            if copy_hcur:
+                user32.SetSystemCursor(copy_hcur, cid)
 
+        user32.DestroyCursor(base_hcur)
         _current_cursor_mode = mode
     except Exception as e:
         logger.warning(f"Failed to set system cursor ({mode}): {e}")

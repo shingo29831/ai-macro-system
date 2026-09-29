@@ -26,11 +26,15 @@ def _cancel_hover_timer():
             _hover_timer.cancel()
             _hover_timer = None
 
+_is_hover_cursor = False
+
 def _on_hover_timeout(hx: int, hy: int):
+    global _is_hover_cursor
     if not state.is_recording or state.is_stopping:
         return
     # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録し専用照準へ変更
     state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
+    _is_hover_cursor = True
     set_system_cursor("record_hover")
     logger.debug("Hover event emitted at (%d, %d)", hx, hy)
 
@@ -58,18 +62,22 @@ def _flush_typing_buffer(trigger_reason: str):
 
 _is_mouse_down = False
 _down_pos = None
+_is_dragging = False
 
 def on_move(x, y):
-    global _is_mouse_down, _down_pos
+    global _is_mouse_down, _down_pos, _is_dragging, _is_hover_cursor
     if not state.is_recording or state.is_stopping: return
 
-    # Why: 押下移動時はドラッグ形状、通常移動復帰時はアイドル形状へ動的適応
+    if _is_hover_cursor and not _is_mouse_down:
+        _is_hover_cursor = False
+        set_system_cursor("record_idle")
+
+    # Why: 状態遷移時のみカーソル置換を発火して高頻度移動時の負荷を根絶
     if _is_mouse_down and _down_pos:
         dist = math.hypot(x - _down_pos[0], y - _down_pos[1])
-        if dist > 8:
+        if dist > 8 and not _is_dragging:
+            _is_dragging = True
             set_system_cursor("record_drag")
-    else:
-        set_system_cursor("record_idle")
 
     current_time = time.time()
     
@@ -101,7 +109,7 @@ def on_move(x, y):
                 state.mouse_path.pop(0)
 
 def on_click(x, y, button, pressed):
-    global _is_mouse_down, _down_pos
+    global _is_mouse_down, _down_pos, _is_dragging
     _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
@@ -109,10 +117,12 @@ def on_click(x, y, button, pressed):
     _is_mouse_down = pressed
     if pressed:
         _down_pos = (x, y)
+        _is_dragging = False
         set_system_cursor("record_down")
         _flush_typing_buffer("mouse_clicked")
     else:
         _down_pos = None
+        _is_dragging = False
         set_system_cursor("record_idle")
 
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})

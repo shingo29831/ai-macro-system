@@ -97,7 +97,7 @@ def start_recording():
         stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
-        restore_system_cursor()
+        restore_system_cursor(force=True)
         print("記録開始に失敗しました")
         traceback.print_exc()
         raise
@@ -111,7 +111,7 @@ def stop_recording():
     try:
         state.is_recording = False
         state.cancel_hover()
-        restore_system_cursor()
+        restore_system_cursor(force=True)
 
         with state.pending_click_lock:
             if state.pending_click_timer:
