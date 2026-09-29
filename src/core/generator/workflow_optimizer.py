@@ -729,22 +729,23 @@ def optimize_workflow_events(
     for i, info in enumerate(temp_workflow_info):
         app = _extract_app(info.get("window_name", ""))
         first_op_idx = app_first_business_op.get(app, len(temp_workflow_info))
-        
+
+        orig_wy = info.get("win_y", 0)
+        # Why: 最終座標上書き前に記録時ウィンドウ位置基準でタイトルバー操作を除外
+        if i < first_op_idx:
+            raw_type = str(info.get("raw_type", "")).lower()
+            raw_act = str(info.get("raw_action", "")).lower()
+            cy = info.get("cursor_y", 0)
+            if "drag" in raw_type or ("click" in raw_act and cy - orig_wy <= 45):
+                logger.info(f"[{workflow_id}] Omitted window layout adjustment action (Event: {info.get('event_id')})")
+                continue
+
         if app in app_final_rect and i <= first_op_idx:
             final_x, final_y, final_w, final_h = app_final_rect[app]
             info["win_x"] = final_x
             info["win_y"] = final_y
             info["win_w"] = final_w
             info["win_h"] = final_h
-
-        if i < first_op_idx:
-            raw_type = str(info.get("raw_type", "")).lower()
-            raw_act = str(info.get("raw_action", "")).lower()
-            cy = info.get("cursor_y", 0)
-            wy = info.get("win_y", 0)
-            if "drag" in raw_type or (raw_act == "click" and cy - wy <= 45):
-                logger.info(f"[{workflow_id}] Omitted window layout adjustment action (Event: {info.get('event_id')})")
-                continue
 
         layout_cleaned.append(info)
 

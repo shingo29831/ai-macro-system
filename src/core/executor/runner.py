@@ -1534,7 +1534,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 excel_app_cache = None
 
                         if not skip_physical:
-                            if clear_before:
+                            # Why: ブラウザ起動直後のクリックなし入力時はCtrl+Lでアドレスバーフォーカスを完全保証
+                            is_prev_browser_activate = False
+                            for prev_cmd_idx in range(i - 1, -1, -1):
+                                p_cmd = commands[prev_cmd_idx]
+                                p_m = p_cmd.get("method")
+                                if p_m in ["click", "move", "press_key", "type_text"]:
+                                    break
+                                if p_m == "activate_window":
+                                    p_title = p_cmd.get("args", {}).get("window_title", "").lower()
+                                    if any(b in p_title for b in ["firefox", "chrome", "edge", "brave", "opera"]):
+                                        is_prev_browser_activate = True
+                                    break
+
+                            if is_prev_browser_activate:
+                                keyboard.press(Key.ctrl)
+                                keyboard.press('l')
+                                keyboard.release('l')
+                                keyboard.release(Key.ctrl)
+                                time.sleep(0.08)
+
+                            if clear_before and not is_prev_browser_activate:
                                 keyboard.press(Key.ctrl)
                                 keyboard.press('a')
                                 keyboard.release('a')
