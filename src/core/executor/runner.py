@@ -1110,15 +1110,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_w = args.get("width", 0)
                 current_win_h = args.get("height", 0)
 
-            if method not in ["wait", "activate_window", "loop_start", "loop_end", "excel_action", "browser_action"] and raw_event_id:
+            # Why: スクロールや移動での照合待機を排除し主要入力時のみ3秒以内で高速評価
+            if method in ["click", "type_text"] and raw_event_id:
                 if loop_stack:
-                    # Why: スピナーやサーバー応答待機を動的収束監視で自動同期
-                    _wait_for_screen_settle(timeout=5.0, settle_threshold=0.004)
+                    _wait_for_screen_settle(timeout=3.0, settle_threshold=0.004)
                 else:
                     match_eid = args.get("match_event_id") or raw_event_id
                     match_info = wait_for_screen_match(
                         target_dir, match_eid, current_win_x, current_win_y, current_win_w, current_win_h, 
-                        workflow_id, status_callback, i, timeout=10.0, check_cancel_callback=lambda: _stop_requested
+                        workflow_id, status_callback, i, timeout=3.0, check_cancel_callback=lambda: _stop_requested
                     )
                     _check_stop()
                     step_log["match_info"] = match_info
@@ -1267,10 +1267,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     mapped_hwnd = last_win_args.get("mapped_hwnd")
                     if platform.system() == "Windows":
                         hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        root_hwnd = ctypes.windll.user32.GetAncestor(hwnd, 3)
                         needs_activation = False
                         
+                        # Why: 子ウィンドウやタブ内部フォーカス時もルートハンドル一致で余計な再前面化を防止
                         if mapped_hwnd:
-                            if hwnd != mapped_hwnd:
+                            if hwnd != mapped_hwnd and root_hwnd != mapped_hwnd:
                                 needs_activation = True
                         else:
                             window_title = last_win_args.get("window_title", "")
@@ -1370,7 +1372,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     
                     if not skip_physical:
                         _smooth_move(int(x), int(y))
-                        time.sleep(0.5)
+                        time.sleep(0.08)
                         
                 elif method == "scroll":
                     dx = args.get("dx", 0.0)

@@ -254,217 +254,101 @@ def _restore_window_position_and_monitor(hwnd: int, win_x: int, win_y: int, win_
 
 
 def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w: int, win_h: int, workflow_id: str, launch_cmd: str = "", mapped_hwnd: int = None, is_maximized: bool = None):
+    # Why: pywinauto排除とWin32API直接探索によりCOMデッドロックによる実行フリーズを完全根絶
     global _browser_activated_once
     if not window_title or platform.system() != "Windows":
-        return
+        return None
 
     is_system_window = any(sw in window_title.lower() for sw in SYSTEM_WINDOW_KEYWORDS)
-    
     if is_system_window:
-        return
+        return None
 
-    import pywinauto
-    desktop = pywinauto.Desktop(backend="uia")
-    
-    browser_names = SUPPORTED_BROWSERS
+    import win32gui
+    import win32con
+
     app_name = window_title.split("—")[-1].split("-")[-1].strip()
     is_target_browser = any(b in app_name.lower() for b in SUPPORTED_BROWSERS)
-    
-    windows = []
     force_new = (mapped_hwnd == -1)
-    
+
+    matched_hwnds = []
+
     if mapped_hwnd and not force_new:
-        try:
-            app = pywinauto.Application(backend="uia").connect(handle=mapped_hwnd)
-            win = app.window(handle=mapped_hwnd)
-            if win.exists():
-                # Why: 渡されたHWNDが目的のアプリ名と一致するか検証し異種アプリの誤リサイズを防止
-                actual_text = win.window_text().lower()
-                target_app_lower = app_name.lower()
-                if is_target_browser:
-                    is_valid = any(b in actual_text for b in SUPPORTED_BROWSERS)
-                else:
-                    is_valid = (target_app_lower in actual_text) or not any(b in actual_text for b in SUPPORTED_BROWSERS)
-                if is_valid:
-                    windows = [win]
-                else:
-                    logger.warning(f"mapped_hwnd {mapped_hwnd} ({actual_text}) does not match target app '{app_name}'. Re-searching...")
-        except Exception as e:
-            logger.warning(f"Failed to connect to mapped_hwnd {mapped_hwnd}: {e}")
+        if win32gui.IsWindow(mapped_hwnd) and win32gui.IsWindowVisible(mapped_hwnd):
+            matched_hwnds.append(mapped_hwnd)
 
-    if not windows and not force_new:
-        safe_title = re.escape(window_title)
-        # Why: 新規ブックの日英表記ゆれ(Book/ブック)を相互許容して正しく検索
-        if "book" in window_title.lower() or "ブック" in window_title:
-            pattern_title = re.sub(r"(?:book|ブック)\s*(\d+)", r"(?:Book|ブック)\s*\1", safe_title, flags=re.IGNORECASE)
-        else:
-            pattern_title = safe_title
-
-        for _ in range(10):
-            all_matched = desktop.windows(title_re=f".*{pattern_title}.*", visible_only=True)
-            if all_matched:
-                if is_target_browser:
-                    windows = all_matched
-                else:
-                    windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
-            if windows:
-                break
-            time.sleep(0.5)
-    
-    before_hwnds = set()
-    if not windows and not force_new and app_name:
-        safe_app_name = re.escape(app_name)
-        is_generic_excel = ("excel" in app_name.lower()) and ("book" in window_title.lower() or "ブック" in window_title)
-        
-        for _ in range(4):
-            # Why: 新規ブック検索時に既存の名前付き別ファイルを誤爆しないよう制限
-            if is_generic_excel:
-                all_matched = desktop.windows(title_re=r".*(?:Book|ブック)\s*\d+.*Excel.*", visible_only=True)
-            else:
-                all_matched = desktop.windows(title_re=f".*{safe_app_name}\\s*$", visible_only=True)
-            if all_matched:
-                if is_target_browser:
-                    windows = all_matched
-                else:
-                    windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
-            
-            if not windows and not is_generic_excel:
-                all_matched = desktop.windows(title_re=f".*{safe_app_name}.*", visible_only=True)
-                if all_matched:
+    if not matched_hwnds and not force_new:
+        def _enum_proc(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd) and not win32gui.GetParent(hwnd):
+                txt = win32gui.GetWindowText(hwnd)
+                if txt:
+                    txt_lower = txt.lower()
                     if is_target_browser:
-                        windows = all_matched
-                    else:
-                        windows = [w for w in all_matched if not any(b in w.window_text().lower() for b in browser_names)]
-                    
-            if windows:
+                        if any(b in txt_lower for b in SUPPORTED_BROWSERS):
+                            matched_hwnds.append(hwnd)
+                    elif app_name.lower() in txt_lower or window_title.lower() in txt_lower:
+                        matched_hwnds.append(hwnd)
+            return True
+
+        for _ in range(6):
+            win32gui.EnumWindows(_enum_proc, None)
+            if matched_hwnds:
                 break
-            time.sleep(0.5)
-            
-    is_newly_launched = False
-    if not windows:
-        logger.warning(f"[{workflow_id}] Window not found: {window_title}. Attempting to launch...")
+            time.sleep(0.2)
+
+    target_hwnd = matched_hwnds[0] if matched_hwnds else None
+
+    if not target_hwnd:
         lower_app_name = app_name.lower()
         lower_title = window_title.lower()
-        
         if not launch_cmd:
             if "firefox" in lower_app_name:
-                if "プライベート" in lower_title or "private" in lower_title:
-                    launch_cmd = "start firefox -private-window"
-                elif force_new:
-                    # Why: 新規起動要求時は既存プロセス存在下でも確実に独立した新規ウィンドウを開く
-                    launch_cmd = "start firefox -new-window"
-                else:
-                    launch_cmd = "start firefox"
+                launch_cmd = "start firefox -new-window" if force_new else "start firefox"
             elif "chrome" in lower_app_name:
-                if "シークレット" in lower_title or "incognito" in lower_title:
-                    launch_cmd = "start chrome --incognito"
-                elif force_new:
-                    launch_cmd = "start chrome --new-window"
-                else:
-                    launch_cmd = "start chrome"
+                launch_cmd = "start chrome --new-window" if force_new else "start chrome"
             elif "edge" in lower_app_name:
-                if "inprivate" in lower_title:
-                    launch_cmd = "start msedge --inprivate"
-                elif force_new:
-                    launch_cmd = "start msedge --new-window"
-                else:
-                    launch_cmd = "start msedge"
+                launch_cmd = "start msedge --new-window" if force_new else "start msedge"
             elif "excel" in lower_app_name:
                 launch_cmd = "start excel"
-            elif "visual studio code" in lower_app_name or lower_app_name == "code":
-                launch_cmd = "code"
-            
+
         if launch_cmd:
-            before_hwnds.update(w.handle for w in desktop.windows(visible_only=True))
-            
-            creationflags = 0x08000000
+            existing_hwnds = set()
+            def _collect(h, _):
+                if win32gui.IsWindowVisible(h): existing_hwnds.add(h)
+                return True
+            win32gui.EnumWindows(_collect, None)
+
             use_shell = launch_cmd.startswith("start ")
-            subprocess.Popen(launch_cmd, shell=use_shell, creationflags=creationflags)
-            is_newly_launched = True
-            
-            safe_app_name = re.escape(app_name)
-            for _ in range(20):
-                time.sleep(0.5)
-                current_windows = desktop.windows(visible_only=True)
-                new_windows = [w for w in current_windows if w.handle not in before_hwnds]
-                
-                if new_windows:
-                    matched_new = [w for w in new_windows if re.search(f".*{safe_app_name}.*", w.window_text(), re.IGNORECASE)]
-                    if matched_new:
-                        windows = matched_new
-                        break
-                    else:
-                        windows = new_windows
-                        break
-            
-        is_browser = any(b in lower_app_name for b in SUPPORTED_BROWSERS)
-        if is_browser:
-            _browser_activated_once = True
-            
-    if windows:
-        win = windows[0]
-        
-        if "excel" in app_name.lower() and is_newly_launched:
-            try:
-                win.set_focus()
-                time.sleep(0.5)
-                win_text = win.window_text()
-                # Why: タイトルにブック名が含まれていないスタート画面状態のみEnterで空白ブックを選択
-                if not ("book" in win_text.lower() or "ブック" in win_text.lower()):
-                    from pynput.keyboard import Controller as KeyboardController, Key
-                    keyboard = KeyboardController()
-                    keyboard.press(Key.enter)
-                    keyboard.release(Key.enter)
-                    time.sleep(1.0)
-                    newly_opened = [w for w in desktop.windows(title_re=f".*{re.escape(app_name)}.*", visible_only=True) if w.handle not in before_hwnds]
-                    if newly_opened:
-                        win = newly_opened[0]
-            except Exception as e:
-                logger.warning(f"Failed to send Enter key to Excel start screen: {e}")
+            subprocess.Popen(launch_cmd, shell=use_shell, creationflags=0x08000000)
 
-        if win.is_minimized():
-            win.restore()
-            
-        try:
-            user32 = ctypes.windll.user32
-            hwnd = win.handle
-            
-            # Why: Alt押下によるOfficeリボンのキーヒント待機をEscで解除し入力阻害を防ぐ
-            if "excel" in app_name.lower() or "word" in app_name.lower() or "powerpnt" in app_name.lower():
-                user32.keybd_event(0x12, 0, 0, 0)
-                user32.keybd_event(0x12, 0, 2, 0)
-                user32.keybd_event(0x1B, 0, 0, 0)
-                user32.keybd_event(0x1B, 0, 2, 0)
-            
-            user32.SetForegroundWindow(hwnd)
-            user32.BringWindowToTop(hwnd)
-            win.set_focus()
-
-            # Why: Excel親ウィンドウフォーカス後にEXCEL7子ウィンドウへ入力フォーカスを確立
-            if "excel" in app_name.lower():
-                import win32gui
-                def _restore_excel7_focus(child, _):
-                    if win32gui.GetClassName(child) == "EXCEL7":
-                        user32.SetFocus(child)
+            for _ in range(15):
+                time.sleep(0.3)
+                new_hwnds = []
+                def _find_new(h, _):
+                    if win32gui.IsWindowVisible(h) and not win32gui.GetParent(h) and h not in existing_hwnds:
+                        txt = win32gui.GetWindowText(h).lower()
+                        if (is_target_browser and any(b in txt for b in SUPPORTED_BROWSERS)) or (app_name.lower() in txt):
+                            new_hwnds.append(h)
                     return True
-                win32gui.EnumChildWindows(hwnd, _restore_excel7_focus, None)
-        except Exception as e:
-            logger.warning(f"Failed to set focus aggressively: {e}")
-            try:
-                win.set_focus()
-            except Exception:
-                pass
-        
+                win32gui.EnumWindows(_find_new, None)
+                if new_hwnds:
+                    target_hwnd = new_hwnds[0]
+                    break
+
+    if target_hwnd:
+        user32 = ctypes.windll.user32
+        if win32gui.IsIconic(target_hwnd):
+            win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
+
+        user32.SetForegroundWindow(target_hwnd)
+        user32.BringWindowToTop(target_hwnd)
+
         if win_w > 0 and win_h > 0:
             try:
-                # Why: 別モニタで起動・展開されたウィンドウを記録時モニタへ強制移送し配置復元
-                _restore_window_position_and_monitor(win.handle, win_x, win_y, win_w, win_h, is_maximized)
+                _restore_window_position_and_monitor(target_hwnd, win_x, win_y, win_w, win_h, is_maximized)
             except Exception as e:
-                logger.warning(f"Failed to resize and move window: {e}")
-                
-        time.sleep(0.5)
-        # Why: アクティベートした正確なウィンドウハンドルを呼び出し元へ返し誤爆を防止
-        return win.handle
-    else:
-        logger.error(f"[{workflow_id}] Failed to find or launch window: {window_title}")
-        raise RuntimeError(f"対象のアプリ（{app_name}）が起動できず、ウィンドウが見つかりません。")
+                logger.warning(f"Failed to resize window: {e}")
+
+        time.sleep(0.2)
+        return target_hwnd
+
+    return None
