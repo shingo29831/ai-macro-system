@@ -422,6 +422,13 @@ def build_and_save_macro(
                 rel_c = integ_evt.window.UIs[0].action.cursorRelativeCoordinates
                 click_x = win_c.x + rel_c.x
                 click_y = win_c.y + rel_c.y
+
+            # Why: ウィンドウ枠外やタイトルバーの無効座標クリックを除外し別ウィンドウ誤操作を完全防止
+            w_y = cur_info.get("win_y", 0)
+            if click_y - w_y <= 45 or click_y < -50:
+                logger.info(f"Omitted off-screen/title bar click at ({click_x}, {click_y}) for event {raw_event_id}")
+                continue
+
             cmd_args = {
                 "x": click_x,
                 "y": click_y,
@@ -565,10 +572,11 @@ def build_and_save_macro(
                 "target_id": target_id_for_healer,
                 "raw_event_id": raw_event_id
             }
-            # Why: セレクタ特定失敗時も記録時の物理座標へ安全にフォールバック可能にする
+            # Why: セレクタ特定失敗時も記録時の物理座標へ安全にフォールバック可能にする(枠外座標は除外)
             cx = cur_info.get("cursor_x")
             cy = cur_info.get("cursor_y")
-            if cx is not None and cy is not None:
+            w_y = cur_info.get("win_y", 0)
+            if cx is not None and cy is not None and cy >= w_y and cy > -50:
                 b_args["x"] = cx
                 b_args["y"] = cy
             raw_commands_data.append({

@@ -346,6 +346,12 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
                     break
                 j += 1
 
+            # Why: ウィンドウ枠外やタイトルバーの移動は入力フォーカスクリックへ誤昇格させない
+            cy = curr.get("cursor_y", curr.get("y", 0))
+            wy = curr.get("win_y", 0)
+            if cy - wy <= 45 or cy < -50:
+                is_input_elem = False
+
             if is_input_elem and has_subsequent_type:
                 curr["raw_action"] = "click"
                 curr["raw_type"] = "mouse_click"
@@ -901,20 +907,36 @@ def optimize_workflow_events(
     layout_cleaned = []
     for i, info in enumerate(temp_workflow_info):
         app = _extract_app(info.get("window_name", ""))
-        first_op_idx = app_first_business_op.get(app, len(temp_workflow_info))
-
+        orig_wx = info.get("win_x", 0)
         orig_wy = info.get("win_y", 0)
-        # Why: 最終座標上書き前に記録時ウィンドウ位置基準でタイトルバー操作を除外
-        if i < first_op_idx:
-            raw_type = str(info.get("raw_type", "")).lower()
-            raw_act = str(info.get("raw_action", "")).lower()
-            cy = info.get("cursor_y", 0)
-            if "drag" in raw_type or ("click" in raw_act and cy - orig_wy <= 45):
-                logger.info(f"[{workflow_id}] Omitted window layout adjustment action (Event: {info.get('event_id')})")
+        raw_type = str(info.get("raw_type", "")).lower()
+        raw_act = str(info.get("raw_action", "")).lower()
+        cy = info.get("cursor_y", info.get("y", 0))
+        cx = info.get("cursor_x", info.get("x", 0))
+
+        # Why: ウィンドウ移動・リサイズ・タイトルバー操作は全期間で検知しマクロ操作から完全除外
+        if "drag" in raw_type or raw_act == "drag":
+            logger.info(f"[{workflow_id}] Omitted layout adjustment drag (Event: {info.get('event_id')})")
+            continue
+
+        if (cy - orig_wy <= 45) or cy < -50:
+            ctx = info.get("app_context") or {}
+            has_valid_web_target = bool(ctx.get("url") and str(ctx.get("url")).startswith("http"))
+            if not has_valid_web_target:
+                logger.info(f"[{workflow_id}] Omitted title bar/off-screen layout action (Event: {info.get('event_id')}) at ({cx}, {cy})")
                 continue
 
-        if app in app_final_rect and i <= first_op_idx:
+        if app in app_final_rect:
             final_x, final_y, final_w, final_h = app_final_rect[app]
+            # Why: 移動前モニタ(負の座標等)の操作座標を最終ウィンドウの座標系へ安全に投影変換
+            if cy < final_y or cy < -50 or abs(orig_wy - final_y) > 100:
+                rel_cy = cy - orig_wy
+                rel_cx = cx - orig_wx
+                if 0 <= rel_cy <= final_h:
+                    info["cursor_y"] = final_y + rel_cy
+                    info["cursor_x"] = final_x + rel_cx
+                    info["y"] = info["cursor_y"]
+                    info["x"] = info["cursor_x"]
             info["win_x"] = final_x
             info["win_y"] = final_y
             info["win_w"] = final_w

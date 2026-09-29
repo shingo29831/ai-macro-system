@@ -71,7 +71,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     raw_type_lower = raw_type.lower()
     is_scroll = "scroll" in raw_type_lower
     is_move = "hover" in raw_type_lower or "move" in raw_type_lower
-    is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_move)
+    is_drag = "drag" in raw_type_lower
+    is_click = ("click" in raw_type_lower or "mouse" in raw_type_lower) and not (is_scroll or is_move or is_drag)
     is_key = "key" in raw_type_lower
     is_uia = "uia" in raw_type_lower
     is_meta = "meta" in raw_type_lower
@@ -91,6 +92,15 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         action_type = "meta"
     elif is_move:
         action_type = "move"
+    elif is_drag:
+        # Why: ウィンドウ移動・リサイズ等のレイアウト調整ドラッグを検知して完全除外
+        start_coords = content_data.get("start_screen_coordinates") if isinstance(content_data, dict) else {}
+        start_y = start_coords.get("y", cursor_y)
+        drag_dist = float(content_data.get("drag_distance", 0.0)) if isinstance(content_data, dict) else 0.0
+        if (start_y - win_y <= 45) or drag_dist >= 80 or rel_y <= 45 or cursor_y < -50:
+            logger.info(f"[{workflow_id}] Omitted window layout adjustment drag: {event_id} (dist={drag_dist})")
+            return None
+        action_type = "drag"
     elif is_click:
         action_type = "click"
     elif is_key:
