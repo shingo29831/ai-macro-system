@@ -13,7 +13,8 @@ from pynput.keyboard import Controller as KeyboardController, Key, Listener as K
 
 from models.data_types import AppConfig
 from core.executor.window_manager import set_dpi_awareness, set_ime_state, activate_and_restore_window, reset_browser_activation_flag
-from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
+from core.executor.os_env_controller import restore_system_cursor
+from ui.views.cursor_overlay import CursorOverlayManager
 from core.executor.screen_matcher import wait_for_screen_match, is_screen_match
 
 logger = logging.getLogger(__name__)
@@ -420,6 +421,7 @@ def _smooth_move(target_x: int, target_y: int, steps: int = 10, duration: float 
     else:
         mouse = MouseController()
         mouse.position = (target_x, target_y)
+    CursorOverlayManager.get_instance().notify_move(int(target_x), int(target_y))
 
 
 def _get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> tuple[int, int]:
@@ -671,7 +673,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
     _is_running = True
     _stop_requested = False
     reset_browser_activation_flag()
-    set_system_cursor("run")
+    CursorOverlayManager.get_instance().set_active(True)
     
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     mouse = MouseController()
@@ -1338,10 +1340,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
-                        # Why: クリック直前にカーソル位置を安定させホバー/展開UIの空振りを防止
                         time.sleep(0.08)
+                        CursorOverlayManager.get_instance().notify_click(int(x), int(y), pressed=True)
                         mouse.click(btn, clicks)
-                        # Why: クリック後のフォーカス遷移完了を待機し入力空振りを防止
+                        CursorOverlayManager.get_instance().notify_click(int(x), int(y), pressed=False)
                         time.sleep(0.1)
 
                 elif method == "move":
@@ -1569,6 +1571,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
+        CursorOverlayManager.get_instance().set_active(False)
         restore_system_cursor()
         try:
             execution_log["end_time"] = datetime.now().isoformat()

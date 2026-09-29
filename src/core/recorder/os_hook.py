@@ -13,7 +13,8 @@ from core.recorder.log_builder import create_end_log, save_input_logs
 
 from core.recorder.key_hook import KeyHookManager
 from core.recorder.office_monitor import OfficeMonitorManager
-from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
+from core.executor.os_env_controller import restore_system_cursor
+from ui.views.cursor_overlay import CursorOverlayManager
 
 _mouse_listener = None
 _keyboard_listener = None
@@ -72,7 +73,7 @@ def start_recording():
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         _mouse_listener.start()
         _keyboard_listener.start()
-        set_system_cursor("record")
+        CursorOverlayManager.get_instance().set_active(True)
 
         print("記録を開始しました")
         print(f"macro: {state.recording_dirs['macro_name']}")
@@ -97,6 +98,7 @@ def start_recording():
         stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
+        CursorOverlayManager.get_instance().set_active(False)
         restore_system_cursor()
         print("記録開始に失敗しました")
         traceback.print_exc()
@@ -111,6 +113,7 @@ def stop_recording():
     try:
         state.is_recording = False
         state.cancel_hover()
+        CursorOverlayManager.get_instance().set_active(False)
 
         with state.pending_click_lock:
             if state.pending_click_timer:
