@@ -4,6 +4,7 @@ import platform
 import ctypes
 import time
 import logging
+import atexit
 import struct
 import tempfile
 from pathlib import Path
