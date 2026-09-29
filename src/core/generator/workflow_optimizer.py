@@ -9,6 +9,20 @@ from typing import List, Dict, Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+def _is_system_ui_event(evt: Dict[str, Any]) -> bool:
+    ctx = evt.get("app_context") or {}
+    elem_name = str(ctx.get("element_name", "")).lower()
+    elem_text = str(ctx.get("text", "")).lower()
+    role = str(evt.get("semantic_role", "")).lower()
+    css = str(ctx.get("css_selector", "")).lower()
+    c_type = str(ctx.get("control_type", "")).lower()
+    system_terms = [
+        "記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中",
+        "qapplication.qwidget", "windows 入力エクスペリエンス", "textinputhost",
+        "corewindow", "windows.ui.core"
+    ]
+    return any(term in elem_name or term in elem_text or term in role or term in css or term in c_type for term in system_terms)
+
 def _is_residual_hover(move_info: Dict[str, Any], temp_workflow_info: List[Dict[str, Any]], current_idx: int) -> bool:
     # Why: 直前クリックと同一座標(15px以内)の残留ホバーを判定
     if move_info.get("is_nav_hover"):
@@ -1222,20 +1236,6 @@ def optimize_workflow_events(
         if "key" in act and role not in ["win", "cmd", "windows"]:
             return True
         return False
-
-    def _is_system_ui_event(evt: Dict[str, Any]) -> bool:
-        ctx = evt.get("app_context") or {}
-        elem_name = str(ctx.get("element_name", "")).lower()
-        elem_text = str(ctx.get("text", "")).lower()
-        role = str(evt.get("semantic_role", "")).lower()
-        css = str(ctx.get("css_selector", "")).lower()
-        c_type = str(ctx.get("control_type", "")).lower()
-        system_terms = [
-            "記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中",
-            "qapplication.qwidget", "windows 入力エクスペリエンス", "textinputhost",
-            "corewindow", "windows.ui.core"
-        ]
-        return any(term in elem_name or term in elem_text or term in role or term in css or term in c_type for term in system_terms)
 
     shell_cut_info = []
     skip_until_new_window = False
