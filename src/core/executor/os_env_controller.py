@@ -109,8 +109,9 @@ def _get_or_create_cur_file(mode: str) -> Path:
     if mode in _cur_cache and _cur_cache[mode].exists():
         return _cur_cache[mode]
 
-    temp_dir = Path(tempfile.gettempdir())
-    file_path = temp_dir / f"aimacro_{mode}.cur"
+    temp_dir = Path(tempfile.gettempdir()) / "aimacro_cursors"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    file_path = temp_dir / f"cursor_{mode}.cur"
 
     img, (hx, hy) = _generate_cursor_image_and_hotspot(mode)
     width, height = 32, 32
@@ -185,18 +186,32 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
         logger.warning(f"Failed to set IME state: {e}")
 
 
-def restore_system_cursor(force: bool = False):
-    """OSシステムカーソルを標準設定へ完全復元する"""
+def restore_system_cursor(force: bool = True):
+    """OSシステムカーソルを標準設定へ完全復元する（SPIと標準ファイル適用の多重防護）"""
     global _current_cursor_mode
     if platform.system() != "Windows":
         return
-    if not force and _current_cursor_mode == "default":
-        return
     try:
-        # Why: SPIF_SENDCHANGEを指定し全プロセス・DWMにカーソル再描画を即時ブロードキャスト
-        ctypes.windll.user32.SystemParametersInfoW(
-            SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
-        )
+        user32 = ctypes.windll.user32
+
+        # 1. Windows公式SystemParametersInfo (引数はすべて0)
+        user32.SystemParametersInfoW(SPI_SETCURSORS, 0, 0, 0)
+
+        # 2. Windows 10/11でSPIが効かない環境への確実なフォールバック
+        import os
+        win_dir = os.environ.get("SystemRoot", "C:\\Windows")
+        default_cur = Path(win_dir) / "Cursors" / "aero_arrow.cur"
+
+        if default_cur.exists():
+            base_hcur = user32.LoadCursorFromFileW(str(default_cur))
+            if base_hcur:
+                for cid in SYSTEM_CURSOR_IDS:
+                    # Why: IMAGE_CURSOR=2, LR_COPYRETURNORG=0x0004 で正規のカーソルハンドルを複製
+                    copy_h = user32.CopyImage(base_hcur, 2, 0, 0, 0x0004)
+                    if copy_h:
+                        user32.SetSystemCursor(copy_h, cid)
+                user32.DestroyCursor(base_hcur)
+
         _current_cursor_mode = "default"
     except Exception as e:
         logger.warning(f"Failed to restore system cursor: {e}")
@@ -211,7 +226,7 @@ def set_system_cursor(mode: str = "default"):
     if platform.system() != "Windows":
         return
     if mode == "default":
-        restore_system_cursor()
+        restore_system_cursor(force=True)
         return
 
     if _current_cursor_mode == mode:
@@ -223,13 +238,13 @@ def set_system_cursor(mode: str = "default"):
         if not cur_path.exists():
             return
 
-        # Why: 1回ロードしたハンドルをCopyIconで複製して渡しディスクI/O負荷を極小化
         base_hcur = user32.LoadCursorFromFileW(str(cur_path))
         if not base_hcur:
             return
 
+        # Why: CopyIconはIcon専用のため属性が壊れる。CopyImage(IMAGE_CURSOR=2)で正規クローン
         for cid in SYSTEM_CURSOR_IDS:
-            copy_hcur = user32.CopyIcon(base_hcur)
+            copy_hcur = user32.CopyImage(base_hcur, 2, 0, 0, 0x0004)
             if copy_hcur:
                 user32.SetSystemCursor(copy_hcur, cid)
 
@@ -240,4 +255,6 @@ def set_system_cursor(mode: str = "default"):
 
 
 # Why: プロセスが異常終了した場合でもOSカーソルが壊れたまま残るのを完全防止
-atexit.register(restore_system_cursor)
+atexit.register(lambda: restore_system_cursor(force=True))
+# Why: 起動時に前回の異常終了等で残ったカーソルを即座にOS標準へリセット
+restore_system_cursor(force=True)
