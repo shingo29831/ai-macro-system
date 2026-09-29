@@ -9,6 +9,94 @@ from .base_inspector import BaseInspector
 logger = logging.getLogger(__name__)
 
 class BrowserInspector(BaseInspector):
+    _last_input_element = None
+    _last_input_selector: Optional[str] = None
+    _last_input_name: Optional[str] = None
+    _last_input_hwnd: Optional[int] = None
+    _form_values_cache: Dict[str, str] = {}
+
+    @classmethod
+    def _commit_previous_element(cls) -> Optional[Dict[str, str]]:
+        # Why: フォーカス離脱(blur)時に直前入力要素の最新確定値を再取得してコミット
+        if not cls._last_input_element and not cls._last_input_selector:
+            return None
+        try:
+            val = ""
+            elem = cls._last_input_element
+            if elem:
+                val = cls._extract_value_from_elem(elem)
+            sel = cls._last_input_selector
+            name = cls._last_input_name
+            if not val and cls._last_input_hwnd and sel:
+                try:
+                    import uiautomation as auto
+                    auto_id = sel.lstrip("#")
+                    win_ctrl = auto.ControlFromHandle(cls._last_input_hwnd)
+                    if win_ctrl and win_ctrl.Exists(0, 0):
+                        ctrl = win_ctrl.Control(AutomationId=auto_id)
+                        if ctrl and ctrl.Exists(0, 0):
+                            val = cls._extract_value_from_uia(ctrl)
+                except Exception:
+                    pass
+            if val and str(val).strip() and str(val).strip() != name:
+                committed_val = str(val).strip()
+                if sel: cls._form_values_cache[sel] = committed_val
+                if name: cls._form_values_cache[f"name:{name}"] = committed_val
+                return {"selector": sel or "", "element_name": name or "", "value": committed_val}
+        except Exception as e:
+            logger.debug(f"[BrowserInspector] _commit_previous_element error: {e}")
+        return None
+
+    @staticmethod
+    def _extract_value_from_uia(ctrl) -> str:
+        if not ctrl: return ""
+        val = ""
+        try:
+            val = ctrl.GetValuePattern().Value
+        except Exception:
+            try:
+                val = ctrl.GetLegacyIAccessiblePattern().CurrentValue
+            except Exception:
+                try:
+                    val = str(ctrl.GetRangeValuePattern().Value)
+                except Exception:
+                    val = getattr(ctrl, "Name", "") or ""
+        return str(val or "").strip()
+
+    @classmethod
+    def extract_form_snapshot(cls, window_info: Dict[str, Any]) -> Dict[str, str]:
+        # Why: 送信ボタン等押下時にページ内入力要素の確定値を一括スナップショット取得
+        snapshot = dict(cls._form_values_cache)
+        hwnd = window_info.get("hwnd") or window_info.get("handle")
+        if not hwnd: return snapshot
+        try:
+            import uiautomation as auto
+            win_ctrl = auto.ControlFromHandle(int(hwnd))
+            if win_ctrl and win_ctrl.Exists(0, 0):
+                for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=12):
+                    c_type = ctrl.ControlTypeName
+                    if c_type in ["EditControl", "ComboBoxControl", "CheckBoxControl", "SpinnerControl"]:
+                        aid = getattr(ctrl, "AutomationId", "") or ""
+                        name = getattr(ctrl, "Name", "") or ""
+                        val = cls._extract_value_from_uia(ctrl)
+                        if c_type == "CheckBoxControl":
+                            try:
+                                t_state = ctrl.GetTogglePattern().ToggleState
+                                val = "true" if t_state == 1 else "false"
+                            except Exception:
+                                pass
+                        if val and str(val).strip() and str(val).strip() != name:
+                            v_str = str(val).strip()
+                            if aid:
+                                snapshot[f"#{aid}"] = v_str
+                                cls._form_values_cache[f"#{aid}"] = v_str
+                            if name:
+                                snapshot[f"name:{name}"] = v_str
+                                cls._form_values_cache[f"name:{name}"] = v_str
+        except Exception as e:
+            logger.debug(f"[BrowserInspector] extract_form_snapshot error: {e}")
+        return snapshot
+
     @staticmethod
     def _extract_value_from_elem(elem) -> str:
         # Why: ブラウザごとにValuePattern/LegacyIAccessibleの対応が分かれるため順次試行
@@ -24,6 +112,15 @@ class BrowserInspector(BaseInspector):
             legacy_val = elem.legacy_properties().get("Value", "")
             if legacy_val and str(legacy_val).strip():
                 return str(legacy_val).strip()
+        except Exception:
+            pass
+
+        try:
+            # Why: 数値入力欄(input type=number)やSpinnerから確定数値を確実に抽出
+            if hasattr(elem, "is_range_value_pattern_available") and elem.is_range_value_pattern_available():
+                r_val = elem.get_range_value()
+                if r_val is not None and str(r_val).strip():
+                    return str(r_val).strip()
         except Exception:
             pass
 
@@ -217,33 +314,36 @@ class BrowserInspector(BaseInspector):
                     log_debug(f"座標からの要素特定に失敗: {e}")
                     try:
                         import uiautomation as auto
-                        f_ctrl = auto.GetFocusedControl()
-                        if f_ctrl and f_ctrl.NativeWindowHandle:
-                            f_elem = desktop.window(handle=f_ctrl.NativeWindowHandle)
-                            target_elements.append(("FocusedFallback", f_elem))
-                            log_debug("フォーカス要素フォールバック特定に成功しました")
+                        u_ctrl = auto.ControlFromPoint(int(x), int(y))
+                        if u_ctrl and u_ctrl.NativeWindowHandle:
+                            val = self._extract_value_from_uia(u_ctrl)
+                            aid = getattr(u_ctrl, "AutomationId", "") or ""
+                            c_name = getattr(u_ctrl, "Name", "") or ""
+                            ct_name = getattr(u_ctrl, "ControlTypeName", "") or ""
+                            if aid or c_name:
+                                result["element_name"] = c_name
+                                result["control_type"] = ct_name.replace("Control", "")
+                                result["text"] = val
+                                result["value"] = val
+                                if aid:
+                                    result["css_selector"] = f"#{aid}"
+                                    result["xpath"] = f"//*[@id='{aid}']"
+                                log_debug(f"uiautomation座標特定成功: id='{aid}', name='{c_name}', val='{val}'")
                     except Exception as e2:
-                        log_debug(f"フォーカス要素フォールバック失敗: {e2}")
+                        log_debug(f"uiautomation座標フォールバック失敗: {e2}")
             else:
-                # Why: キー入力時は現在フォーカス要素をuiautomationから直接特定しDOM例外を防止
+                # Why: キー入力時は現在フォーカス要素または直前編集要素から確定入力値を救出
                 try:
                     import uiautomation as auto
                     focused = auto.GetFocusedControl()
                     if focused:
-                        val = ""
-                        try:
-                            val = focused.GetValuePattern().Value
-                        except Exception:
-                            try:
-                                val = focused.GetLegacyIAccessiblePattern().CurrentValue
-                            except Exception:
-                                val = getattr(focused, "Name", "") or getattr(focused, "CurrentName", "")
+                        val = self._extract_value_from_uia(focused)
                         auto_id = getattr(focused, "AutomationId", "") or ""
                         ctrl_type = getattr(auto, "ControlTypeName", lambda ct: "Edit")(focused.ControlType)
                         elem_name = getattr(focused, "Name", "") or getattr(focused, "CurrentName", "") or ""
                         if val or auto_id or elem_name:
-                            result["text"] = str(val or "").strip()
-                            result["value"] = result["text"]
+                            result["text"] = val
+                            result["value"] = val
                             result["control_type"] = ctrl_type
                             result["element_name"] = elem_name
                             if auto_id:
@@ -252,6 +352,10 @@ class BrowserInspector(BaseInspector):
                             log_debug(f"フォーカス要素直接取得成功: id='{auto_id}', name='{elem_name}', val='{val}'")
                 except Exception as ef:
                     log_debug(f"フォーカス要素特定例外: {ef}")
+                    if BrowserInspector._last_input_selector and BrowserInspector._last_input_selector in BrowserInspector._form_values_cache:
+                        result["css_selector"] = BrowserInspector._last_input_selector
+                        result["value"] = BrowserInspector._form_values_cache[BrowserInspector._last_input_selector]
+                        result["text"] = result["value"]
 
             extracted_text = ""
             primary_elem = None
@@ -304,6 +408,15 @@ class BrowserInspector(BaseInspector):
 
             result["text"] = extracted_text
             result["value"] = extracted_text
+
+            # Why: 直前編集要素のコミット値と現在フォームのスナップショットをコンテキストへ統合
+            committed_prev = None
+            if x is not None and y is not None:
+                committed_prev = BrowserInspector._commit_previous_element()
+            if committed_prev:
+                result["committed_previous_value"] = committed_prev
+            if BrowserInspector._form_values_cache:
+                result["committed_values"] = dict(BrowserInspector._form_values_cache)
 
             # 3. DOM/CSSセレクタ推定
             if primary_elem:
@@ -386,6 +499,24 @@ class BrowserInspector(BaseInspector):
                     result["url"] = extracted_text
                 else:
                     result["url"] = ""
+
+            # Why: 登録ボタン等のクリック時または入力要素移動時にフォームスナップショットを更新
+            c_type_l = str(result.get("control_type", "")).lower()
+            e_name_l = str(result.get("element_name", "")).lower()
+            sel_l = str(result.get("css_selector", "")).lower()
+            is_submit_action = "button" in c_type_l or any(k in e_name_l for k in ["登録", "送信", "保存", "submit", "save"]) or "submit" in sel_l
+            if is_submit_action or (x is not None and y is not None):
+                snapshot = BrowserInspector.extract_form_snapshot(window_info)
+                if snapshot:
+                    result["form_snapshot"] = snapshot
+
+            # Why: 入力可能要素への接触時は直前編集要素参照を更新して次回のblurコミットに備える
+            is_input = any(t in c_type_l for t in ["edit", "combobox", "checkbox", "spinner"]) or any(sel_l.startswith(p) for p in ["#company", "#contact", "#plan", "#amount", "#newsletter", "input", "select"])
+            if is_input and primary_elem:
+                BrowserInspector._last_input_element = primary_elem
+                BrowserInspector._last_input_selector = result.get("css_selector")
+                BrowserInspector._last_input_name = result.get("element_name")
+                BrowserInspector._last_input_hwnd = window_info.get("hwnd") or window_info.get("handle")
 
         except ImportError:
             error_msg = "pywinauto がインストールされていません"

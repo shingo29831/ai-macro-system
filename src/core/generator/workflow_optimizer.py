@@ -430,8 +430,10 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
-def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
-    # Why: ハードコードを排し純粋な文字長・確定度・時系列順序から最適値を普遍判定
+def _evaluate_form_value(candidates: List[str], elem_name: str, has_snapshot_val: Optional[str] = None) -> str:
+    # Why: ブラウザ確定スナップショット値を絶対最優先し普遍判定で最適値を決定
+    if has_snapshot_val and str(has_snapshot_val).strip():
+        return str(has_snapshot_val).strip()
     if not candidates:
         return ""
     def score_val(val: str, idx: int) -> float:
@@ -440,6 +442,10 @@ def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
         v = val.strip()
         if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move"]:
             return -500.0
+        # Why: 未確定ローマ字の末尾子音(kaisy, satou等)を大幅減点し確定値を救済
+        is_raw_romaji = bool(re.fullmatch(r'[a-z]+', v.lower()) and any(v.lower().endswith(c) for c in ["sy", "ty", "ky", "sh", "ch", "ou", "ei"]))
+        if is_raw_romaji:
+            return -100.0 + min(len(v), 10)
         # Why: 入力途中の1~2文字ひらがな単体より漢字・英数字混在や確定長文を自然に優先
         if re.fullmatch(r'[\u3040-\u309f]{1,2}', v):
             return -50.0
@@ -464,7 +470,23 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     if not temp_workflow_info:
         return temp_workflow_info
 
-    # 1. 各要素セレクタごとに全履歴から確定値候補を収集
+    # 1. ブラウザから直接取得されたフォーム確定値スナップショットを全イベントから集約
+    global_form_snapshot: Dict[str, str] = {}
+    for info in temp_workflow_info:
+        ctx = info.get("app_context") or {}
+        for snap_src in [ctx.get("form_snapshot"), ctx.get("committed_values")]:
+            if isinstance(snap_src, dict):
+                for sk, sv in snap_src.items():
+                    if sv and str(sv).strip():
+                        global_form_snapshot[sk] = str(sv).strip()
+        prev_c = ctx.get("committed_previous_value")
+        if isinstance(prev_c, dict):
+            ps = prev_c.get("selector")
+            pv = prev_c.get("value")
+            if ps and pv and str(pv).strip():
+                global_form_snapshot[ps] = str(pv).strip()
+
+    # 2. 各要素セレクタごとに全履歴から確定値候補を収集
     selector_candidates: Dict[str, List[str]] = {}
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
@@ -490,7 +512,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     element_final_values = {}
     for k, cand_list in selector_candidates.items():
         clean_name = k.replace("name:", "") if k.startswith("name:") else ""
-        chosen = _evaluate_form_value(cand_list, clean_name)
+        snap_val = global_form_snapshot.get(k) or global_form_snapshot.get(clean_name) or global_form_snapshot.get(f"name:{clean_name}")
+        chosen = _evaluate_form_value(cand_list, clean_name, has_snapshot_val=snap_val)
         if chosen:
             element_final_values[k] = chosen
 

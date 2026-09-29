@@ -638,10 +638,20 @@ class TypingSessionAggregator:
                     if prev_text_lower.endswith(final_text_lower) or final_text_lower in prev_text_lower:
                         is_suffix_or_sub = True
                 
-                if not is_suffix_or_sub and any_ime_active:
-                    if len(final_text_lower) <= 3 and final_text_lower.isascii() and final_text_lower.isalpha():
-                        is_suffix_or_sub = True
-                        
+                # Why: 同一要素への連続入力断片は切り捨てず安全に連結してユーザー入力を完全再現
+                prev_ctx = output_list[-1].get("app_context") or {}
+                curr_ctx = session[0].get("app_context") or {}
+                same_target = (
+                    (prev_ctx.get("css_selector") and prev_ctx.get("css_selector") == curr_ctx.get("css_selector")) or
+                    (prev_ctx.get("element_name") and prev_ctx.get("element_name") == curr_ctx.get("element_name"))
+                )
+                if same_target and prev_text and final_text and not is_suffix_or_sub:
+                    if not prev_text.endswith(final_text) and final_text not in prev_text:
+                        output_list[-1]["semantic_role"] = prev_text + final_text
+                        output_list[-1]["fallback_events"].extend([item.get("event_id") for item in session if item.get("event_id")])
+                        session.clear()
+                        return
+
                 if is_suffix_or_sub:
                     session.clear()
                     return
