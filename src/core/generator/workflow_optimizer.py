@@ -480,11 +480,13 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         return temp_workflow_info
 
     # 1. フォーム確定値スナップショットおよび有効物理座標を全イベントから包括集約
+    initial_form_values: Dict[str, str] = {}
     global_form_snapshot: Dict[str, str] = {}
     selector_coords: Dict[str, Tuple[int, int]] = {}
     selector_names: Dict[str, str] = {}
     scanned_elements_map: Dict[str, Dict[str, Any]] = {}
     selector_candidates: Dict[str, List[str]] = {}
+    post_submit_reset_detected = False
 
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
@@ -505,16 +507,24 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             if isinstance(snap_src, dict):
                 # Why: __elements__詳細スキャンから真の要素物理座標と型を直接統合
                 if "__elements__" in snap_src and isinstance(snap_src["__elements__"], list):
-                    for el in snap_src["__elements__"]:
+                    elements_list = snap_src["__elements__"]
+                    empty_count = sum(1 for el in elements_list if str(el.get("value", "")).strip() == "" and str(el.get("control_type", "")).lower() in ["edit", "spinner"])
+                    total_inputs = sum(1 for el in elements_list if str(el.get("control_type", "")).lower() in ["edit", "spinner"])
+                    if total_inputs >= 2 and empty_count == total_inputs and len(global_form_snapshot) >= 2:
+                        post_submit_reset_detected = True
+
+                    for el in elements_list:
                         e_sel = el.get("selector") or (f"#{el.get('automation_id')}" if el.get("automation_id") else "")
                         e_name = el.get("element_name") or ""
                         e_x, e_y = el.get("x", 0), el.get("y", 0)
                         if e_sel:
-                            scanned_elements_map[e_sel] = el
+                            if e_sel not in scanned_elements_map or not scanned_elements_map[e_sel].get("control_type"):
+                                scanned_elements_map[e_sel] = el
                             if e_x > 20 and e_y > 20:
                                 selector_coords[e_sel] = (e_x, e_y)
                         if e_name:
-                            scanned_elements_map[f"name:{e_name}"] = el
+                            if f"name:{e_name}" not in scanned_elements_map:
+                                scanned_elements_map[f"name:{e_name}"] = el
                             if e_x > 20 and e_y > 20:
                                 selector_coords[f"name:{e_name}"] = (e_x, e_y)
                                 selector_coords[e_name] = (e_x, e_y)
@@ -524,9 +534,15 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                         continue
                     if sv is not None and str(sv).strip():
                         val_str = str(sv).strip()
+                        if sk not in initial_form_values:
+                            initial_form_values[sk] = val_str
+
                         prev_val = global_form_snapshot.get(sk)
                         # Why: 初回値からの変更値を優先し末尾リセット空値による上書きを普遍防止
                         if prev_val and prev_val != val_str and val_str in ["", "None"]:
+                            continue
+                        # Why: フォーム送信後のリセットで初期値に戻った場合の上書きを完全防止
+                        if prev_val and prev_val != initial_form_values.get(sk) and (val_str == initial_form_values.get(sk) or post_submit_reset_detected):
                             continue
                         global_form_snapshot[sk] = val_str
         prev_c = ctx.get("committed_previous_value")
@@ -535,8 +551,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             pv = prev_c.get("value")
             if ps and pv and str(pv).strip():
                 prev_val = global_form_snapshot.get(ps)
-                if not (prev_val and str(pv).strip() in ["", "None"]):
-                    global_form_snapshot[ps] = str(pv).strip()
+                pv_str = str(pv).strip()
+                if not (prev_val and pv_str in ["", "None"]):
+                    if not (prev_val and prev_val != initial_form_values.get(ps) and (pv_str == initial_form_values.get(ps) or post_submit_reset_detected)):
+                        global_form_snapshot[ps] = pv_str
 
     # 2. 各要素セレクタごとに全履歴から確定値候補を収集
     selector_candidates = {}
@@ -580,6 +598,18 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         sel = ctx.get("css_selector") or info.get("selector") or ""
         c_type = str(ctx.get("control_type", "")).lower()
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
+
+        # Why: ページスキャン情報(scanned_elements_map)から真の要素型と要素名を動的補正
+        scanned_elem = scanned_elements_map.get(sel) or scanned_elements_map.get(f"name:{elem_name}") or {}
+        scanned_type = str(scanned_elem.get("control_type", "")).lower()
+        scanned_name = str(scanned_elem.get("element_name", "")).strip()
+
+        if scanned_type:
+            c_type = scanned_type
+        if scanned_name and (not elem_name or elem_name in ["left_click", "move"]):
+            elem_name = scanned_name
+        elif not elem_name and sel in selector_names:
+            elem_name = selector_names[sel]
 
         # Why: システムUI、IME候補窓、処理済みセレクタ、通過ホバー移動、および外枠・Document要素を除外
         if _is_system_ui_event(info):
@@ -626,22 +656,33 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             continue
 
         # Why: 汎用セレクトボックス/コンボボックスの集約
-        is_select = "combobox" in c_type or "select" in sel.lower() or "list" in c_type
+        is_select = any(t in c_type for t in ["combo", "select", "list", "dropdown"]) or "select" in sel.lower()
+
+        # Why: ComboBox/ドロップダウンに対するキー入力イベントはノイズとしてスキップし真の選択操作へ委譲
+        if is_select and act in ["type_text", "key_down", "key_press", "key_combo"]:
+            i += 1
+            continue
+
         if is_select:
             # Why: スナップショット確定値およびイベント自身の選択テキストを最優先
-            snap_val = global_form_snapshot.get(sel)
-            cur_val = info.get("value") or info.get("text")
+            snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
+            cur_val = info.get("value") or info.get("text") or ctx.get("value") or ctx.get("text")
             opt_val = ""
             if snap_val and str(snap_val).strip() and str(snap_val).strip() not in ["left_click", "move", elem_name]:
                 opt_val = str(snap_val).strip()
             elif cur_val and str(cur_val).strip() and str(cur_val).strip() not in ["left_click", "move", elem_name]:
                 opt_val = str(cur_val).strip()
             else:
-                opt_val = element_final_values.get(sel) or ""
+                opt_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}") or ""
 
             if str(opt_val).strip() and str(opt_val).strip() not in ["left_click", "move", elem_name]:
                 # Why: 有効な物理座標を履歴から確実に復元
-                if sel in selector_coords:
+                sc_x = scanned_elem.get("x", 0)
+                sc_y = scanned_elem.get("y", 0)
+                if sc_x > 20 and sc_y > 20:
+                    info["cursor_x"], info["cursor_y"] = sc_x, sc_y
+                    info["x"], info["y"] = sc_x, sc_y
+                elif sel in selector_coords:
                     cx, cy = selector_coords[sel]
                     info["cursor_x"], info["cursor_y"] = cx, cy
                     info["x"], info["y"] = cx, cy
@@ -682,12 +723,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 汎用テキスト/数値入力欄(Edit, Spinner, input, textarea)の集約
+        # Why: チェックボックスおよびセレクトボックスを除外し真のテキスト・数値入力欄のみ集約
         is_input_field = (
-            "edit" in c_type or 
-            "spinner" in c_type or 
-            any(tag in sel.lower() for tag in ["input", "textarea"]) or
-            (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"]))
+            not is_select and
+            ("edit" in c_type or "spinner" in c_type or any(tag in sel.lower() for tag in ["input", "textarea"]) or
+             (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"])))
+            and "check" not in c_type and not sel.lower().endswith("newsletter")
         )
         if is_input_field:
             # Why: 網羅的スキャン値および確定スナップショット値を最優先
@@ -938,14 +979,21 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         else:
             other_actions.append(item)
 
-    # Why: ページスキャン情報に存在する送信ボタンをフォーム末尾に確実に配置
+    # Why: ページスキャン情報に存在する正規の送信ボタンのみをフォーム末尾に確実に配置
     has_submit_btn = any(
-        r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])
+        r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn"])
         for r in result
     )
     if not has_submit_btn:
         for s_key, s_data in scanned_elements_map.items():
-            if str(s_data.get("control_type", "")).lower() == "button" or "submit" in s_key.lower() or "登録" in str(s_data.get("element_name", "")):
+            s_sel = str(s_data.get("selector", "")).lower()
+            s_name = str(s_data.get("element_name", "")).lower()
+            c_type = str(s_data.get("control_type", "")).lower()
+            is_real_submit = (
+                ("submit" in s_sel or "submit" in s_key.lower() or any(w in s_name for w in ["登録", "送信", "保存", "submit"]))
+                and "button" in c_type
+            )
+            if is_real_submit:
                 btn_x = s_data.get("x", 0)
                 btn_y = s_data.get("y", 0)
                 btn_name = s_data.get("element_name") or "登録する"
@@ -981,7 +1029,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             else (10000 + pair[0])
         ))
         form_inputs = [item for _, item in indexed_inputs]
-        result = other_actions + form_inputs + submit_buttons
+
+    # Why: form_inputsの有無に関わらず末尾送信ボタンを常に結合保証
+    result = other_actions + form_inputs + submit_buttons
 
     return result
 

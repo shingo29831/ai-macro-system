@@ -45,9 +45,12 @@ class TypingSessionAggregator:
                 is_win_match = (ev_win == last_click_win) or not last_click_win or not ev_win or any(b in (ev_win + last_click_win).lower() for b in ["firefox", "chrome", "edge"])
                 if is_win_match:
                     e_ctx = ev.setdefault("app_context", {})
-                    for k in ["element_name", "css_selector", "xpath", "control_type"]:
-                        if not e_ctx.get(k) and last_click_ctx.get(k):
-                            e_ctx[k] = last_click_ctx[k]
+                    e_sel = e_ctx.get("css_selector") or e_ctx.get("xpath")
+                    l_sel = last_click_ctx.get("css_selector") or last_click_ctx.get("xpath")
+                    if not e_sel or e_sel == l_sel:
+                        for k in ["element_name", "css_selector", "xpath", "control_type"]:
+                            if not e_ctx.get(k) and last_click_ctx.get(k):
+                                e_ctx[k] = last_click_ctx[k]
 
         global_uia_texts_map = {}
         for event in raw_events:
