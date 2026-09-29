@@ -95,7 +95,7 @@ class MacroVisualCanvas(QWidget):
                 """)
                 
             w.count_changed.connect(self._on_loop_count_changed)
-            w.settings_changed.connect(self.commands_changed.emit)
+            w.settings_changed.connect(lambda idx=loop["loop_start_idx"]: self._on_loop_settings_changed(idx))
             w.delete_requested.connect(self._on_loop_delete_requested)
             w.show()
             self.loop_widgets.append(w)
@@ -116,6 +116,22 @@ class MacroVisualCanvas(QWidget):
             self.commands = [c for c in self.commands if not (c.get("method") in ["loop_start", "loop_end"] and c.get("loop_id") == target_id)]
             self.commands_changed.emit()
             self.rebuild()
+
+    def _on_loop_settings_changed(self, loop_start_idx: int):
+        # Why: ループ設定変更時にExcel列情報を配下ブロックへ動的再配布
+        if 0 <= loop_start_idx < len(self.commands):
+            start_cmd = self.commands[loop_start_idx]
+            cols = start_cmd.get("args", {}).get("columns_map", {})
+            if cols:
+                for loop in self.loops:
+                    if loop.get("loop_start_idx") == loop_start_idx:
+                        s_idx = loop.get("start_action_idx", -1)
+                        e_idx = loop.get("end_action_idx", -1)
+                        for block in self.blocks:
+                            if s_idx <= block.cmd_index <= e_idx:
+                                block.set_available_variables(cols)
+                        break
+        self.commands_changed.emit()
 
     def _on_loop_count_changed(self, loop_start_idx: int, new_count: int):
         if 0 <= loop_start_idx < len(self.commands):

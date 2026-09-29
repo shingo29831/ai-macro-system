@@ -498,10 +498,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: ドロップダウン(ComboBox/Select)の選択操作をselect_optionへ自動昇格
-        if sel and ("combobox" in c_type or "select" in sel or "plan" in sel):
+        # Why: コントロール種別(ComboBox)に基づく汎用的なselect_option昇格
+        if sel and ("combobox" in c_type or "select" in sel.lower()):
             final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
-            if final_val and str(final_val).strip() not in ["契約プラン", "", "left_click"]:
+            if final_val and str(final_val).strip() not in ["", "left_click"] and str(final_val).strip() != str(ctx.get("element_name", "")).strip():
                 opt_val = str(final_val).strip()
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
@@ -509,7 +509,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["selector"] = sel
                 info["value"] = opt_val
                 info["text"] = opt_val
-                info["element_name"] = ctx.get("element_name") or "契約プラン"
+                info["element_name"] = ctx.get("element_name") or "セレクト項目"
                 result.append(info)
                 j = i + 1
                 while j < n and (temp_workflow_info[j].get("app_context", {}).get("css_selector") == sel or temp_workflow_info[j].get("raw_action") in ["move", "click"]):
@@ -517,10 +517,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: テキスト/数値入力要素のIME過渡キー・手ブレクリックを完全破棄し最終確定値で単一type_textに集約
-        if sel and ("edit" in c_type or "spinner" in c_type or any(k in sel for k in ["company", "contact", "amount"])):
+        # Why: テキスト/数値入力コントロール(Edit/Spinner)の最終確定値を汎用統合
+        if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or sel.startswith("#")):
             final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
-            if final_val and str(final_val).strip() and sel not in processed_selectors:
+            if final_val and str(final_val).strip() and str(final_val).strip() != str(ctx.get("element_name", "")).strip() and sel not in processed_selectors:
                 clean_txt = str(final_val).strip()
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
@@ -538,7 +538,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     n_sel = n_ctx.get("css_selector") or nxt.get("selector") or ""
                     n_act = nxt.get("raw_action", "")
                     n_role = str(nxt.get("semantic_role", "")).lower()
-                    if n_sel == sel or ("div:has-text" in n_sel and any(k in sel for k in ["company", "contact", "amount"])):
+                    if n_sel == sel:
                         j += 1
                         continue
                     if n_act in ["type_text", "key_down", "key_press"] and (n_role in ["enter", "tab", "shift", "space"] or len(n_role) <= 3):
@@ -551,14 +551,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: チェックボックスクリックをset_checkboxアクションへ自動昇格
-        if "checkbox" in c_type or "newsletter" in sel or "メール" in elem_name:
+        # Why: チェックボックスコントロール(CheckBox)の汎用昇格
+        if "checkbox" in c_type or "checkbox" in sel.lower():
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
             info["action"] = "set_checkbox"
-            info["selector"] = "#newsletter"
+            info["selector"] = sel
             info["value"] = True
-            info["element_name"] = "お知らせ・更新通知メールを受信する"
+            info["element_name"] = ctx.get("element_name") or "チェックボックス"
             result.append(info)
             i += 1
             continue
@@ -1114,7 +1114,7 @@ def optimize_workflow_events(
                             break
                 elif b_act == "set_checkbox":
                     for ev_val, ev_var in excel_map.items():
-                        if ev_val in ["true", "1", "希望する", "on"]:
+                        if ev_val in ["true", "1", "on"]:
                             info["value"] = ev_var
                             break
 

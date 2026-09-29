@@ -347,10 +347,16 @@ class ActionBlockWidget(QFrame):
                 b_text_row.addWidget(self.b_text_edit)
 
                 self.b_var_combo = QComboBox()
-                self.b_var_combo.setFixedWidth(136)
+                self.b_var_combo.setFixedWidth(150)
                 self._populate_var_combo_widget(self.b_var_combo)
                 self.b_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_var_combo, self.b_text_edit, idx))
                 b_text_row.addWidget(self.b_var_combo)
+
+                pick_btn = QPushButton("📂")
+                pick_btn.setFixedWidth(28)
+                pick_btn.setToolTip("Excelファイルを開いて列変数を読み込む")
+                pick_btn.clicked.connect(self._open_excel_column_picker)
+                b_text_row.addWidget(pick_btn)
                 self.edit_layout.addRow("入力テキスト:", b_text_row)
 
             elif cur_act == "select_option":
@@ -366,10 +372,16 @@ class ActionBlockWidget(QFrame):
                 b_opt_row.addWidget(self.b_opt_edit)
 
                 self.b_opt_var_combo = QComboBox()
-                self.b_opt_var_combo.setFixedWidth(136)
+                self.b_opt_var_combo.setFixedWidth(150)
                 self._populate_var_combo_widget(self.b_opt_var_combo)
                 self.b_opt_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_opt_var_combo, self.b_opt_edit, idx))
                 b_opt_row.addWidget(self.b_opt_var_combo)
+
+                pick_btn = QPushButton("📂")
+                pick_btn.setFixedWidth(28)
+                pick_btn.setToolTip("Excelファイルを開いて列変数を読み込む")
+                pick_btn.clicked.connect(self._open_excel_column_picker)
+                b_opt_row.addWidget(pick_btn)
                 self.edit_layout.addRow("選択する値:", b_opt_row)
 
             elif cur_act == "set_checkbox":
@@ -385,10 +397,16 @@ class ActionBlockWidget(QFrame):
                 b_chk_row.addWidget(self.b_chk_edit)
 
                 self.b_chk_var_combo = QComboBox()
-                self.b_chk_var_combo.setFixedWidth(136)
+                self.b_chk_var_combo.setFixedWidth(150)
                 self._populate_var_combo_widget(self.b_chk_var_combo)
                 self.b_chk_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_chk_var_combo, self.b_chk_edit, idx))
                 b_chk_row.addWidget(self.b_chk_var_combo)
+
+                pick_btn = QPushButton("📂")
+                pick_btn.setFixedWidth(28)
+                pick_btn.setToolTip("Excelファイルを開いて列変数を読み込む")
+                pick_btn.clicked.connect(self._open_excel_column_picker)
+                b_chk_row.addWidget(pick_btn)
                 self.edit_layout.addRow("チェック状態:", b_chk_row)
             elif cur_act == "read_text":
                 self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
@@ -451,36 +469,37 @@ class ActionBlockWidget(QFrame):
         self.content_changed.emit()
         
     def set_available_variables(self, var_map: dict):
-        # Why: キャンバスから渡されたExcel列変数をコンボボックスへバインド
+        # Why: キャンバスまたはExcelファイルから渡された実際の列ヘッダー情報を全コンボボックスへ反映
         self.available_vars = var_map or {}
-        if hasattr(self, 'var_combo'):
-            self._populate_var_combo()
+        for combo_name in ['var_combo', 'b_var_combo', 'b_opt_var_combo', 'b_chk_var_combo']:
+            if hasattr(self, combo_name):
+                self._populate_var_combo_widget(getattr(self, combo_name))
 
     def _populate_var_combo_widget(self, combo: QComboBox):
-        # Why: ワークスペース直下のExcelファイルからヘッダー列を自動検出して変数候補に列挙
+        # Why: 読み込み済みExcelの列一覧のみを動的にコンボボックスへバインド
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("+ Excel列を挿入...", "")
+        combo.addItem("+ Excel列を変数挿入...", "")
         vars_dict = getattr(self, 'available_vars', {})
-        if not vars_dict:
-            try:
-                import openpyxl
-                candidates = list(self.workflow_dir.glob("*.xlsx")) + list(self.workflow_dir.parent.glob("*.xlsx")) + list(Path.cwd().glob("*.xlsx"))
-                for p in candidates:
-                    if not p.name.startswith("~$"):
-                        wb = openpyxl.load_workbook(str(p), data_only=True)
-                        ws = wb.active
-                        vars_dict = {f"row.{str(ws.cell(1, c).value or '').strip()}": str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1) if ws.cell(1, c).value}
-                        wb.close()
-                        if vars_dict:
-                            break
-            except Exception:
-                pass
-        if not vars_dict:
-            vars_dict = {"row.会社名": "会社名", "row.担当者名": "担当者名", "row.プラン": "プラン", "row.金額": "金額", "row.メール配信": "メール配信"}
-        for col, desc in vars_dict.items():
-            combo.addItem(f"{{{{{col}}}}} ({desc})", f"{{{{{col}}}}}")
+        if vars_dict:
+            for col_key, col_name in vars_dict.items():
+                clean_name = str(col_name).strip()
+                combo.addItem(f"{{{{row.{clean_name}}}}} ({col_key}列)", f"{{{{row.{clean_name}}}}}")
+                combo.addItem(f"{{{{row.{col_key}}}}} ({clean_name})", f"{{{{row.{col_key}}}}}")
+        else:
+            combo.addItem("(Excel未読込: 参照で選択可能)", "")
         combo.blockSignals(False)
+
+    def _open_excel_column_picker(self):
+        # Why: ユーザーが任意のExcelファイルを選択して即座に列ヘッダーを読み込み変数へ反映
+        from .loop_widgets import get_excel_columns_map
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "列を読み込むExcelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if fp:
+            cols_map = get_excel_columns_map(fp)
+            if cols_map:
+                self.set_available_variables(cols_map)
 
     def _populate_var_combo(self):
         if hasattr(self, 'var_combo'):
