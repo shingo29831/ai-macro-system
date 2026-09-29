@@ -1110,15 +1110,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_w = args.get("width", 0)
                 current_win_h = args.get("height", 0)
 
-            # Why: スクロールや移動での照合待機を排除し主要入力時のみ3秒以内で高速評価
+            # Why: スクロールや移動での照合待機を排除し主要入力時も最大1.5秒で高速評価
             if method in ["click", "type_text"] and raw_event_id:
                 if loop_stack:
-                    _wait_for_screen_settle(timeout=3.0, settle_threshold=0.004)
+                    _wait_for_screen_settle(timeout=1.5, settle_threshold=0.004)
                 else:
                     match_eid = args.get("match_event_id") or raw_event_id
                     match_info = wait_for_screen_match(
                         target_dir, match_eid, current_win_x, current_win_y, current_win_w, current_win_h, 
-                        workflow_id, status_callback, i, timeout=3.0, check_cancel_callback=lambda: _stop_requested
+                        workflow_id, status_callback, i, timeout=1.5, check_cancel_callback=lambda: _stop_requested
                     )
                     _check_stop()
                     step_log["match_info"] = match_info
@@ -1324,21 +1324,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
-                    # Why: スクロール後の微細な座標ズレをUIA要素探索で吸収し正確に補正
-                    selector = args.get("selector")
-                    elem_name = args.get("element_name")
-                    if is_browser_target and (selector or elem_name):
-                        try:
-                            from core.executor.browser_controller import BrowserController
-                            controller = BrowserController.get_instance()
-                            target_elem = controller._find_uia_element(selector or elem_name, last_win_args)
-                            if target_elem:
-                                r = target_elem.rectangle()
-                                if r.width() > 0 and r.height() > 0:
-                                    x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
-                        except Exception:
-                            pass
-
+                    # Why: UIA要素探索によるCOMデッドロック・永久フリーズを完全排除し物理座標で確実にクリック
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))

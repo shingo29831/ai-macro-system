@@ -176,16 +176,24 @@ class BrowserController:
                 logger.warning(f"UIA element discovery error: {e}")
             return None
 
-        # Why: 0.5秒の厳格なタイムアウトでUIAハングを遮断しマクロ実行フリーズを完全防止
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_search)
+        # Why: ThreadPoolExecutorのshutdown待機によるフリーズを完全回避するデーモンスレッド実行
+        import threading
+        result_holder = [None]
+        finished_event = threading.Event()
+
+        def _worker():
             try:
-                return future.result(timeout=timeout_sec)
-            except concurrent.futures.TimeoutError:
-                logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'. Using physical coords.")
-                return None
-            except Exception:
-                return None
+                result_holder[0] = _search()
+            finally:
+                finished_event.set()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        if finished_event.wait(timeout=timeout_sec):
+            return result_holder[0]
+        else:
+            logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'.")
+            return None
 
     def _click_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float = 0.5) -> None:
         elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout, 0.5))
