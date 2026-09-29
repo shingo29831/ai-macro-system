@@ -26,15 +26,22 @@ class TypingSessionAggregator:
                     return 0.0
             return 0.0
 
-        # Why: フォーカス直後のキー入力へクリック要素コンテキストを確実に引き継ぎ
+        # Why: マウス移動先の要素を追従し別入力欄への直前クリックコンテキスト誤爆を防止
         last_click_ctx = {}
         last_click_win = ""
         for ev in raw_events:
             ev_act = ev.get("raw_action", "")
             ev_win = ev.get("window_name", "")
+            ctx = ev.get("app_context") or ev.get("AppSpecificContext") or ev.get("appSpecificContext") or {}
+            elem = ctx.get("element_name") or ""
+            sel = ctx.get("css_selector") or ""
+
             if ev_act in ["click", "mouse_click"]:
-                ctx = ev.get("app_context") or ev.get("AppSpecificContext") or ev.get("appSpecificContext") or {}
-                if ctx.get("element_name") or ctx.get("css_selector") or ctx.get("xpath"):
+                if elem or sel or ctx.get("xpath"):
+                    last_click_ctx = ctx.copy()
+                    last_click_win = ev_win
+            elif ev_act in ["move", "mouse_move"]:
+                if elem and last_click_ctx.get("element_name") and elem != last_click_ctx.get("element_name"):
                     last_click_ctx = ctx.copy()
                     last_click_win = ev_win
             elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
@@ -177,10 +184,14 @@ class TypingSessionAggregator:
                         curr_elem = curr_ctx.get("element_name", "")
                         next_elem = next_ctx.get("element_name", "")
                         
-                        # 同じウィンドウ・同じ要素に対する連続した入力は、最後のテキストで上書きマージする
+                        # Why: 同一要素への分割入力は断片を結合し最終的な完成文字列へ復元
                         if curr_win == next_win and curr_elem == next_elem:
                             events_to_merge.append(next_event)
-                            last_valid_text = next_event.get("semantic_role", "")
+                            nxt_text = str(next_event.get("semantic_role", "")).strip()
+                            if last_valid_text and nxt_text and not nxt_text.startswith(last_valid_text):
+                                last_valid_text = last_valid_text + nxt_text
+                            else:
+                                last_valid_text = nxt_text or last_valid_text
                         else:
                             break
                     elif action in ["mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:

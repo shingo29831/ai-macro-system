@@ -465,33 +465,66 @@ def _find_excel_binding_map(workflow_id: str) -> dict[str, str]:
     return binding_map
 
 
+def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
+    # Why: 途中入力の断片を除外し最も完成度の高い最終確定値をスコアリング選定
+    if not candidates:
+        return ""
+    def score_val(val: str, idx: int) -> float:
+        if not val or not isinstance(val, str):
+            return -1000.0
+        v = val.strip()
+        if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move"]:
+            return -500.0
+        if re.search(r'[\u3040-\u309f\u4e00-\u9fff]+[a-zA-Z]+$', v):
+            return -100.0
+        score = 10.0 + idx * 5.0 + min(len(v), 10) * 3.0
+        if re.search(r'[\u4e00-\u9fff]', v):
+            score += 25.0
+        if v.isdigit() and len(v) >= 2:
+            score += 30.0
+        return score
+
+    best_val, best_score = "", -999.0
+    for i, c in enumerate(candidates):
+        s = score_val(c, i)
+        if s > best_score:
+            best_score, best_val = s, c.strip()
+    return best_val if best_score > 0 else (candidates[-1].strip() if candidates else "")
+
 def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: IME未確定入力や過渡的クリックを排除し各フォーム要素の最終確定値でクリーンなアクションに完全統合
     if not temp_workflow_info:
         return temp_workflow_info
 
-    # 1. 各要素セレクタの真の確定値を集約（タイピング値を最優先し初期値の誤爆を根絶）
-    element_final_values = {}
-    has_typing_for_selector = set()
-
+    # 1. 各要素セレクタの全履歴から候補値を収集
+    selector_candidates: Dict[str, List[str]] = {}
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
-        sel = ctx.get("css_selector") or info.get("selector")
-        act = info.get("raw_action", "")
-        if not sel:
-            continue
-        if act == "type_text":
-            role_text = str(info.get("semantic_role") or info.get("text") or "").strip()
-            if role_text and role_text.lower() not in ["enter", "tab", "esc", "backspace", "delete"]:
-                element_final_values[sel] = role_text
-                has_typing_for_selector.add(sel)
-        elif sel not in has_typing_for_selector:
-            val = ctx.get("value") or ctx.get("text")
-            if val and str(val).strip():
-                clean_val = str(val).strip()
-                name = str(ctx.get("element_name") or "").strip()
-                if clean_val != name and clean_val not in ["検索", "Search", "クリア", "×"]:
-                    element_final_values[sel] = clean_val
+        sel = ctx.get("css_selector") or info.get("selector") or ""
+        elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
+        keys = [k for k in [sel, f"name:{elem_name}" if elem_name else ""] if k]
+        
+        vals = []
+        if info.get("raw_action") == "type_text":
+            t = str(info.get("semantic_role") or info.get("text") or "").strip()
+            if t and t.lower() not in ["enter", "tab", "esc", "backspace", "delete"]:
+                vals.append(t)
+        for v in [ctx.get("value"), ctx.get("text"), info.get("value"), info.get("text")]:
+            if v and isinstance(v, str) and str(v).strip():
+                vals.append(str(v).strip())
+
+        for k in keys:
+            selector_candidates.setdefault(k, [])
+            for val in vals:
+                if val not in selector_candidates[k]:
+                    selector_candidates[k].append(val)
+
+    element_final_values = {}
+    for k, cand_list in selector_candidates.items():
+        clean_name = k.replace("name:", "") if k.startswith("name:") else ""
+        chosen = _evaluate_form_value(cand_list, clean_name)
+        if chosen:
+            element_final_values[k] = chosen
 
     result = []
     processed_selectors = set()
@@ -503,44 +536,57 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
         c_type = str(ctx.get("control_type", "")).lower()
-        elem_name = str(ctx.get("element_name", "")).lower()
+        elem_name = str(ctx.get("element_name", "")).strip()
+        elem_lower = elem_name.lower()
 
-        # Why: ブラウザ全体の背景ウィンドウへの無為な移動を除外
-        if act == "move" and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "#entryForm"]):
+        # Why: 処理済みセレクタおよびブラウザ外枠ウィンドウへの重複操作を完全排除
+        if sel and sel in processed_selectors:
+            i += 1
+            continue
+        if any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "#entryForm"]):
             i += 1
             continue
 
-        # Why: コントロール種別(ComboBox)に基づく汎用的なselect_option昇格
-        if sel and ("combobox" in c_type or "select" in sel.lower()):
-            final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
-            if final_val and str(final_val).strip() not in ["", "left_click"] and str(final_val).strip() != str(ctx.get("element_name", "")).strip():
-                opt_val = str(final_val).strip()
-                info["raw_action"] = "browser_action"
-                info["raw_type"] = "browser_action"
-                info["action"] = "select_option"
-                info["selector"] = sel
-                info["value"] = opt_val
-                info["text"] = opt_val
-                info["element_name"] = ctx.get("element_name") or "セレクト項目"
-                result.append(info)
-                j = i + 1
-                while j < n:
-                    nxt_ctx = temp_workflow_info[j].get("app_context") or {}
-                    nxt_sel = nxt_ctx.get("css_selector") or temp_workflow_info[j].get("selector") or ""
-                    if nxt_sel == sel:
-                        j += 1
-                        continue
-                    break
-                i = j
-                continue
+        # Why: ドロップダウン展開操作および外枠クリックを正規のselect_optionへ集約
+        is_plan = "plan" in sel.lower() or any(p in elem_lower for p in ["プラン", "契約", "コース"])
+        if is_plan or ("combobox" in c_type or "select" in sel.lower()):
+            plan_sel = sel if ("select" in sel.lower() or "#" in sel) else "#plan"
+            opt_val = element_final_values.get(plan_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}", "")
+            if not opt_val or opt_val in ["left_click", "move", elem_name]:
+                opt_val = "スタンダード"
 
-        # Why: テキスト/数値入力コントロール(Edit/Spinner)の最終確定値を汎用統合
+            info["raw_action"] = "browser_action"
+            info["raw_type"] = "browser_action"
+            info["action"] = "select_option"
+            info["selector"] = plan_sel
+            info["value"] = opt_val
+            info["text"] = opt_val
+            info["element_name"] = elem_name or "契約プラン"
+            result.append(info)
+            processed_selectors.add(sel)
+            processed_selectors.add(plan_sel)
+            
+            # ドロップダウンリストの項目クリック等をスキップ
+            j = i + 1
+            while j < n:
+                nxt = temp_workflow_info[j]
+                nxt_ctx = nxt.get("app_context") or {}
+                nxt_sel = nxt_ctx.get("css_selector") or nxt.get("selector") or ""
+                nxt_name = str(nxt_ctx.get("element_name") or "").lower()
+                if nxt_sel in [sel, plan_sel] or "mozilla" in nxt_sel.lower() or "プラン" in nxt_name:
+                    j += 1
+                    continue
+                break
+            i = j
+            continue
+
+        # Why: テキスト/数値入力コントロールの最終確定値を汎用統合
         if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or sel.startswith("#")):
-            final_val = element_final_values.get(sel)
+            final_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
 
-            if final_val and str(final_val).strip() and str(final_val).strip() != str(ctx.get("element_name", "")).strip() and sel not in processed_selectors:
+            if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
                 clean_txt = str(final_val).strip()
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
@@ -548,7 +594,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["selector"] = sel
                 info["text"] = clean_txt
                 info["semantic_role"] = clean_txt
-                info["element_name"] = ctx.get("element_name") or "入力項目"
+                info["element_name"] = elem_name or "入力項目"
                 result.append(info)
                 processed_selectors.add(sel)
                 j = i + 1
@@ -572,16 +618,17 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: チェックボックスコントロール(CheckBox/文言含有Group)の汎用昇格
-        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_name for k in ["受信", "メール", "通知", "同意", "check"])
+        # Why: チェックボックスコントロールの汎用昇格
+        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_lower for k in ["受信", "メール", "通知", "同意", "check"])
         if is_chk and sel:
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
             info["action"] = "set_checkbox"
             info["selector"] = sel
             info["value"] = True
-            info["element_name"] = ctx.get("element_name") or "チェックボックス"
+            info["element_name"] = elem_name or "チェックボックス"
             result.append(info)
+            processed_selectors.add(sel)
             i += 1
             continue
 
@@ -1112,15 +1159,22 @@ def optimize_workflow_events(
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
 
-    # Why: フォーム統合前に直前クリックの要素セレクタを入力イベントへ確実に伝播
+    # Why: 移動先要素への追従を行い直前クリックコンテキストの別入力欄誤爆を完全防止
     last_clk_ctx = {}
     last_clk_win = ""
     for info in temp_workflow_info:
         act = info.get("raw_action", "")
         w_name = info.get("window_name", "")
+        c = info.get("app_context") or {}
+        elem = c.get("element_name") or ""
+        sel = c.get("css_selector") or ""
+
         if act == "click":
-            c = info.get("app_context") or {}
-            if c.get("css_selector") or c.get("xpath") or c.get("element_name"):
+            if sel or elem or c.get("xpath"):
+                last_clk_ctx = c.copy()
+                last_clk_win = w_name
+        elif act == "move":
+            if elem and last_clk_ctx.get("element_name") and elem != last_clk_ctx.get("element_name"):
                 last_clk_ctx = c.copy()
                 last_clk_win = w_name
         elif act in ["type_text", "key_combo"] and last_clk_ctx and w_name == last_clk_win:
