@@ -431,26 +431,24 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
     return result
 
 def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
-    # Why: 途中入力の断片を除外し最も完成度の高い最終確定値をスコアリング選定
+    # Why: ハードコードを排し純粋な文字長・確定度・時系列順序から最適値を普遍判定
     if not candidates:
         return ""
     def score_val(val: str, idx: int) -> float:
         if not val or not isinstance(val, str):
             return -1000.0
         v = val.strip()
-        if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move", "か"]:
+        if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move"]:
             return -500.0
-        # Why: 未確定ひらがな単体(「とう」「さ」等)より確定漢字やアルファベット付き正式表記を最優先
+        # Why: 入力途中の1~2文字ひらがな単体より漢字・英数字混在や確定長文を自然に優先
         if re.fullmatch(r'[\u3040-\u309f]{1,2}', v):
             return -50.0
-        score = 10.0 + idx * 5.0 + min(len(v), 10) * 3.0
+        score = 10.0 + idx * 5.0 + min(len(v), 15) * 4.0
         if re.search(r'[\u4e00-\u9fff]', v):
-            score += 50.0
-        if re.search(r'[\u4e00-\u9fff]+[A-Za-z0-9]+', v):
-            score += 60.0
-        if any(kw in v for kw in ["健一", "佐藤", "会社"]):
-            score += 70.0
-        if v.isdigit() and len(v) >= 2:
+            score += 40.0
+        if re.search(r'[A-Za-z0-9]', v):
+            score += 20.0
+        if v.isdigit():
             score += 30.0
         return score
 
@@ -462,18 +460,18 @@ def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
     return best_val if best_score > 0 else (candidates[-1].strip() if candidates else "")
 
 def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Why: IME未確定入力や過渡的クリックを排除し各フォーム要素の最終確定値でクリーンなアクションに完全統合
+    # Why: ハードコードを完全排除しコントロール種別と最新確定値に基づく普遍的なフォーム最適化
     if not temp_workflow_info:
         return temp_workflow_info
 
-    # 1. 各要素セレクタの全履歴から候補値を収集
+    # 1. 各要素セレクタごとに全履歴から確定値候補を収集
     selector_candidates: Dict[str, List[str]] = {}
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
         keys = [k for k in [sel, f"name:{elem_name}" if elem_name else ""] if k]
-        
+
         vals = []
         if info.get("raw_action") == "type_text":
             t = str(info.get("semantic_role") or info.get("text") or "").strip()
@@ -507,7 +505,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         sel = ctx.get("css_selector") or info.get("selector") or ""
         c_type = str(ctx.get("control_type", "")).lower()
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
-        elem_lower = elem_name.lower()
 
         # Why: 処理済みセレクタ、通過ホバー移動、および外枠・Document要素を除外
         if sel and sel in processed_selectors:
@@ -516,99 +513,69 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if act == "move":
             i += 1
             continue
-        if any(term in sel or term in elem_name for term in ["顧客データ一括登録テスト画面", "MozillaWindowClass", "Chrome_WidgetWin"]) or "document" in c_type:
+        if "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
             i += 1
             continue
 
-        # Why: ドロップダウン展開操作および外枠クリックを正規のselect_optionへ集約
-        is_plan = "plan" in sel.lower() or any(p in elem_lower for p in ["プラン", "契約", "コース"])
-        if not is_plan and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]) and i > 0:
-            prev_name = str((temp_workflow_info[i - 1].get("app_context") or {}).get("element_name") or "").lower()
-            if any(k in prev_name for k in ["担当", "contact"]):
-                is_plan = True
+        # Why: 汎用セレクトボックス/コンボボックスの集約
+        is_select = "combobox" in c_type or "select" in sel.lower() or "list" in c_type
+        if is_select:
+            opt_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}") or info.get("value") or info.get("text") or ""
+            if str(opt_val).strip() and str(opt_val).strip() not in ["left_click", "move", elem_name]:
+                info["raw_action"] = "browser_action"
+                info["raw_type"] = "browser_action"
+                info["action"] = "select_option"
+                info["selector"] = sel
+                info["value"] = str(opt_val).strip()
+                info["text"] = str(opt_val).strip()
+                info["element_name"] = elem_name or "選択項目"
+                result.append(info)
+                processed_selectors.add(sel)
 
-        if is_plan or ("combobox" in c_type or "select" in sel.lower()):
-            plan_sel = "#plan"
-            opt_val = element_final_values.get(plan_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}", "")
-            if not opt_val or opt_val in ["left_click", "move", elem_name]:
-                opt_val = "プレミアム"
+                j = i + 1
+                while j < n:
+                    nxt_sel = (temp_workflow_info[j].get("app_context") or {}).get("css_selector") or temp_workflow_info[j].get("selector") or ""
+                    if nxt_sel == sel:
+                        j += 1
+                        continue
+                    break
+                i = j
+                continue
 
+        # Why: 汎用チェックボックスの集約
+        is_checkbox = "checkbox" in c_type or "check" in sel.lower()
+        if is_checkbox and act in ["click", "browser_action"]:
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
-            info["action"] = "select_option"
-            info["selector"] = plan_sel
-            info["value"] = opt_val
-            info["text"] = opt_val
-            info["element_name"] = "契約プラン"
+            info["action"] = "set_checkbox"
+            info["selector"] = sel
+            info["value"] = True
+            info["element_name"] = elem_name or "チェックボックス"
             result.append(info)
             processed_selectors.add(sel)
-            processed_selectors.add(plan_sel)
-            
-            j = i + 1
-            while j < n:
-                nxt = temp_workflow_info[j]
-                nxt_ctx = nxt.get("app_context") or {}
-                nxt_sel = nxt_ctx.get("css_selector") or nxt.get("selector") or ""
-                nxt_name = str(nxt_ctx.get("element_name") or "").lower()
-                if nxt_sel in [sel, plan_sel] or "mozilla" in nxt_sel.lower() or "プラン" in nxt_name:
-                    j += 1
-                    continue
-                break
-            i = j
+            i += 1
             continue
 
-        # Why: ラベルdivではなく本物のinput/spinnerセレクタ(#amount等)を優先採用し50000等の確定値を安全バインド
-        effective_sel = sel
-        if "div:has-text" in sel or not sel.startswith("#"):
-            if any(k in elem_lower for k in ["利用料", "amount", "料金", "金額"]):
-                effective_sel = "#amount"
-            elif any(k in elem_lower for k in ["会社", "company"]):
-                effective_sel = "#company"
-            elif any(k in elem_lower for k in ["担当", "contact", "氏名"]):
-                effective_sel = "#contact"
-
-        # Why: セレクタ未紐付けの会社名タイピングを#companyへ救済バインド
-        if not effective_sel and act == "type_text":
-            role_t = str(info.get("semantic_role") or info.get("text") or "").strip()
-            if any(k in role_t.lower() for k in ["かいしゃ", "会社"]):
-                effective_sel = "#company"
-                elem_name = "会社名 *"
-                c_type = "edit"
-
-        if effective_sel and ("edit" in c_type or "spinner" in c_type or "input" in effective_sel.lower() or "textarea" in effective_sel.lower() or (effective_sel.startswith("#") and "entryform" not in effective_sel.lower()) or effective_sel in ["#amount", "#company", "#contact"]):
-            final_val = element_final_values.get(effective_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
+        # Why: 汎用テキスト/数値入力欄(Edit, Spinner, input, textarea)の集約
+        is_input_field = (
+            "edit" in c_type or 
+            "spinner" in c_type or 
+            any(tag in sel.lower() for tag in ["input", "textarea"]) or
+            (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"]))
+        )
+        if is_input_field:
+            final_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
 
-            if (final_val and str(final_val).strip() and str(final_val).strip() != elem_name) or effective_sel in ["#company", "#contact", "#amount"]:
-                clean_txt = str(final_val).strip() if final_val else ""
-                # Why: ローマ字未確定の会社名表記を正規漢字表記へ安全補正
-                if effective_sel == "#company":
-                    clean_txt = re.sub(r'^(かい[s|ｓ]?[y|ｙ]?[a|ａ]|かいしゃ|会社)[a|ａ]?', '会社A', clean_txt)
-                    if clean_txt in ["会社", "会社a", "かいさ", "かいさA", "とう", ""]:
-                        clean_txt = "会社A"
-                elif effective_sel == "#contact":
-                    if clean_txt in ["さとう", "サトウ", "佐藤", "とう", ""]:
-                        clean_txt = "佐藤 健一"
-                elif effective_sel == "#amount":
-                    if not clean_txt or clean_txt in ["月額利用料 (円)", "left_click", "move", "0"]:
-                        clean_txt = "50000"
+            if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
+                clean_txt = str(final_val).strip()
 
-                # Why: 直前に残った同一入力の断片タイピングや修飾キー残骸を遡及除去し検索欄への誤爆を根絶
                 while result:
                     prev_item = result[-1]
                     p_act = prev_item.get("raw_action", "")
-                    p_role = str(prev_item.get("semantic_role", "")).strip()
-                    p_ctx = prev_item.get("app_context") or {}
-                    p_sel = p_ctx.get("css_selector") or prev_item.get("selector") or ""
-                    p_elem = str(p_ctx.get("element_name") or prev_item.get("element_name") or "").strip()
-
-                    is_orphan_typing = p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (
-                        not p_sel or p_sel == sel or p_elem == elem_name or
-                        (p_role and clean_txt and (p_role in clean_txt or clean_txt.startswith(p_role))) or
-                        any(mod in p_role.lower() for mod in ["tab", "shift", "space", "enter"])
-                    )
-                    if is_orphan_typing and prev_item.get("action") != "type_text":
+                    p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
+                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (not p_sel or p_sel == sel):
                         result.pop()
                     else:
                         break
@@ -616,31 +583,25 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "type_text"
-                info["selector"] = effective_sel
+                info["selector"] = sel
                 info["text"] = clean_txt
                 info["semantic_role"] = clean_txt
                 info["element_name"] = elem_name or "入力項目"
                 result.append(info)
                 processed_selectors.add(sel)
-                processed_selectors.add(effective_sel)
 
                 j = i + 1
                 while j < n:
                     nxt = temp_workflow_info[j]
-                    n_ctx = nxt.get("app_context") or {}
-                    n_sel = n_ctx.get("css_selector") or nxt.get("selector") or ""
+                    n_sel = (nxt.get("app_context") or {}).get("css_selector") or nxt.get("selector") or ""
                     n_act = nxt.get("raw_action", "")
-                    n_name = str(n_ctx.get("element_name") or "").strip()
+                    n_name = str((nxt.get("app_context") or {}).get("element_name") or "").strip()
 
-                    if n_sel in [sel, effective_sel]:
+                    if n_sel == sel:
                         j += 1
                         continue
-
-                    # 次の別要素クリックや別入力欄に到達したらスキップ終了
-                    if (n_act in ["click", "browser_action"] and n_sel and n_sel not in [sel, effective_sel]) or (n_name and n_name != elem_name and n_act in ["click", "browser_action"]):
+                    if (n_act in ["click", "browser_action"] and n_sel and n_sel != sel) or (n_name and n_name != elem_name and n_act in ["click", "browser_action"]):
                         break
-
-                    # 確定前後のキー入力やコンボキー(shift+a等)・移動は完全に消費
                     if n_act in ["type_text", "key_down", "key_press", "key_combo", "press_key", "move", "uia_scan"]:
                         j += 1
                         continue
@@ -648,46 +609,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: 親form配下のチェックボックスクリックを救出してset_checkboxへ完全昇格
-        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_lower for k in ["受信", "メール", "通知", "同意", "check", "newsletter"])
-        chk_sel = sel if ("#" in sel and "entryform" not in sel.lower()) else "#newsletter"
-        if (is_chk or any(k in elem_lower for k in ["受信", "メール", "通知", "同意"])) and act in ["click", "browser_action"]:
-            info["raw_action"] = "browser_action"
-            info["raw_type"] = "browser_action"
-            info["action"] = "set_checkbox"
-            info["selector"] = chk_sel
-            info["value"] = True
-            info["element_name"] = elem_name or "お知らせ・更新通知メールを受信する"
-            result.append(info)
-            processed_selectors.add(sel)
-            processed_selectors.add(chk_sel)
-            i += 1
-            continue
-
         result.append(info)
         i += 1
-
-    # Why: プラン選択後、月額利用料の入力が欠落している場合に50,000円の入力を自動補完
-    has_plan = any(item.get("selector") == "#plan" for item in result)
-    has_amount = any(item.get("selector") == "#amount" and item.get("action") == "type_text" for item in result)
-    if has_plan and not has_amount:
-        insert_pos = len(result)
-        for idx, item in enumerate(result):
-            if item.get("selector") in ["#newsletter", "#submit-btn"]:
-                insert_pos = idx
-                break
-        amount_action = {
-            "raw_action": "browser_action",
-            "raw_type": "browser_action",
-            "action": "type_text",
-            "selector": "#amount",
-            "text": "50000",
-            "semantic_role": "50000",
-            "element_name": "月額利用料 (円)",
-            "event_id": "auto_amount_input",
-            "fallback_events": []
-        }
-        result.insert(insert_pos, amount_action)
 
     return result
 
