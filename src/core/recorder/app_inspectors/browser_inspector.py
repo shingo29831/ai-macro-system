@@ -199,12 +199,12 @@ class BrowserInspector(BaseInspector):
             target_elements = []
 
             # 1. 座標からの取得試行
-            if x is not None and y is not None:
+            # Why: 負の座標や画面外でのdesktop.from_pointによる0x80070057パラメーター不正例外を防止
+            if x is not None and y is not None and x >= 0 and y >= 0:
                 try:
                     elem = desktop.from_point(int(x), int(y))
                     if elem:
                         try:
-                            # Why: from_pointが近傍要素を誤返却した場合に備えクリック座標包含を厳密検証
                             r = elem.rectangle()
                             if r.left <= x <= r.right and r.top <= y <= r.bottom:
                                 target_elements.append(("PointElement", elem))
@@ -215,16 +215,15 @@ class BrowserInspector(BaseInspector):
                             target_elements.append(("PointElement", elem))
                 except Exception as e:
                     log_debug(f"座標からの要素特定に失敗: {e}")
-                    # Why: desktop.from_point失敗時に対象ウィンドウ経由で要素特定を再試行
                     try:
-                        hwnd = window_info.get("hwnd") or window_info.get("handle") or ctypes.windll.user32.GetForegroundWindow()
-                        if hwnd:
-                            win_obj = desktop.window(handle=int(hwnd))
-                            elem = win_obj.from_point(int(x), int(y))
-                            target_elements.append(("WindowPointElement", elem))
-                            log_debug("ウィンドウ座標からのUI要素特定に成功しました")
+                        import uiautomation as auto
+                        f_ctrl = auto.GetFocusedControl()
+                        if f_ctrl and f_ctrl.NativeWindowHandle:
+                            f_elem = desktop.window(handle=f_ctrl.NativeWindowHandle)
+                            target_elements.append(("FocusedFallback", f_elem))
+                            log_debug("フォーカス要素フォールバック特定に成功しました")
                     except Exception as e2:
-                        log_debug(f"ウィンドウからの要素特定にも失敗: {e2}")
+                        log_debug(f"フォーカス要素フォールバック失敗: {e2}")
             else:
                 # Why: キー入力時(座標None)は現在フォーカス要素を特定してターゲットに設定
                 try:

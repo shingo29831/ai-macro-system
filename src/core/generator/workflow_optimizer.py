@@ -919,7 +919,8 @@ def optimize_workflow_events(
             logger.info(f"[{workflow_id}] Omitted layout adjustment drag (Event: {info.get('event_id')})")
             continue
 
-        if (cy - orig_wy <= 45) or cy < -50:
+        # Why: マウス移動・クリックのみタイトルバー誤爆を判定し、キーボード入力やテキスト入力の脱落を完全防止
+        if raw_act in ["click", "move"] and ("drag" in raw_type or raw_act == "drag" or (cy - orig_wy <= 45) or cy < -50):
             ctx = info.get("app_context") or {}
             has_valid_web_target = bool(ctx.get("url") and str(ctx.get("url")).startswith("http"))
             if not has_valid_web_target:
@@ -1113,6 +1114,26 @@ def optimize_workflow_events(
                 info["excel_cell"] = last_excel_dest_cell
 
     from core.executor.os_env_controller import is_link_or_url, normalize_text_width
+
+    # Why: 直前クリック先要素のセレクタ・コンテキストを入力イベント(type_text)へ自動バインド
+    last_browser_click_ctx = {}
+    last_browser_win = ""
+    for info in temp_workflow_info:
+        act = info.get("raw_action", "")
+        w_name = info.get("window_name", "")
+        if act == "click":
+            ctx = info.get("app_context") or {}
+            if ctx.get("css_selector") or ctx.get("xpath") or ctx.get("element_name"):
+                last_browser_click_ctx = ctx.copy()
+                last_browser_win = w_name
+        elif act in ["type_text", "key_combo"] and last_browser_click_ctx:
+            if w_name == last_browser_win:
+                if not info.get("app_context"):
+                    info["app_context"] = last_browser_click_ctx.copy()
+                else:
+                    for k, v in last_browser_click_ctx.items():
+                        if not info["app_context"].get(k):
+                            info["app_context"][k] = v
 
     # Why: ブラウザ内のリンククリック、要素操作、URL入力を専用ブラウザアクション(browser_action)へ網羅昇格
     promoted_browser_info = []

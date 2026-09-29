@@ -125,7 +125,14 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         if action_type == "click":
             input_val = f"{button_val}_click"
         elif action_type == "key_down":
-            input_val = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown_key"
+            raw_key = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown_key"
+            # Why: WindowsキーフックのCtrl+A〜Z制御文字(\x01〜\x1a)を正規のショートカット名へ復元
+            if isinstance(raw_key, str) and len(raw_key) == 1 and 1 <= ord(raw_key) <= 26:
+                ctrl_char = chr(ord(raw_key) + 96)
+                input_val = f"ctrl+{ctrl_char}"
+                action_type = "key_combo"
+            else:
+                input_val = raw_key
         elif action_type == "scroll":
             input_val = "scroll"
         elif action_type == "move":
