@@ -20,8 +20,31 @@ logger = logging.getLogger(__name__)
 WM_IME_CONTROL = 0x0283
 IMC_SETOPENSTATUS = 0x0006
 SPI_SETCURSORS = 0x0057
+SPI_GETWHEELSCROLLLINES = 0x0068
+SPI_GETWHEELSCROLLCHARS = 0x006C
+WHEEL_PAGESCROLL = 0xFFFFFFFF
 SPIF_UPDATEINIFILE = 0x0001
 SPIF_SENDCHANGE = 0x0002
+
+
+def get_wheel_scroll_settings() -> dict:
+    """Why: Windows設定から1ノッチあたりのスクロール行数/文字数を取得し環境差による乖離を根絶"""
+    if platform.system() != "Windows":
+        return {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
+    try:
+        user32 = ctypes.windll.user32
+        lines = ctypes.c_uint()
+        chars = ctypes.c_uint()
+        user32.SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, ctypes.byref(lines), 0)
+        user32.SystemParametersInfoW(SPI_GETWHEELSCROLLCHARS, 0, ctypes.byref(chars), 0)
+        is_page = (lines.value == WHEEL_PAGESCROLL)
+        return {
+            "scroll_lines": 3 if is_page else max(1, lines.value),
+            "scroll_chars": max(1, chars.value),
+            "is_page_scroll": is_page
+        }
+    except Exception:
+        return {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
 
 # Why: 待機時(WAIT)・起動時(APPSTARTING)・文字選択(IBEAM)等でのユーザーカーソルチラつきを完全排除
 # Why: 通常矢印・リンク手・作業中を最適化置換し、フック遅延ゼロとチラつき解消を両立

@@ -1487,31 +1487,41 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         sx, sy = int(x + off_x), int(y + off_y)
                         if platform.system() == "Windows":
                             ctypes.windll.user32.SetCursorPos(sx, sy)
-                            # Why: SetCursorPosだけではホバーが反映されないためMOVEで領域を捕捉
                             ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
                         else:
                             mouse.position = (sx, sy)
                         time.sleep(0.05)
                     
                     if platform.system() == "Windows":
-                        # Why: 一括送信によるスクロールの間引きを防ぐため1ノッチずつ分割送信
-                        if dy != 0.0:
-                            direction = 1 if dy > 0 else -1
-                            total_notches = max(1, int(round(abs(dy))))
-                            raw_val = ctypes.c_ulong((direction * WHEEL_DELTA) & 0xFFFFFFFF).value
-                            for _ in range(total_notches):
-                                _check_stop()
-                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, raw_val, 0)
-                                time.sleep(0.02)
-                        if dx != 0.0:
-                            direction_x = 1 if dx > 0 else -1
-                            total_notches_x = max(1, int(round(abs(dx))))
-                            raw_val_x = ctypes.c_ulong((direction_x * WHEEL_DELTA) & 0xFFFFFFFF).value
-                            for _ in range(total_notches_x):
-                                _check_stop()
-                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, raw_val_x, 0)
-                                time.sleep(0.02)
-                        # Why: スクロール後のスムーズアニメーションおよび描画完了を待機
+                        from core.executor.os_env_controller import get_wheel_scroll_settings
+                        settings = get_wheel_scroll_settings()
+                        is_page = settings.get("is_page_scroll", False)
+
+                        # Why: 1画面スクロール設定時はPageDown/PageUpに適応変換し正確に再現
+                        if is_page and dy != 0.0:
+                            page_key = Key.page_down if dy < 0 else Key.page_up
+                            keyboard.press(page_key)
+                            keyboard.release(page_key)
+                            time.sleep(0.15)
+                        else:
+                            # Why: 高速スクロール時のブラウザ間引きを防ぎ自然な慣性とスクロール量を両立
+                            if dy != 0.0:
+                                direction = 1 if dy > 0 else -1
+                                total_notches = max(1, int(round(abs(dy))))
+                                raw_val = ctypes.c_ulong((direction * WHEEL_DELTA) & 0xFFFFFFFF).value
+                                delay = 0.015 if total_notches > 10 else 0.025
+                                for _ in range(total_notches):
+                                    _check_stop()
+                                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, raw_val, 0)
+                                    time.sleep(delay)
+                            if dx != 0.0:
+                                direction_x = 1 if dx > 0 else -1
+                                total_notches_x = max(1, int(round(abs(dx))))
+                                raw_val_x = ctypes.c_ulong((direction_x * WHEEL_DELTA) & 0xFFFFFFFF).value
+                                for _ in range(total_notches_x):
+                                    _check_stop()
+                                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, raw_val_x, 0)
+                                    time.sleep(0.025)
                         time.sleep(0.2)
                     else:
                         steps = max(1, int(round(abs(dy))))

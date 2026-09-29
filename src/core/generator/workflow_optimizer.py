@@ -562,14 +562,14 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     n_win = nxt.get("window_name", "")
                     if curr_win and n_win and curr_win != n_win:
                         break
-                    sx, sy = nxt.get("cursor_x", nxt.get("x", 0)), nxt.get("cursor_y", nxt.get("y", 0))
-                    if abs(sx - base_x) > 250 or abs(sy - base_y) > 350:
+                    nxt_ts = nxt.get("timestamp", 0)
+                    ts_gap = abs(nxt_ts - last_ts) if (nxt_ts and last_ts) else 0
+                    # Why: スクロール操作中のカーソル移動に惑わされず起点位置でセッションを完全統合
+                    if ts_gap > 800:
                         break
 
                     nxt_dx = nxt.get("dx", 0.0)
                     nxt_dy = nxt.get("dy", 0.0)
-                    nxt_ts = nxt.get("timestamp", 0)
-                    ts_gap = abs(nxt_ts - last_ts) if (nxt_ts and last_ts) else 999
 
                     is_opp_y = (tot_dy * nxt_dy < 0)
                     is_opp_x = (tot_dx * nxt_dx < 0)
