@@ -391,6 +391,71 @@ class WorkflowStoppedException(Exception):
     """ユーザーによってマクロの実行が強制停止された場合に送出される例外"""
     pass
 
+
+class WorkflowFreezeException(Exception):
+    """ステップ実行中に無応答（フリーズ）が検知された場合に送出される例外"""
+    pass
+
+
+def _inject_async_exception(thread_id: int, exc_type: type):
+    """Why: ブロッキング中の実行スレッドに非同期例外を注入しフリーズから強制脱出"""
+    if not thread_id or platform.system() != "Windows":
+        return
+    try:
+        res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(thread_id), ctypes.py_object(exc_type)
+        )
+        if res > 1:
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
+    except Exception as e:
+        logger.error(f"Failed to inject async exception: {e}")
+
+
+class ExecutionWatchdog:
+    """実行ステップの無応答（フリーズ）を常時監視し、規定秒数超過時に強制終了する"""
+    def __init__(self, target_thread_id: int, timeout_sec: float = 30.0, on_freeze_callback=None):
+        self.target_thread_id = target_thread_id
+        self.timeout_sec = timeout_sec
+        self.on_freeze_callback = on_freeze_callback
+        self.last_beat_time = time.time()
+        self.current_step_info = "初期化"
+        self._is_active = True
+        self._lock = threading.Lock()
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True, name="ExecWatchdog")
+
+    def start(self):
+        self.last_beat_time = time.time()
+        self._monitor_thread.start()
+
+    def heartbeat(self, step_info: str):
+        with self._lock:
+            self.last_beat_time = time.time()
+            self.current_step_info = step_info
+
+    def stop(self):
+        with self._lock:
+            self._is_active = False
+
+    def _monitor_loop(self):
+        while True:
+            time.sleep(1.0)
+            with self._lock:
+                if not self._is_active:
+                    break
+                elapsed = time.time() - self.last_beat_time
+                if elapsed > self.timeout_sec:
+                    frozen_step = self.current_step_info
+                    self._is_active = False
+                    logger.error(f"Watchdog: Step freeze detected! No heartbeat for {elapsed:.1f}s at: {frozen_step}")
+                    if self.on_freeze_callback:
+                        try:
+                            self.on_freeze_callback(frozen_step, elapsed)
+                        except Exception:
+                            pass
+                    _inject_async_exception(self.target_thread_id, WorkflowFreezeException)
+                    break
+
+
 def _smooth_move(target_x: int, target_y: int, steps: int = 10, duration: float = 0.12):
     # Why: ホバー位置から子メニューへのワープ移動によるドロップダウン消滅を連続軌跡で完全防止
     if platform.system() == "Windows":
@@ -674,6 +739,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
     set_system_cursor("run_idle")
     
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
+    exec_thread_id = threading.get_ident()
+
+    def on_freeze(step_info: str, elapsed: float):
+        stop_workflow()
+        restore_system_cursor(force=True)
+        update_ui(f"フリーズ検知により強制終了 ({step_info})", is_warning=True)
+
+    watchdog = ExecutionWatchdog(exec_thread_id, timeout_sec=30.0, on_freeze_callback=on_freeze)
+    watchdog.start()
+
     mouse = MouseController()
     keyboard = KeyboardController()
 
@@ -949,8 +1024,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         
         while i < len(commands):
             _check_stop()
-            set_system_cursor("run_idle")
             cmd = commands[i]
+            watchdog.heartbeat(f"Step {i+1}/{len(commands)}: {cmd.get('method')}")
             method = cmd.get("method")
             raw_args = cmd.get("args", {}).copy()
             args = _resolve_variables(raw_args, variables)
@@ -1328,12 +1403,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
                         time.sleep(0.06)
-                        set_system_cursor("run_click")
-                        time.sleep(0.03)
                         mouse.click(btn, clicks)
                         time.sleep(0.08)
-                        set_system_cursor("run_idle")
-                        time.sleep(0.02)
 
                 elif method == "move":
                     x = args.get("x", 0) + off_x
@@ -1542,6 +1613,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
     except WorkflowStoppedException as e:
         execution_log["status"] = "stopped"
         logger.warning(f"[{workflow_id}] {e}")
+    except WorkflowFreezeException as e:
+        execution_log["status"] = "frozen_aborted"
+        err_msg = f"マクロの無応答（フリーズ）を検知したため強制終了しました (30秒タイムアウト)。\n発生箇所: {watchdog.current_step_info}"
+        execution_log["error"] = err_msg
+        logger.error(f"[{workflow_id}] {err_msg}")
+        update_ui("フリーズ検知により強制終了しました", is_warning=True)
+        raise RuntimeError(err_msg) from e
     except Exception as e:
         # Why: 異常停止時にExcelのステータス列へエラー詳細を即時書き戻し二重処理を抑止
         if 'loop_stack' in locals() and loop_stack and loop_stack[-1].get("data_source") == "excel":
@@ -1561,6 +1639,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         update_ui(f"エラー停止: {e}", is_warning=True)
         raise
     finally:
+        watchdog.stop()
         restore_system_cursor(force=True)
         try:
             execution_log["end_time"] = datetime.now().isoformat()

@@ -108,6 +108,12 @@ class MainWindow(FluentWindow):
         self.viewmodel.recording_stopped_by_shortcut.connect(
             self._on_recording_stopped_by_shortcut
         )
+        self.viewmodel.execution_error.connect(
+            self._on_execution_error
+        )
+        self.viewmodel.recording_error.connect(
+            self._on_recording_error
+        )
 
     @Slot()
     def _on_delete_selected_clicked(self):
@@ -343,6 +349,44 @@ class MainWindow(FluentWindow):
                 "エラー",
                 f"強制停止中にエラーが発生しました:\n{error}",
             )
+
+    @Slot(str)
+    def _on_execution_error(self, error_message: str):
+        if self.running_dialog:
+            self.running_dialog.close_dialog()
+            self.running_dialog = None
+
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        from ui.views.error_dialog import ErrorDialog
+        dialog = ErrorDialog(
+            title="マクロ実行エラー",
+            summary="マクロの実行中にエラー（またはフリーズ）が発生したため、処理を強制終了しました。",
+            detail=error_message,
+            parent=self,
+        )
+        dialog.exec()
+
+    @Slot(str)
+    def _on_recording_error(self, error_message: str):
+        if self.record_dialog:
+            self.record_dialog.dialog.close()
+            self.record_dialog = None
+
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        from ui.views.error_dialog import ErrorDialog
+        dialog = ErrorDialog(
+            title="マクロ記録エラー",
+            summary="マクロの記録中にエラーが発生したため、記録を強制終了しました。",
+            detail=error_message,
+            parent=self,
+        )
+        dialog.exec()
 
     @Slot()
     def _on_execution_finished(self):

@@ -247,8 +247,12 @@ class MainViewModel(QObject):
                     logger.warning(f"Background macro generation cancelled.")
                     self.generation_finished.emit(False, "キャンセルされました")
                 except Exception as gen_err:
+                    import traceback
+                    tb_str = traceback.format_exc()
                     err_msg = str(gen_err)
-                    logger.error(f"Unhandled exception during background macro generation: {err_msg}")
+                    detail_err = f"{type(gen_err).__name__}: {gen_err}\n\n【詳細スタックトレース】\n{tb_str}"
+                    logger.error(f"Unhandled exception during background macro generation: {detail_err}")
+                    self.recording_error.emit(detail_err)
                     self.generation_finished.emit(False, err_msg)
                 finally:
                     self._is_stopping = False
@@ -301,9 +305,9 @@ class MainViewModel(QObject):
                 except Exception as exec_err:
                     import traceback
                     tb_str = traceback.format_exc()
-                    err_msg = f"{type(exec_err).__name__}: {exec_err}"
+                    err_msg = f"{type(exec_err).__name__}: {exec_err}\n\n【詳細スタックトレース】\n{tb_str}"
                     logger.error(f"Exception occurred during pipeline execution for {workflow_id}:\n{tb_str}")
-                    status_cb(f"エラー: {err_msg}", True)
+                    status_cb(f"エラー: {exec_err}", True)
                     self.execution_error.emit(err_msg)
                 finally:
                     self.load_macros()

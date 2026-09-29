@@ -29,7 +29,6 @@ def _cancel_hover_timer():
 def _on_hover_timeout(hx: int, hy: int):
     if not state.is_recording or state.is_stopping:
         return
-    set_system_cursor("record_hover", async_exec=True)
     # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録
     state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
     logger.debug("Hover event emitted at (%d, %d)", hx, hy)
@@ -94,9 +93,6 @@ def on_click(x, y, button, pressed):
     # Why: フックコールバック内の同期処理をゼロにし、マウスアップ消失による照準固定を根絶
     if pressed:
         _flush_typing_buffer("mouse_clicked")
-        set_system_cursor("record_down", async_exec=True)
-    else:
-        set_system_cursor("record_idle", async_exec=True)
 
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
