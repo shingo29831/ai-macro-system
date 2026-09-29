@@ -8,7 +8,7 @@ import ctypes
 from typing import Optional, List, Tuple
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QCursor
 
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_LAYERED = 0x00080000
@@ -66,6 +66,9 @@ class CursorOverlay(QWidget):
         super().showEvent(event)
         self._apply_native_window_styles()
         self._fit_to_all_screens()
+        # Why: 表示開始直後から現在位置に即時追従できるようOSカーソル座標を直接取得
+        pos = QCursor.pos()
+        self._cur_x, self._cur_y = float(pos.x()), float(pos.y())
         self._anim_timer.start()
 
     def hideEvent(self, event):
@@ -91,6 +94,8 @@ class CursorOverlay(QWidget):
             cur_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, cur_style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE)
             user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+            # 最前面を強制維持
+            user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010 | 0x0040)
         except Exception:
             pass
 
@@ -197,6 +202,20 @@ class CursorOverlay(QWidget):
             painter.setBrush(QBrush(QColor(239, 68, 68, 255)))
             painter.drawEllipse(QPointF(self._cur_x, self._cur_y), 2.0, 2.0)
 
+        # 6. 通常移動（アイドル時）: 右下バッジなしのオリジナル極細ターゲットスコープ
+        if not self._is_pressed and not self._is_hovering and not self._is_dragging:
+            cx, cy = self._cur_x, self._cur_y
+            painter.setPen(QPen(QColor(239, 68, 68, 220), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(cx, cy), 7.0, 7.0)
+            # 十字の極小レティクル目盛（中心は空洞化して視認性を担保）
+            painter.drawLine(QPointF(cx - 10, cy), QPointF(cx - 7, cy))
+            painter.drawLine(QPointF(cx + 7, cy), QPointF(cx + 10, cy))
+            painter.drawLine(QPointF(cx, cy - 10), QPointF(cx, cy - 7))
+            painter.drawLine(QPointF(cx, cy + 7), QPointF(cx, cy + 10))
+            painter.setBrush(QBrush(QColor(239, 68, 68, 255)))
+            painter.drawEllipse(QPointF(cx, cy), 1.5, 1.5)
+
 
 class CursorOverlayManager(QObject):
     _instance = None
@@ -206,14 +225,19 @@ class CursorOverlayManager(QObject):
     def __init__(self):
         super().__init__()
         self._overlay: Optional[CursorOverlay] = None
-        self._event_signal.connect(self._handle_event)
-        self._state_signal.connect(self._handle_state)
+        self._state_signal.connect(self._handle_state, Qt.ConnectionType.QueuedConnection)
+        self._event_signal.connect(self._handle_event, Qt.ConnectionType.QueuedConnection)
 
     @classmethod
     def get_instance(cls) -> "CursorOverlayManager":
         if cls._instance is None:
             cls._instance = CursorOverlayManager()
         return cls._instance
+
+    def init_ui(self):
+        """メインスレッドで事前にCursorOverlayを生成・保持する"""
+        if self._overlay is None:
+            self._overlay = CursorOverlay()
 
     def _ensure_overlay(self):
         if self._overlay is None and QApplication.instance():
