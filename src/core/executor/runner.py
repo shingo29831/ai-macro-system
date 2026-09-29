@@ -1426,12 +1426,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             excel_app_cache = None
                     
                     # Why: ブラウザ専用セレクタ/UIA要素が存在する場合は高精度クリックを最優先実行
-                    if not skip_physical and (selector or elem_name) and is_browser_target:
+                    if not skip_physical and (selector or elem_name or target_url) and is_browser_target:
                         try:
                             from core.executor.browser_controller import BrowserController
                             bc = BrowserController.get_instance()
                             if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url):
                                 logger.info(f"[{workflow_id}] High-precision browser click succeeded on '{elem_name or selector}'.")
+                                skip_physical = True
+                            elif target_url and str(target_url).startswith("http"):
+                                # Why: リンク先URLが存在し物理クリックのズレが懸念される場合はURL直接遷移を実行
+                                logger.info(f"[{workflow_id}] High-precision browser navigating to URL: {target_url}")
+                                bc.execute_action({"action": "open_url", "url": target_url}, variables, last_win_args, workflow_id)
                                 skip_physical = True
                         except Exception as b_err:
                             logger.info(f"[{workflow_id}] High-precision browser click bypassed: {b_err}")

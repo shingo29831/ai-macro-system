@@ -89,7 +89,11 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            self._click_by_uia_or_selector(selector, last_win_args, timeout_sec)
+            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout_sec, element_name=attr_name or args.get("element_name"), url=url)
+            # Why: DOM要素探索でクリックできない場合も記録されたURLへ直接ナビゲーションして遷移を完全保証
+            if not clicked and url and str(url).startswith("http"):
+                logger.info(f"[{workflow_id}] DOM element click fallback: navigating directly to '{url}'")
+                self.execute_action({"action": "open_url", "url": url}, variables, last_win_args, workflow_id)
 
         elif action == "type_text":
             self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout_sec)

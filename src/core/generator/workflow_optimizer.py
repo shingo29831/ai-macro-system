@@ -333,55 +333,50 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
                     i += 1
                     continue
 
-        # 3. type_text 直後の残留クリック・Tab等のサジェストノイズを除去
+        # 3. type_text 直後の文字補完用Tab・サジェスト選択クリック・手ブレ移動を完全除去
         if act == "type_text":
             result.append(curr)
-            tx = curr.get("cursor_x", curr.get("x", 0))
-            ty = curr.get("cursor_y", curr.get("y", 0))
             t_win = curr.get("window_name", "")
 
             k = i + 1
-            skipped_indices = set()
-            found_enter_or_nav = False
+            noise_indices = set()
+            found_target_event = False
 
-            while k < min(n, i + 6):
+            while k < min(n, i + 15):
                 nxt = temp_workflow_info[k]
                 n_act = nxt.get("raw_action", "")
                 n_role = str(nxt.get("semantic_role", "")).lower()
                 n_win = nxt.get("window_name", "")
 
                 if n_win != t_win:
-                    found_enter_or_nav = True
+                    found_target_event = True
                     break
 
                 if n_act in ["key_down", "key_press", "press_key"] and n_role in ["enter", "return"]:
-                    found_enter_or_nav = True
+                    found_target_event = True
                     break
 
-                nx = nxt.get("cursor_x", nxt.get("x", 0))
-                ny = nxt.get("cursor_y", nxt.get("y", 0))
-                dist = ((nx - tx) ** 2 + (ny - ty) ** 2) ** 0.5
+                # Why: 補完済みテキスト入力後のTab(補完用)・矢印キーや過渡的クリック・移動を完全排除
+                is_completion_key = n_act in ["key_down", "key_press", "press_key"] and n_role in ["tab", "down", "up", "right", "left"]
+                is_intervening_click = (n_act == "click")
+                is_intervening_move = (n_act == "move")
 
-                is_same_input_click = (n_act == "click" and dist <= 30)
-                is_tab_key = (n_act in ["key_down", "key_press", "press_key"] and n_role in ["tab"])
-
-                if is_same_input_click or is_tab_key:
-                    skipped_indices.add(k)
+                if is_completion_key or is_intervening_click or is_intervening_move:
+                    noise_indices.add(k)
                     k += 1
                 else:
                     break
 
-            if found_enter_or_nav and skipped_indices:
-                logger.info(f"Cleaned {len(skipped_indices)} post-typing noise events before navigation")
+            if found_target_event and noise_indices:
+                logger.info(f"Cleaned {len(noise_indices)} completion/suggest noise events between typing and search execution")
                 i += 1
                 while i < n:
-                    if i in skipped_indices:
+                    if i in noise_indices:
                         i += 1
                         continue
                     break
                 continue
             else:
-                # Why: 条件非合致時もtype_textの二重追加を確実に防止
                 i += 1
                 continue
 

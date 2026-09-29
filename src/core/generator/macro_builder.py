@@ -393,7 +393,11 @@ def build_and_save_macro(
         elem_name = app_ctx.get("element_name") or cur_info.get("semantic_role") or ""
         css_sel = app_ctx.get("css_selector")
         xpath_sel = app_ctx.get("xpath")
-        target_url = app_ctx.get("url") or app_ctx.get("text")
+        target_url = app_ctx.get("url")
+        if not target_url or not str(target_url).startswith("http"):
+            cand_url = app_ctx.get("text") or app_ctx.get("value")
+            if cand_url and str(cand_url).startswith("http"):
+                target_url = cand_url
 
         if cmd_type == "MOUSE_CLICK":
             # Why: UIA相対座標が欠落していても絶対座標フォールバックでクリック脱落を完全防止
