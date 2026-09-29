@@ -389,10 +389,12 @@ class TypingSessionAggregator:
             is_combo = action == "key_combo" or "+" in r_lower
             char = ""
             
+            # Why: 複合コンボキー(shift+a+enter+tab等)から本来のアルファベット文字を安全抽出
             if is_combo and "shift" in r_lower:
                 parts = r_lower.split("+")
-                if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
-                    char = parts[1].upper()
+                alpha_parts = [p for p in parts if len(p) == 1 and p.isalpha()]
+                if alpha_parts:
+                    char = alpha_parts[0].upper()
                     is_combo = False
                 
             if is_combo:
@@ -660,8 +662,8 @@ class TypingSessionAggregator:
             if final_text:
                 if role_lower == "tab":
                     continue
-                # Why: 文字確定やIME確定のためのEnterはテキスト直接入力マクロでは不要かつ誤送信防止のため除外
-                if role_lower in ["enter", "return"] and (any_ime_active or e.get("ime_active")):
+                # Why: IME確定時のEnter/Tabや複合コンボキー残骸を完全除外
+                if (role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "tab"])) and (any_ime_active or e.get("ime_active")):
                     continue
 
             trailing_special_keys.append(e)

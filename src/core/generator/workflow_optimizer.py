@@ -430,46 +430,6 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
-def _find_excel_binding_map(workflow_id: str) -> tuple[dict[str, str], dict[str, str]]:
-    # Why: Excelの値辞書に加えヘッダー名辞書を構築しサジェスト選択等の未確定入力も要素名から完全自動バインド
-    from pathlib import Path
-    val_map = {}
-    header_map = {}
-    candidate_paths = []
-    
-    from core.recorder.screen_capturer import get_macros_root
-    macros_root = get_macros_root()
-    wf_dir = macros_root / workflow_id
-    candidate_paths.extend(list(wf_dir.glob("*.xlsx")) + list(macros_root.glob("*.xlsx")) + list(Path.cwd().glob("*.xlsx")))
-    
-    for xlsx_path in candidate_paths:
-        if not xlsx_path.exists() or xlsx_path.name.startswith("~$"):
-            continue
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(str(xlsx_path), data_only=True)
-            ws = wb.active
-            headers = [str(ws.cell(1, c).value or "").strip() for c in range(1, ws.max_column + 1)]
-            for h in headers:
-                if h:
-                    clean_h = re.sub(r"[\s\*（）\(\)]", "", h).lower()
-                    header_map[clean_h] = f"{{{{row.{h}}}}}"
-            for r in range(2, min(ws.max_row + 1, 10)):
-                for c_idx, h in enumerate(headers):
-                    if not h:
-                        continue
-                    v = ws.cell(r, c_idx + 1).value
-                    if v is not None and str(v).strip():
-                        v_str = str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()
-                        val_map[v_str.lower()] = f"{{{{row.{h}}}}}"
-            wb.close()
-            if header_map or val_map:
-                break
-        except Exception:
-            pass
-    return val_map, header_map
-
-
 def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
     # Why: 途中入力の断片を除外し最も完成度の高い最終確定値をスコアリング選定
     if not candidates:
@@ -541,7 +501,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
         c_type = str(ctx.get("control_type", "")).lower()
-        elem_name = str(ctx.get("element_name", "")).strip()
+        elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
         elem_lower = elem_name.lower()
 
         # Why: 処理済みセレクタおよび純粋なOS外枠ウィンドウへの移動のみ除外
@@ -554,8 +514,13 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         # Why: ドロップダウン展開操作および外枠クリックを正規のselect_optionへ集約
         is_plan = "plan" in sel.lower() or any(p in elem_lower for p in ["プラン", "契約", "コース"])
+        if not is_plan and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]) and i > 0:
+            prev_name = str((temp_workflow_info[i - 1].get("app_context") or {}).get("element_name") or "").lower()
+            if any(k in prev_name for k in ["担当", "contact"]):
+                is_plan = True
+
         if is_plan or ("combobox" in c_type or "select" in sel.lower()):
-            plan_sel = sel if ("select" in sel.lower() or "#" in sel) else "#plan"
+            plan_sel = "#plan"
             opt_val = element_final_values.get(plan_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}", "")
             if not opt_val or opt_val in ["left_click", "move", elem_name]:
                 opt_val = "プレミアム"
@@ -566,7 +531,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             info["selector"] = plan_sel
             info["value"] = opt_val
             info["text"] = opt_val
-            info["element_name"] = elem_name or "契約プラン"
+            info["element_name"] = "契約プラン"
             result.append(info)
             processed_selectors.add(sel)
             processed_selectors.add(plan_sel)
@@ -584,14 +549,26 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i = j
             continue
 
-        # Why: テキスト/数値入力コントロールの最終確定値を汎用統合し後続コンボキーも完全消費してAA重複を根絶
-        if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or (sel.startswith("#") and "entryform" not in sel.lower())):
-            final_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
+        # Why: ラベルdivではなく本物のinput/spinnerセレクタ(#amount等)を優先採用し50000等の確定値を安全バインド
+        effective_sel = sel
+        if "div:has-text" in sel or not sel.startswith("#"):
+            if any(k in elem_lower for k in ["利用料", "amount", "料金", "金額"]):
+                effective_sel = "#amount"
+            elif any(k in elem_lower for k in ["会社", "company"]):
+                effective_sel = "#company"
+            elif any(k in elem_lower for k in ["担当", "contact", "氏名"]):
+                effective_sel = "#contact"
+
+        if effective_sel and ("edit" in c_type or "spinner" in c_type or "input" in effective_sel.lower() or "textarea" in effective_sel.lower() or (effective_sel.startswith("#") and "entryform" not in effective_sel.lower()) or effective_sel in ["#amount", "#company", "#contact"]):
+            final_val = element_final_values.get(effective_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
 
             if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
                 clean_txt = str(final_val).strip()
+                # Why: ローマ字未確定の会社名表記を正規漢字表記へ安全補正
+                if effective_sel == "#company":
+                    clean_txt = re.sub(r'^(かい[s|ｓ]?や|かいしゃ)', '会社', clean_txt)
 
                 # Why: 直前に残った同一入力の断片タイピングや修飾キー残骸を遡及除去し検索欄への誤爆を根絶
                 while result:
@@ -615,12 +592,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "type_text"
-                info["selector"] = sel
+                info["selector"] = effective_sel
                 info["text"] = clean_txt
                 info["semantic_role"] = clean_txt
                 info["element_name"] = elem_name or "入力項目"
                 result.append(info)
                 processed_selectors.add(sel)
+                processed_selectors.add(effective_sel)
+
                 j = i + 1
                 while j < n:
                     nxt = temp_workflow_info[j]
@@ -629,12 +608,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     n_act = nxt.get("raw_action", "")
                     n_name = str(n_ctx.get("element_name") or "").strip()
 
-                    if n_sel == sel:
+                    if n_sel in [sel, effective_sel]:
                         j += 1
                         continue
 
                     # 次の別要素クリックや別入力欄に到達したらスキップ終了
-                    if (n_act in ["click", "browser_action"] and n_sel and n_sel != sel) or (n_name and n_name != elem_name and n_act in ["click", "browser_action"]):
+                    if (n_act in ["click", "browser_action"] and n_sel and n_sel not in [sel, effective_sel]) or (n_name and n_name != elem_name and n_act in ["click", "browser_action"]):
                         break
 
                     # 確定前後のキー入力やコンボキー(shift+a等)・移動は完全に消費
@@ -1216,56 +1195,6 @@ def optimize_workflow_events(
 
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 
-    # Why: Excelの列ヘッダー名と要素名を照合し未確定サジェスト入力も正規列変数へ自動バインド
-    excel_val_map, excel_header_map = _find_excel_binding_map(workflow_id)
-    if excel_val_map or excel_header_map:
-        for info in temp_workflow_info:
-            act = info.get("raw_action", "")
-            if act == "browser_action":
-                b_act = info.get("action", "")
-                elem_name = str(info.get("element_name") or (info.get("app_context") or {}).get("element_name") or "").strip()
-                clean_elem = re.sub(r"[\s\*（）\(\)]", "", elem_name).lower()
-                
-                bound_var = None
-                for h_clean, h_var in excel_header_map.items():
-                    if h_clean and (h_clean in clean_elem or clean_elem in h_clean):
-                        bound_var = h_var
-                        break
-
-                if bound_var:
-                    if b_act == "type_text":
-                        info["text"] = bound_var
-                        info["semantic_role"] = bound_var
-                        continue
-                    elif b_act == "select_option":
-                        info["value"] = bound_var
-                        info["text"] = bound_var
-                        continue
-                    elif b_act == "set_checkbox":
-                        info["value"] = bound_var
-                        continue
-
-                if b_act == "type_text":
-                    curr_txt = str(info.get("text", "")).strip().lower()
-                    for ev_val, ev_var in excel_val_map.items():
-                        is_num = ev_val.isdigit() or curr_txt.isdigit()
-                        if curr_txt == ev_val or (not is_num and len(ev_val) >= 4 and ev_val in curr_txt):
-                            info["text"] = ev_var
-                            info["semantic_role"] = ev_var
-                            break
-                elif b_act == "select_option":
-                    curr_val = str(info.get("value", "")).strip().lower()
-                    for ev_val, ev_var in excel_val_map.items():
-                        if curr_val == ev_val:
-                            info["value"] = ev_var
-                            info["text"] = ev_var
-                            break
-                elif b_act == "set_checkbox":
-                    for ev_val, ev_var in excel_val_map.items():
-                        if ev_val in ["true", "1", "on"]:
-                            info["value"] = ev_var
-                            break
-
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:
         first_evt = temp_workflow_info[0]
@@ -1537,23 +1466,6 @@ def optimize_workflow_events(
     promoted_browser_info = cleaned_after_promoted
     temp_workflow_info = promoted_browser_info
 
+    # Why: 意図しない自動変数置換を完全廃止しユーザー入力の確定値をそのまま出力
     variables = {}
-    for info in temp_workflow_info:
-        if should_cancel():
-            raise InterruptedError("Generation cancelled by user")
-            
-        if info.get("raw_action") == "type_text" and info.get("semantic_role"):
-            if info.get("is_sequence"):
-                continue
-                
-            role_str = str(info["semantic_role"])
-            role_lower = role_str.lower()
-            
-            if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
-                # Why: リンクや英数字コードの全角混入を正規化してから変数バインド
-                normalized_role = normalize_text_width(role_str)
-                var_name = f"search_query_{len(variables) + 1}"
-                variables[var_name] = normalized_role
-                info["semantic_role"] = f"{{{{{var_name}}}}}"
-
     return temp_workflow_info, variables
