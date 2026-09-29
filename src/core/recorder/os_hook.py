@@ -78,7 +78,7 @@ def start_recording():
         print(f"macro: {state.recording_dirs['macro_name']}")
         print(f"native_scroll_hook: {state.native_scroll_hook_active}")
 
-    except Exception:
+    except Exception as e:
         state.is_recording = False
         state.is_stopping = False
         if _key_hook_manager:
@@ -98,7 +98,9 @@ def start_recording():
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
         restore_system_cursor(force=True)
-        print("記録開始に失敗しました")
+        import logging
+        logging.getLogger(__name__).error(f"Failed to start recording: {e}", exc_info=True)
+        print(f"記録開始に失敗しました: {e}")
         traceback.print_exc()
         raise
 
@@ -170,9 +172,11 @@ def stop_recording():
         print("記録を停止しました")
         print("recording_end: evt_End_pre.png")
 
-    except Exception:
+    except Exception as e:
         restore_system_cursor()
-        print("記録停止中にエラーが発生しました")
+        import logging
+        logging.getLogger(__name__).error(f"Failed to stop recording: {e}", exc_info=True)
+        print(f"記録停止中にエラーが発生しました: {e}")
         traceback.print_exc()
         raise
 

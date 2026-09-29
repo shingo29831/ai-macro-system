@@ -420,7 +420,6 @@ def _smooth_move(target_x: int, target_y: int, steps: int = 10, duration: float 
     else:
         mouse = MouseController()
         mouse.position = (target_x, target_y)
-    CursorOverlayManager.get_instance().notify_move(int(target_x), int(target_y))
 
 
 def _get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> tuple[int, int]:
@@ -1558,7 +1557,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 pass
         execution_log["status"] = "failed"
         execution_log["error"] = str(e)
-        logger.error(f"[{workflow_id}] Execution failed: {e}")
+        logger.error(f"[{workflow_id}] Execution failed: {e}", exc_info=True)
+        update_ui(f"エラー停止: {e}", is_warning=True)
         raise
     finally:
         restore_system_cursor(force=True)

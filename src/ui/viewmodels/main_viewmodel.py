@@ -23,6 +23,8 @@ class MainViewModel(QObject):
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
     recording_stopped_by_shortcut = Signal()
+    recording_error = Signal(str)
+    execution_error = Signal(str)
     
     _internal_shortcut_signal = Signal()
     _internal_status_signal = Signal(str, bool) # 自己修復UI通知用シグナル
@@ -176,7 +178,9 @@ class MainViewModel(QObject):
             logger.info("Starting macro recording...")
             os_hook.start_recording()
         except Exception as e:
-            logger.error(f"Failed to start recording: {e}")
+            err_msg = f"記録開始に失敗しました: {e}"
+            logger.error(err_msg, exc_info=True)
+            self.recording_error.emit(err_msg)
             raise
 
     @Slot()
@@ -292,8 +296,15 @@ class MainViewModel(QObject):
                 try:
                     runner.run_workflow(workflow_id, cfg, status_callback=status_cb, temp_commands=cmds)
                     logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
+                except runner.WorkflowStoppedException as stop_err:
+                    logger.warning(f"Macro execution stopped by user: {stop_err}")
                 except Exception as exec_err:
-                    logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
+                    import traceback
+                    tb_str = traceback.format_exc()
+                    err_msg = f"{type(exec_err).__name__}: {exec_err}"
+                    logger.error(f"Exception occurred during pipeline execution for {workflow_id}:\n{tb_str}")
+                    status_cb(f"エラー: {err_msg}", True)
+                    self.execution_error.emit(err_msg)
                 finally:
                     self.load_macros()
                     self.execution_finished.emit()

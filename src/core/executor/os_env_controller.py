@@ -31,10 +31,15 @@ RUN_RECORD_CURSOR_IDS = [
     32650,  # OCR_APPSTARTING
 ]
 
+import queue
+
 _current_cursor_mode: str = "default"
 _cur_cache: dict[str, Path] = {}
 _cursor_lock = threading.RLock()
 _auto_revert_timer: threading.Timer | None = None
+_cursor_queue: queue.Queue = queue.Queue()
+_cursor_worker_thread: threading.Thread | None = None
+_cursor_worker_lock = threading.Lock()
 
 
 def _generate_cursor_image_and_hotspot(mode: str) -> tuple[Image.Image, tuple[int, int]]:
@@ -183,13 +188,14 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
 def _schedule_auto_revert(target_idle_mode: str, delay: float = 0.25):
     # Why: クリック照準等が後半ずっと残留するバグを防止する安全タイマー
     global _auto_revert_timer
-    if _auto_revert_timer is not None:
-        _auto_revert_timer.cancel()
-    def _revert():
-        set_system_cursor(target_idle_mode)
-    _auto_revert_timer = threading.Timer(delay, _revert)
-    _auto_revert_timer.daemon = True
-    _auto_revert_timer.start()
+    with _cursor_lock:
+        if _auto_revert_timer is not None:
+            _auto_revert_timer.cancel()
+        def _revert():
+            set_system_cursor(target_idle_mode)
+        _auto_revert_timer = threading.Timer(delay, _revert)
+        _auto_revert_timer.daemon = True
+        _auto_revert_timer.start()
 
 
 def _force_cursor_update():
@@ -218,9 +224,16 @@ def restore_system_cursor(force: bool = True):
             _auto_revert_timer = None
         if not force and _current_cursor_mode == "default":
             return
+        # Why: キューに残った古いカーソル変更要求を破棄して復元後の上書きを防止
+        while not _cursor_queue.empty():
+            try:
+                _cursor_queue.get_nowait()
+            except Exception:
+                break
         try:
             user32 = ctypes.windll.user32
-            user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE)
+            # Why: SPIF_SENDCHANGEによる全窓ブロードキャスト同期ブロックをフラグ0で完全排除
+            user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
             _force_cursor_update()
             _current_cursor_mode = "default"
         except Exception as e:
@@ -259,20 +272,40 @@ def _apply_system_cursor_internal(mode: str):
             logger.warning(f"Failed to set system cursor to {mode}: {e}")
 
 
+def _cursor_update_worker():
+    while True:
+        try:
+            mode = _cursor_queue.get()
+            if mode is None:
+                break
+            # Why: 連続するカーソル更新要求を間引き最新の要求のみを適用
+            while not _cursor_queue.empty():
+                try:
+                    mode = _cursor_queue.get_nowait()
+                except queue.Empty:
+                    break
+            _apply_system_cursor_internal(mode)
+        except Exception as e:
+            logger.warning(f"Error in cursor update worker: {e}")
+
+
+def _ensure_cursor_worker():
+    global _cursor_worker_thread
+    with _cursor_worker_lock:
+        if _cursor_worker_thread is None or not _cursor_worker_thread.is_alive():
+            _cursor_worker_thread = threading.Thread(target=_cursor_update_worker, name="CursorWorker", daemon=True)
+            _cursor_worker_thread.start()
+
+
 def set_system_cursor(mode: str = "default", async_exec: bool = False):
     """
-    Why: フックスレッドからの直接呼出し時は別スレッドへ委譲し低レベルフックの強制切断を完全防止
+    Why: 専用ワーカースレッドのキューへ委譲し、フックや実行スレッドのフリーズ・競合を完全防止
     """
     if platform.system() != "Windows":
         return
 
-    cur_thread = threading.current_thread()
-    is_hook_or_async = async_exec or cur_thread.name.startswith("Thread") or "listener" in cur_thread.name.lower()
-
-    if is_hook_or_async:
-        threading.Thread(target=_apply_system_cursor_internal, args=(mode,), daemon=True).start()
-    else:
-        _apply_system_cursor_internal(mode)
+    _ensure_cursor_worker()
+    _cursor_queue.put(mode)
 
 
 # Why: 起動時に前回の異常終了等で残った青カーソルを即座にOS標準白矢印へ強制リセット
