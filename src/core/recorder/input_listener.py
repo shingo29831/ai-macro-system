@@ -29,6 +29,7 @@ def _cancel_hover_timer():
 def _on_hover_timeout(hx: int, hy: int):
     if not state.is_recording or state.is_stopping:
         return
+    set_system_cursor("record_hover")
     # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録
     state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
     logger.debug("Hover event emitted at (%d, %d)", hx, hy)
@@ -83,7 +84,6 @@ def on_move(x, y):
                     angle = math.degrees(math.acos(max(-1.0, min(1.0, dot / (mag1 * mag2)))))
                     if angle >= CORNER_ANGLE_THRESHOLD:
                         state.mouse_event_queue.put({"type": "hover", "x": p2[0], "y": p2[1]})
-                        CursorOverlayManager.get_instance().notify_corner(p2[0], p2[1])
                 state.mouse_path.pop(0)
 
 def on_click(x, y, button, pressed):
@@ -93,6 +93,9 @@ def on_click(x, y, button, pressed):
 
     if pressed:
         _flush_typing_buffer("mouse_clicked")
+        set_system_cursor("record_down")
+    else:
+        set_system_cursor("record_idle")
 
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 

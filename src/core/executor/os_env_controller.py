@@ -7,6 +7,7 @@ import logging
 import atexit
 import struct
 import tempfile
+import threading
 from pathlib import Path
 from PIL import Image, ImageDraw
 
@@ -41,6 +42,8 @@ SYSTEM_CURSOR_IDS = [
 
 _current_cursor_mode: str = "default"
 _cur_cache: dict[str, Path] = {}
+_cursor_lock = threading.RLock()
+_auto_revert_timer: threading.Timer | None = None
 
 
 def _generate_cursor_image_and_hotspot(mode: str) -> tuple[Image.Image, tuple[int, int]]:
@@ -186,57 +189,86 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
         logger.warning(f"Failed to set IME state: {e}")
 
 
+def _schedule_auto_revert(target_idle_mode: str, delay: float = 0.25):
+    # Why: クリック照準等が後半ずっと残留するバグを防止する安全タイマー
+    global _auto_revert_timer
+    if _auto_revert_timer is not None:
+        _auto_revert_timer.cancel()
+    def _revert():
+        set_system_cursor(target_idle_mode)
+    _auto_revert_timer = threading.Timer(delay, _revert)
+    _auto_revert_timer.daemon = True
+    _auto_revert_timer.start()
+
+
 def restore_system_cursor(force: bool = True):
     """OSシステムカーソルを標準設定へ完全復元する（レジストリ・フォールバック網羅）"""
-    global _current_cursor_mode
+    global _current_cursor_mode, _auto_revert_timer
     if platform.system() != "Windows":
         return
-    try:
-        user32 = ctypes.windll.user32
-        user32.SystemParametersInfoW(SPI_SETCURSORS, 0, 0, 0)
+    with _cursor_lock:
+        if _auto_revert_timer is not None:
+            _auto_revert_timer.cancel()
+            _auto_revert_timer = None
+        if not force and _current_cursor_mode == "default":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            # Why: レジストリから全カーソルを再読込しユーザー本来の設定へ完全復帰
+            user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE)
 
-        # Why: Windows標準カーソルファイルを網羅探索して青カーソル焼き付きを強制解除
-        import os
-        win_dir = Path(os.environ.get("SystemRoot", "C:\\Windows"))
-        candidate_paths = [
-            win_dir / "Cursors" / "aero_arrow.cur",
-            win_dir / "Cursors" / "arrow_m.cur",
-            win_dir / "Cursors" / "arrow.cur",
-            win_dir / "Cursors" / "aero_arrow_l.cur",
-        ]
-        found_cur = next((p for p in candidate_paths if p.exists()), None)
+            # Why: 現在座標を再送してOS・ウィンドウに即時カーソル再評価を強制
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            pt = POINT()
+            if user32.GetCursorPos(ctypes.byref(pt)):
+                user32.SetCursorPos(pt.x, pt.y)
 
-        if not found_cur:
-            try:
-                import winreg
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors") as key:
-                    val, _ = winreg.QueryValueEx(key, "Arrow")
-                    if val and Path(val).exists():
-                        found_cur = Path(val)
-            except Exception:
-                pass
-
-        if found_cur:
-            base_hcur = user32.LoadCursorFromFileW(str(found_cur))
-            if base_hcur:
-                for cid in SYSTEM_CURSOR_IDS:
-                    copy_h = user32.CopyImage(base_hcur, 2, 0, 0, 0x0004)
-                    if copy_h:
-                        user32.SetSystemCursor(copy_h, cid)
-                user32.DestroyCursor(base_hcur)
-
-        user32.SystemParametersInfoW(SPI_SETCURSORS, 0, 0, 0x0002)
-        _current_cursor_mode = "default"
-    except Exception as e:
-        logger.warning(f"Failed to restore system cursor: {e}")
+            _current_cursor_mode = "default"
+        except Exception as e:
+            logger.warning(f"Failed to restore system cursor: {e}")
 
 
 def set_system_cursor(mode: str = "default"):
     """
-    Why: SetSystemCursorはOSリソース汚染とチカチカを招くため常時改変を廃止し標準を維持
+    Why: 照準の残留防止タイマーとOCR_NORMAL/HANDの統一適用でチラつきと残留を両立解決
     """
-    if mode == "default":
-        restore_system_cursor(force=True)
+    global _current_cursor_mode, _auto_revert_timer
+    if platform.system() != "Windows":
+        return
+
+    with _cursor_lock:
+        if mode == _current_cursor_mode:
+            return
+
+        if _auto_revert_timer is not None:
+            _auto_revert_timer.cancel()
+            _auto_revert_timer = None
+
+        if mode == "default":
+            restore_system_cursor(force=True)
+            return
+
+        try:
+            cur_file = _get_or_create_cur_file(mode)
+            user32 = ctypes.windll.user32
+            # Why: 矢印とリンク手の両方に適用しボタン上でのユーザーカーソルチラつきを防止
+            target_ids = [32512, 32649]
+            for cid in target_ids:
+                hcur = user32.LoadImageW(None, str(cur_file), 2, 0, 0, 0x0010)
+                if hcur:
+                    user32.SetSystemCursor(hcur, cid)
+
+            _current_cursor_mode = mode
+
+            if mode in ("run_down", "run_click"):
+                _schedule_auto_revert("run_idle", delay=0.25)
+            elif mode in ("record_down", "click_down"):
+                _schedule_auto_revert("record_idle", delay=0.25)
+            elif mode in ("record_hover", "hover"):
+                _schedule_auto_revert("record_idle", delay=0.8)
+        except Exception as e:
+            logger.warning(f"Failed to set system cursor to {mode}: {e}")
 
 
 # Why: 起動時に前回の異常終了等で残った青カーソルを即座にOS標準白矢印へ強制リセット

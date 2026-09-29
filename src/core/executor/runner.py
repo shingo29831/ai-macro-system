@@ -1339,9 +1339,13 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
-                        time.sleep(0.08)
+                        time.sleep(0.06)
+                        set_system_cursor("run_click")
+                        time.sleep(0.03)
                         mouse.click(btn, clicks)
-                        time.sleep(0.1)
+                        time.sleep(0.08)
+                        set_system_cursor("run_idle")
+                        time.sleep(0.02)
 
                 elif method == "move":
                     x = args.get("x", 0) + off_x
