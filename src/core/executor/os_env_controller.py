@@ -4,6 +4,12 @@ import platform
 import ctypes
 import time
 import logging
+import atexit
+import struct
+import tempfile
+from pathlib import Path
+from PIL import Image, ImageDraw
+
 logger = logging.getLogger(__name__)
 
 # =========================
@@ -13,6 +19,113 @@ logger = logging.getLogger(__name__)
 WM_IME_CONTROL = 0x0283
 IMC_SETOPENSTATUS = 0x0006
 SPI_SETCURSORS = 0x0057
+
+# Why: 全16種類のシステムカーソルを一括置換することでアプリホバー時のチカチカを完全根絶
+SYSTEM_CURSOR_IDS = [
+    32512, 32513, 32514, 32515, 32516,
+    32640, 32641, 32642, 32643, 32644, 32645, 32646,
+    32648, 32649, 32650, 32651
+]
+
+_current_cursor_mode: str = "default"
+_cur_cache: dict[str, Path] = {}
+
+
+def _generate_cursor_image_and_hotspot(mode: str) -> tuple[Image.Image, tuple[int, int]]:
+    # Why: 右下バッジを排除し文字やUI境界を覆い隠さないシャープなイベント別デザインを描画
+    img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    if mode in ("record_idle", "record"):
+        # 通常移動: 赤枠の精密ポインタ矢印 (ホットスポット: 先端 0, 0)
+        arrow = [(0, 0), (0, 18), (5, 14), (9, 22), (12, 21), (8, 13), (14, 13)]
+        draw.polygon(arrow, fill=(255, 255, 255, 255), outline=(220, 38, 38, 255))
+        draw.line([(0, 0), (0, 18)], fill=(185, 28, 28, 255), width=1)
+        return img, (0, 0)
+
+    elif mode in ("record_down", "click_down"):
+        # クリックDOWN: 押下点を示すターゲットレティクル (ホットスポット: 中心 15, 15)
+        cx, cy = 15, 15
+        draw.ellipse([(cx - 8, cy - 8), (cx + 8, cy + 8)], outline=(220, 38, 38, 255), width=2)
+        draw.line([(cx - 12, cy), (cx - 3, cy)], fill=(220, 38, 38, 255), width=2)
+        draw.line([(cx + 3, cy), (cx + 12, cy)], fill=(220, 38, 38, 255), width=2)
+        draw.line([(cx, cy - 12), (cx, cy - 3)], fill=(220, 38, 38, 255), width=2)
+        draw.line([(cx, cy + 3), (cx, cy + 12)], fill=(220, 38, 38, 255), width=2)
+        draw.ellipse([(cx - 1, cy - 1), (cx + 1, cy + 1)], fill=(255, 255, 255, 255))
+        return img, (cx, cy)
+
+    elif mode in ("record_drag", "drag"):
+        # ドラッグ中: 掴み手（ホールド）アイコン (ホットスポット: 中心 15, 15)
+        cx, cy = 15, 15
+        draw.rounded_rectangle([(cx - 7, cy - 5), (cx + 7, cy + 8)], radius=3, fill=(245, 158, 11, 240), outline=(20, 20, 20, 255))
+        draw.ellipse([(cx - 6, cy - 9), (cx - 2, cy - 4)], fill=(245, 158, 11, 240), outline=(20, 20, 20, 255))
+        draw.ellipse([(cx - 2, cy - 10), (cx + 2, cy - 4)], fill=(245, 158, 11, 240), outline=(20, 20, 20, 255))
+        draw.ellipse([(cx + 2, cy - 9), (cx + 6, cy - 4)], fill=(245, 158, 11, 240), outline=(20, 20, 20, 255))
+        return img, (cx, cy)
+
+    elif mode in ("record_hover", "hover"):
+        # 一定時間停止（静止検知）: エメラルドグリーンの精密クロスヘア (ホットスポット: 15, 15)
+        cx, cy = 15, 15
+        draw.ellipse([(cx - 6, cy - 6), (cx + 6, cy + 6)], outline=(16, 185, 129, 255), width=1)
+        draw.line([(cx - 11, cy), (cx - 2, cy)], fill=(16, 185, 129, 255), width=2)
+        draw.line([(cx + 2, cy), (cx + 11, cy)], fill=(16, 185, 129, 255), width=2)
+        draw.line([(cx, cy - 11), (cx, cy - 2)], fill=(16, 185, 129, 255), width=2)
+        draw.line([(cx, cy + 2), (cx, cy + 11)], fill=(16, 185, 129, 255), width=2)
+        return img, (cx, cy)
+
+    elif mode in ("run_idle", "run"):
+        # 実行中通常: 青枠の自動実行ポインタ矢印 (ホットスポット: 0, 0)
+        arrow = [(0, 0), (0, 18), (5, 14), (9, 22), (12, 21), (8, 13), (14, 13)]
+        draw.polygon(arrow, fill=(255, 255, 255, 255), outline=(37, 99, 235, 255))
+        draw.line([(0, 0), (0, 18)], fill=(29, 78, 216, 255), width=1)
+        return img, (0, 0)
+
+    elif mode in ("run_down", "run_click"):
+        # 実行クリック時: 青のターゲット照準 (ホットスポット: 15, 15)
+        cx, cy = 15, 15
+        draw.ellipse([(cx - 8, cy - 8), (cx + 8, cy + 8)], outline=(37, 99, 235, 255), width=2)
+        draw.ellipse([(cx - 2, cy - 2), (cx + 2, cy + 2)], fill=(37, 99, 235, 255))
+        return img, (cx, cy)
+
+    # デフォルトフォールバック
+    arrow = [(0, 0), (0, 17), (4, 13), (8, 20), (11, 19), (7, 12), (13, 12)]
+    draw.polygon(arrow, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
+    return img, (0, 0)
+
+
+def _get_or_create_cur_file(mode: str) -> Path:
+    if mode in _cur_cache and _cur_cache[mode].exists():
+        return _cur_cache[mode]
+
+    temp_dir = Path(tempfile.gettempdir())
+    file_path = temp_dir / f"aimacro_{mode}.cur"
+
+    img, (hx, hy) = _generate_cursor_image_and_hotspot(mode)
+    width, height = 32, 32
+
+    pixels = img.load()
+    xor_data = bytearray()
+    and_mask = bytearray()
+
+    for y in reversed(range(height)):
+        and_row = 0
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            xor_data.extend([b, g, r, a])
+            bit = 1 if a < 128 else 0
+            and_row = (and_row << 1) | bit
+        and_mask.extend(and_row.to_bytes(4, byteorder="big"))
+
+    header = struct.pack("<IIIHHIIIIII", 40, width, height * 2, 1, 32, 0, len(xor_data) + len(and_mask), 0, 0, 0, 0)
+    image_data = header + bytes(xor_data) + bytes(and_mask)
+    icondir = struct.pack("<HHH", 0, 2, 1)
+    direntry = struct.pack("<BBBBHHII", width, height, 0, 0, hx, hy, len(image_data), 22)
+
+    with open(file_path, "wb") as f:
+        f.write(icondir + direntry + image_data)
+
+    _cur_cache[mode] = file_path
+    return file_path
 
 
 def set_dpi_awareness():
@@ -61,16 +174,47 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
 
 
 def restore_system_cursor():
-    """OSシステムカーソルを標準設定へ復元する（チカチカ防止のためSetSystemCursorは不使用）"""
-    if platform.system() != "Windows":
+    """OSシステムカーソルを標準設定へ完全復元する"""
+    global _current_cursor_mode
+    if platform.system() != "Windows" or _current_cursor_mode == "default":
         return
     try:
         ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
+        _current_cursor_mode = "default"
     except Exception as e:
         logger.warning(f"Failed to restore system cursor: {e}")
 
 
 def set_system_cursor(mode: str = "default"):
-    """互換性インターフェース: チカチカを防止するためOSカーソル改変は行わない"""
+    """
+    全システムカーソルを一括置換し、チカチカを発生させずにイベント別デザインへ瞬時に切り替える。
+    mode: 'record_idle', 'record_down', 'record_drag', 'record_hover', 'run_idle', 'run_down', 'default'
+    """
+    global _current_cursor_mode
+    if platform.system() != "Windows":
+        return
     if mode == "default":
         restore_system_cursor()
+        return
+
+    # Why: 状態が変わっていない場合の重複呼び出しを遮断しCPU負荷と描画遅延をゼロ化
+    if _current_cursor_mode == mode:
+        return
+
+    try:
+        user32 = ctypes.windll.user32
+        cur_path = _get_or_create_cur_file(mode)
+
+        # Why: 全16種類のシステムカーソルを一括差し替えしてアプリ毎の切り替え点滅を完全根絶
+        for cid in SYSTEM_CURSOR_IDS:
+            h_cur = user32.LoadCursorFromFileW(str(cur_path))
+            if h_cur:
+                user32.SetSystemCursor(h_cur, cid)
+
+        _current_cursor_mode = mode
+    except Exception as e:
+        logger.warning(f"Failed to set system cursor ({mode}): {e}")
+
+
+# Why: プロセスが異常終了した場合でもOSカーソルが壊れたまま残るのを完全防止
+atexit.register(restore_system_cursor)

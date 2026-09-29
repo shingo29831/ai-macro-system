@@ -14,10 +14,6 @@ def main():
 
     app = QApplication(sys.argv)
     
-    # Why: メインGUIスレッドで透過オーバーレイHUDを事前バインドしスレッド間競合を根絶
-    from ui.views.cursor_overlay import CursorOverlayManager
-    CursorOverlayManager.get_instance().init_ui()
-
     # Initialize and start local AI servers natively
     server_manager = LocalServerManager()
     server_manager.start_servers()

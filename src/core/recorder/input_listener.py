@@ -9,7 +9,7 @@ from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_tex
 from core.recorder.event_processor import enqueue_key_event, process_scroll_event
 from core.recorder.ime_detector import is_ime_active
 from core.recorder.romaji_converter import to_hiragana
-from ui.views.cursor_overlay import CursorOverlayManager
+from core.executor.os_env_controller import set_system_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,9 @@ def _cancel_hover_timer():
 def _on_hover_timeout(hx: int, hy: int):
     if not state.is_recording or state.is_stopping:
         return
-    # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録
+    # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録し専用照準へ変更
     state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
-    CursorOverlayManager.get_instance().notify_hover(hx, hy)
+    set_system_cursor("record_hover")
     logger.debug("Hover event emitted at (%d, %d)", hx, hy)
 
 def _trigger_field_search(trigger_reason: str):
@@ -56,9 +56,21 @@ def _flush_typing_buffer(trigger_reason: str):
     state.typing_buffer = ""
     logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
 
+_is_mouse_down = False
+_down_pos = None
+
 def on_move(x, y):
+    global _is_mouse_down, _down_pos
     if not state.is_recording or state.is_stopping: return
-    CursorOverlayManager.get_instance().notify_move(x, y)
+
+    # Why: 押下移動時はドラッグ形状、通常移動復帰時はアイドル形状へ動的適応
+    if _is_mouse_down and _down_pos:
+        dist = math.hypot(x - _down_pos[0], y - _down_pos[1])
+        if dist > 8:
+            set_system_cursor("record_drag")
+    else:
+        set_system_cursor("record_idle")
+
     current_time = time.time()
     
     global _hover_timer
@@ -89,14 +101,19 @@ def on_move(x, y):
                 state.mouse_path.pop(0)
 
 def on_click(x, y, button, pressed):
+    global _is_mouse_down, _down_pos
     _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
-    CursorOverlayManager.get_instance().notify_click(x, y, pressed)
 
-    # 追加: マウスクリック時（別のUI要素にフォーカスが移ったとみなす）にタイピング状態を確定する
+    _is_mouse_down = pressed
     if pressed:
+        _down_pos = (x, y)
+        set_system_cursor("record_down")
         _flush_typing_buffer("mouse_clicked")
+    else:
+        _down_pos = None
+        set_system_cursor("record_idle")
 
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
