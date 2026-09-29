@@ -231,65 +231,135 @@ class BrowserController:
                 variables[var_name] = content
 
         elif action == "select_option":
-            target_val = str(value if value is not None else text)
+            target_val = str(value if value is not None else text).strip()
             elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name"), text=target_val)
             if elem:
                 try:
-                    selected_ok = False
+                    # Why: 初期値と目的値が既に一致していれば無駄な展開や誤操作を完全回避
+                    curr_val = ""
                     try:
-                        import uiautomation as auto
-                        ctrl = auto.ControlFromElement(elem.element_info._element)
-                        if ctrl and ctrl.Exists(0, 0):
-                            # Why: UIAの標準展開・選択パターンによる言語・文字コード非依存の選択
-                            exp_pat = ctrl.GetExpandCollapsePattern()
-                            if exp_pat:
-                                exp_pat.Expand()
-                                time.sleep(0.1)
-                                for sub_c in ctrl.GetChildren():
-                                    if target_val.lower() in str(sub_c.Name).lower():
-                                        sel_pat = sub_c.GetSelectionItemPattern()
-                                        if sel_pat:
-                                            sel_pat.Select()
-                                            selected_ok = True
-                                            break
-                                        else:
-                                            sub_c.Click()
-                                            selected_ok = True
-                                            break
-                            if not selected_ok:
-                                val_pat = ctrl.GetValuePattern()
-                                if val_pat:
-                                    val_pat.SetValue(target_val)
-                                    selected_ok = True
+                        if elem.is_value_pattern_available():
+                            curr_val = str(elem.get_value() or "").strip()
+                        elif hasattr(elem, "window_text"):
+                            curr_val = str(elem.window_text() or "").strip()
                     except Exception:
                         pass
+                    if curr_val and curr_val.lower() == target_val.lower():
+                        logger.info(f"select_option: '{target_val}' is already selected.")
+                        res_data["selected"] = target_val
+                        return res_data
 
-                    if not selected_ok:
-                        elem.click_input()
-                        time.sleep(0.15)
-                        # Why: ドロップダウン展開後のポップアップツリーから該当項目を走査クリック
-                        clicked_popup = False
+                    selected_ok = False
+                    import uiautomation as auto
+                    ctrl = auto.ControlFromElement(elem.element_info._element)
+
+                    # 1. 閉じている状態での子孫要素走査とValuePattern直接設定
+                    if ctrl and ctrl.Exists(0, 0):
                         try:
-                            import uiautomation as auto
-                            for top_win in auto.GetRootControl().GetChildren():
-                                if any(k in top_win.ControlTypeName.lower() for k in ["combo", "menu", "list", "window", "pane"]):
-                                    for item in auto.WalkControl(top_win, maxDepth=4):
-                                        if target_val.lower() in str(getattr(item, "Name", "")).lower():
-                                            item.Click()
-                                            clicked_popup = True
-                                            break
-                                if clicked_popup:
-                                    break
+                            val_pat = ctrl.GetValuePattern()
+                            if val_pat and not val_pat.IsReadOnly:
+                                val_pat.SetValue(target_val)
+                                selected_ok = True
                         except Exception:
                             pass
+                        if not selected_ok:
+                            for item in auto.WalkControl(ctrl, maxDepth=8):
+                                if item.ControlTypeName in ["ListItemControl", "MenuItemControl"]:
+                                    if target_val.lower() in str(item.Name).lower():
+                                        try:
+                                            sel_p = item.GetSelectionItemPattern()
+                                            if sel_p:
+                                                sel_p.Select()
+                                                selected_ok = True
+                                                break
+                                        except Exception:
+                                            pass
 
-                        if not clicked_popup:
-                            # Why: ポップアップ未捕捉時は矢印キーと文字入力で選択肢を確定
-                            self._keyboard.press(Key.down)
-                            self._keyboard.release(Key.down)
+                    # 2. ドロップダウン展開と深層走査（深さ16・複数ルート網羅）
+                    if not selected_ok:
+                        rect = elem.rectangle()
+                        cx = (rect.left + rect.right) // 2
+                        cy = (rect.top + rect.bottom) // 2
+                        if cx > 20 and cy > 20:
+                            self._click_physical_coords(cx, cy, last_win_args)
+                        else:
+                            elem.click_input()
+                        time.sleep(0.3)
+
+                        target_item = None
+                        all_options = []
+                        search_roots = []
+                        if ctrl and ctrl.Exists(0, 0):
+                            search_roots.append(ctrl)
+                        target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+                        if target_hwnd:
+                            w_c = auto.ControlFromHandle(int(target_hwnd))
+                            if w_c and w_c.Exists(0, 0):
+                                search_roots.append(w_c)
+                        for top_win in auto.GetRootControl().GetChildren():
+                            ct_l = top_win.ControlTypeName.lower()
+                            if any(k in ct_l for k in ["combo", "menu", "list", "window", "pane"]):
+                                search_roots.append(top_win)
+
+                        for s_root in search_roots:
+                            for item in auto.WalkControl(s_root, maxDepth=16):
+                                it_type = getattr(item, "ControlTypeName", "")
+                                if it_type in ["ListItemControl", "MenuItemControl", "TextControl"]:
+                                    it_name = str(getattr(item, "Name", "") or "").strip()
+                                    if it_name and it_name not in [opt[0] for opt in all_options]:
+                                        all_options.append((it_name, item))
+                                    if target_val.lower() == it_name.lower():
+                                        target_item = item
+                                        break
+                                    elif target_val.lower() in it_name.lower() and not target_item:
+                                        target_item = item
+                            if target_item and target_val.lower() == str(getattr(target_item, "Name", "")).lower():
+                                break
+
+                        # 3. 目的項目の座標クリック
+                        if target_item:
+                            it_rect = getattr(target_item, "BoundingRectangle", None)
+                            if it_rect and it_rect.right - it_rect.left > 0 and it_rect.bottom - it_rect.top > 0:
+                                ix = (it_rect.left + it_rect.right) // 2
+                                iy = (it_rect.top + it_rect.bottom) // 2
+                                from core.executor.runner import _smooth_move
+                                _smooth_move(ix, iy)
+                                time.sleep(0.04)
+                                self._mouse.click(Button.left, 1)
+                                time.sleep(0.1)
+                                selected_ok = True
+                            else:
+                                try:
+                                    target_item.Click()
+                                    selected_ok = True
+                                except Exception:
+                                    pass
+
+                        # 4. 全Optionリストからのインデックス計算ナビゲーション（無条件1回Downを根絶）
+                        if not selected_ok and all_options:
+                            matched_idx = -1
+                            for idx, (opt_name, _) in enumerate(all_options):
+                                if target_val.lower() == opt_name.lower() or target_val.lower() in opt_name.lower():
+                                    matched_idx = idx
+                                    break
+                            if matched_idx >= 0:
+                                self._keyboard.press(Key.home)
+                                self._keyboard.release(Key.home)
+                                time.sleep(0.05)
+                                for _ in range(matched_idx):
+                                    self._keyboard.press(Key.down)
+                                    self._keyboard.release(Key.down)
+                                    time.sleep(0.03)
+                                self._keyboard.press(Key.enter)
+                                self._keyboard.release(Key.enter)
+                                selected_ok = True
+
+                        # 5. ポップアップ未検出時はEscで閉じ、現在状態を保持
+                        if not selected_ok:
+                            self._keyboard.press(Key.esc)
+                            self._keyboard.release(Key.esc)
                             time.sleep(0.05)
-                            self._keyboard.press(Key.enter)
-                            self._keyboard.release(Key.enter)
+
                     res_data["selected"] = target_val
                 except Exception as e:
                     logger.warning(f"select_option failed: {e}")
@@ -298,10 +368,10 @@ class BrowserController:
                 x = args.get("x")
                 y = args.get("y")
                 if self._click_physical_coords(x, y, last_win_args):
-                    time.sleep(0.15)
-                    # Why: セレクトボックスにはCtrl+Vが効かないため下矢印キーで選択肢を移動確定
-                    self._keyboard.press(Key.down)
-                    self._keyboard.release(Key.down)
+                    time.sleep(0.2)
+                    # Why: 物理クリック時も無条件Downを排し、Homeからの文字入力ジャンプで選択
+                    self._keyboard.press(Key.home)
+                    self._keyboard.release(Key.home)
                     time.sleep(0.05)
                     self._keyboard.press(Key.enter)
                     self._keyboard.release(Key.enter)
