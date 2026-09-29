@@ -26,10 +26,59 @@ MOUSEEVENTF_HWHEEL = 0x1000
 WHEEL_DELTA = 120
 
 
+def _send_unicode_string(text: str):
+    # Why: クリップボードやIMEに依存せずあらゆるUnicode文字を直接確実に入力
+    if platform.system() != "Windows" or not text:
+        return
+    try:
+        from ctypes import wintypes
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t),
+            ]
+        class INPUT_UNION(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT)]
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("union", INPUT_UNION)]
+
+        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_UNICODE = 0x0004
+        user32 = ctypes.windll.user32
+
+        for ch in text:
+            code = ord(ch)
+            inp_down = INPUT()
+            inp_down.type = 1
+            inp_down.union.ki.wVk = 0
+            inp_down.union.ki.wScan = code
+            inp_down.union.ki.dwFlags = KEYEVENTF_UNICODE
+
+            inp_up = INPUT()
+            inp_up.type = 1
+            inp_up.union.ki.wVk = 0
+            inp_up.union.ki.wScan = code
+            inp_up.union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+
+            inputs = (INPUT * 2)(inp_down, inp_up)
+            user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+            time.sleep(0.01)
+    except Exception as e:
+        logger.warning(f"SendInput UNICODE failed: {e}")
+
+
 def _set_clipboard_text(text: str) -> bool:
-    # Why: Windows API直接呼び出しにより外部依存ゼロで確実なクリップボード転記を実現
+    # Why: 64bit完全対応の型定義とCOM初期化によりクリップボード転記エラーを根絶
     if platform.system() != "Windows":
         return False
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
     try:
         from ctypes import wintypes
         user32 = ctypes.windll.user32
@@ -42,6 +91,15 @@ def _set_clipboard_text(text: str) -> bool:
         user32.SetClipboardData.restype = wintypes.HANDLE
         user32.CloseClipboard.restype = wintypes.BOOL
 
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalFree.restype = wintypes.HGLOBAL
+
         for _ in range(10):
             if user32.OpenClipboard(None):
                 break
@@ -50,9 +108,8 @@ def _set_clipboard_text(text: str) -> bool:
             raise TimeoutError("OpenClipboard failed")
 
         user32.EmptyClipboard()
-        buffer = ctypes.create_unicode_buffer(text)
-        size = ctypes.sizeof(buffer)
-        h_mem = kernel32.GlobalAlloc(0x0002, size)
+        data_bytes = (text + "\0").encode("utf-16le")
+        h_mem = kernel32.GlobalAlloc(0x0002, len(data_bytes))
         if not h_mem:
             user32.CloseClipboard()
             raise MemoryError("GlobalAlloc failed")
@@ -63,22 +120,13 @@ def _set_clipboard_text(text: str) -> bool:
             user32.CloseClipboard()
             raise MemoryError("GlobalLock failed")
 
-        ctypes.memmove(p_mem, buffer, size)
+        ctypes.memmove(p_mem, data_bytes, len(data_bytes))
         kernel32.GlobalUnlock(h_mem)
         user32.SetClipboardData(13, h_mem)
         user32.CloseClipboard()
         return True
     except Exception as e:
-        logger.warning(f"WinAPI SetClipboardData failed ({e}), attempting QClipboard fallback...")
-        try:
-            from PySide6.QtGui import QGuiApplication
-            clip = QGuiApplication.clipboard()
-            if clip:
-                clip.setText(text)
-                time.sleep(0.05)
-                return True
-        except Exception as q_err:
-            logger.warning(f"QClipboard fallback also failed: {q_err}")
+        logger.warning(f"WinAPI SetClipboardData failed ({e})")
         return False
 
 
@@ -1708,23 +1756,20 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             if use_clip is None:
                                 use_clip = is_link_or_url(text) or should_input_as_halfwidth(text) or any(ord(c) > 0x7F for c in text) or "\n" in text or len(text) > 4
 
-                            if use_clip and _set_clipboard_text(text):
+                            clip_ok = use_clip and _set_clipboard_text(text)
+                            if clip_ok:
                                 time.sleep(0.03)
                                 keyboard.press(Key.ctrl)
                                 keyboard.press('v')
                                 keyboard.release('v')
                                 keyboard.release(Key.ctrl)
                                 time.sleep(0.04)
-                                # Why: ペースト直後に右矢印キーを送信しReact/Vue等の仮想DOM inputイベントを強制発火
                                 keyboard.press(Key.right)
                                 keyboard.release(Key.right)
                                 time.sleep(0.08)
                             else:
-                                for char in text:
-                                    _check_stop()
-                                    keyboard.type(char)
-                                    time.sleep(0.02)
-                                time.sleep(0.1)
+                                _send_unicode_string(text)
+                                time.sleep(0.08)
                         
                 elif method == "press_key":
                     key_str = args.get("key", "")

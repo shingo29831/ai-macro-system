@@ -98,7 +98,8 @@ class BrowserController:
         ensure_ime_state(target_state=False, timeout=0.4)
         time.sleep(0.04)
 
-        # Why: クリップボード貼付と直接タイピングを両立し入力漏れを完全防止
+        # Why: クリップボード貼付とSendInput(Unicode)ダイレクト入力の二重化で確実に入力
+        from core.executor.runner import _send_unicode_string
         clip_ok = _set_clipboard_text(norm_text)
         if clip_ok:
             self._keyboard.press(Key.ctrl)
@@ -110,9 +111,7 @@ class BrowserController:
             self._keyboard.release(Key.right)
             time.sleep(0.06)
         else:
-            for char in norm_text:
-                self._keyboard.type(char)
-                time.sleep(0.02)
+            _send_unicode_string(norm_text)
         time.sleep(0.15)
 
     def execute_action(
