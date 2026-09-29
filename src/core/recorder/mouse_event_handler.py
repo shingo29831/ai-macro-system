@@ -88,11 +88,18 @@ def process_move_event(event: dict):
         pre_full_img, pre_monitor = screen_capturer.take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
 
+        app_context = _get_app_context(window_info, x=x, y=y)
+        ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
+
         diff_str = calculate_and_update_diff(pre_full_img)
         diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
 
-        # Why: ホバーに伴う微小なUI変化(0.05%以上)を取りこぼさず保持
-        is_meaningless = diff_val < 0.05
+        has_ui = bool(
+            (app_context and (app_context.get("element_name") or app_context.get("css_selector") or app_context.get("url") or app_context.get("text")))
+            or ui_rect is not None
+        )
+        # Why: UI要素情報を持つホバーは微小差分でも破棄せず保護
+        is_meaningless = (diff_val < 0.02) and not has_ui
         macros_root = screen_capturer.get_macros_root()
 
         if is_meaningless:
@@ -102,7 +109,6 @@ def process_move_event(event: dict):
                 old_path.rename(old_path.with_name(new_name))
                 pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
 
-        app_context = _get_app_context(window_info, x=x, y=y)
         log = build_base_log(
             event_no=event_no,
             dt=dt,
@@ -113,7 +119,6 @@ def process_move_event(event: dict):
             cursor_y=y,
             app_specific_context=app_context,
         )
-        ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
 
         if ui_rect is not None:
             crop = screen_capturer.save_ui_crop_by_rect(

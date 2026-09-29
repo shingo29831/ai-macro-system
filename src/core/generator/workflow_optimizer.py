@@ -10,12 +10,8 @@ from typing import List, Dict, Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 def _is_residual_hover(move_info: Dict[str, Any], temp_workflow_info: List[Dict[str, Any]], current_idx: int) -> bool:
-    # Why: 直前クリックと同一座標(15px以内)かつ画面変化・有意なUI要素を持たない残留ホバーを判定
-    if move_info.get("is_nav_hover") or move_info.get("diff_val", 0.0) >= 0.005:
-        return False
-    ctx = move_info.get("app_context") or {}
-    url = str(ctx.get("url") or ctx.get("text") or "").strip()
-    if url.startswith("http"):
+    # Why: 直前クリックと同一座標(15px以内)の残留ホバーを判定
+    if move_info.get("is_nav_hover"):
         return False
     mx, my = move_info.get("cursor_x", move_info.get("x", 0)), move_info.get("cursor_y", move_info.get("y", 0))
     for k in range(current_idx - 1, max(-1, current_idx - 4), -1):
@@ -337,9 +333,10 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                 mx, my = curr.get("cursor_x", curr.get("x", 0)), curr.get("cursor_y", curr.get("y", 0))
                 dist = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5
 
-                # Why: クリック対象と同一位置(35px以内)のブレ移動のみ除外し、離れたヘッダーホバーは保護
-                diff_val = curr.get("diff_val", 0.0)
-                is_meaningful_hover = diff_val >= 0.005 or bool(curr.get("app_context", {}).get("element_name"))
+                # Why: UI情報を持つホバーは直前移動判定でも安全に保護
+                ctx = curr.get("app_context") or {}
+                has_ui_info = bool(ctx.get("element_name") or ctx.get("css_selector") or ctx.get("xpath") or ctx.get("url"))
+                is_meaningful_hover = curr.get("diff_val", 0.0) >= 0.005 or has_ui_info
                 if not is_meaningful_hover and dist <= 35:
                     i += 1
                     continue
@@ -373,25 +370,48 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
             next_click = filtered[j] if j < m and filtered[j].get("raw_action") == "click" else None
 
             if next_click:
-                # Why: クリック直前の反復横跳びを除去し、親メニューと選択項目の最大2ホバーに集約
                 cx, cy = next_click.get("cursor_x", next_click.get("x", 0)), next_click.get("cursor_y", next_click.get("y", 0))
-                parent_hovers = [
-                    mv for mv in move_group 
-                    if (((mv.get("cursor_x", 0) - cx) ** 2 + (mv.get("cursor_y", 0) - cy) ** 2) ** 0.5) > 35
-                ]
-                child_hovers = [
-                    mv for mv in move_group 
-                    if (((mv.get("cursor_x", 0) - cx) ** 2 + (mv.get("cursor_y", 0) - cy) ** 2) ** 0.5) <= 35
-                ]
+                c_elem = (next_click.get("app_context") or {}).get("element_name", "")
 
-                if parent_hovers:
-                    # Why: 最も画面変化をもたらした真の親メニュー展開ホバーを確実に選定
-                    best_parent = max(parent_hovers, key=lambda m: (m.get("diff_val", 0.0), bool(m.get("app_context", {}).get("element_name"))))
-                    deduped.append(best_parent)
-                if child_hovers and child_hovers[-1].get("diff_val", 0.0) >= 0.005:
-                    deduped.append(child_hovers[-1])
-                elif not parent_hovers and not child_hovers:
-                    deduped.append(move_group[-1])
+                # Why: 同一要素の手ブレは集約しつつ異なるUIへのホバーは完全保持
+                distinct_hovers = []
+                for mv in move_group:
+                    mx, my = mv.get("cursor_x", mv.get("x", 0)), mv.get("cursor_y", mv.get("y", 0))
+                    m_elem = (mv.get("app_context") or {}).get("element_name", "")
+                    m_sel = (mv.get("app_context") or {}).get("css_selector", "")
+
+                    if not distinct_hovers:
+                        distinct_hovers.append(mv)
+                        continue
+
+                    last_h = distinct_hovers[-1]
+                    lx, ly = last_h.get("cursor_x", last_h.get("x", 0)), last_h.get("cursor_y", last_h.get("y", 0))
+                    l_elem = (last_h.get("app_context") or {}).get("element_name", "")
+                    l_sel = (last_h.get("app_context") or {}).get("css_selector", "")
+                    dist_to_last = ((mx - lx) ** 2 + (my - ly) ** 2) ** 0.5
+
+                    if (m_elem and m_elem == l_elem) or (m_sel and m_sel == l_sel) or dist_to_last <= 15:
+                        distinct_hovers[-1] = mv
+                    else:
+                        distinct_hovers.append(mv)
+
+                final_hovers = []
+                for h in distinct_hovers:
+                    hx, hy = h.get("cursor_x", h.get("x", 0)), h.get("cursor_y", h.get("y", 0))
+                    h_elem = (h.get("app_context") or {}).get("element_name", "")
+                    dist_to_click = ((hx - cx) ** 2 + (hy - cy) ** 2) ** 0.5
+
+                    # Why: クリック対象そのものへの同一位置ホバーのみクリック側へ委譲
+                    if dist_to_click <= 15 and (not h_elem or h_elem == c_elem):
+                        continue
+                    final_hovers.append(h)
+
+                if final_hovers:
+                    deduped.extend(final_hovers)
+                elif distinct_hovers:
+                    meaningful = [h for h in distinct_hovers if h.get("is_nav_hover") or bool((h.get("app_context") or {}).get("element_name"))]
+                    if meaningful:
+                        deduped.extend(meaningful)
             else:
                 deduped.append(move_group[-1])
 
