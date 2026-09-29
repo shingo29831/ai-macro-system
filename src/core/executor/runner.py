@@ -1562,8 +1562,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 logger.info(f"[{workflow_id}] High-precision browser typing bypassed: {b_err}")
 
                         if not skip_physical:
-                            # Why: 入力位置(座標)がある場合、事前クリックでフォーカスを確実に確立し入力消失を完全防止
-                            if type_x is not None and type_y is not None:
+                            # Why: 画面端(<=20px)の無効座標によるフォーカス脱落を防止し実座標のみクリック
+                            has_valid_coords = type_x is not None and type_y is not None and type_x > 20 and type_y > 20
+                            if has_valid_coords:
                                 fx = int(type_x + off_x)
                                 fy = int(type_y + off_y)
                                 _smooth_move(fx, fy)
@@ -1571,20 +1572,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 mouse.click(Button.left, 1)
                                 time.sleep(0.06)
 
-                            # Why: ブラウザ起動直後のクリックなし入力時はCtrl+Lでアドレスバーフォーカスを完全保証
-                            is_prev_browser_activate = False
-                            for prev_cmd_idx in range(i - 1, -1, -1):
-                                p_cmd = commands[prev_cmd_idx]
-                                p_m = p_cmd.get("method")
-                                if p_m in ["click", "move", "press_key", "type_text"]:
-                                    break
-                                if p_m == "activate_window":
-                                    p_title = p_cmd.get("args", {}).get("window_title", "").lower()
-                                    if any(b in p_title for b in ["firefox", "chrome", "edge", "brave", "opera"]):
-                                        is_prev_browser_activate = True
-                                    break
-
-                            if is_prev_browser_activate and type_x is None:
+                            # Why: ブラウザ操作で入力先座標が未特定の場合はCtrl+Lで検索・アドレスバーへ確実にフォーカス
+                            if is_browser_target and not has_valid_coords:
                                 keyboard.press(Key.ctrl)
                                 keyboard.press('l')
                                 keyboard.release('l')

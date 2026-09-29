@@ -313,6 +313,27 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
                 curr["button"] = "left"
                 logger.info(f"Promoted pre-typing move to click for focus at ({curr.get('cursor_x')}, {curr.get('cursor_y')})")
 
+        # 2. タイピング直前の非入力UI(ブラウザロゴ等)クリックを除去しフォーカス奪取を防止
+        if act == "click":
+            ctx = curr.get("app_context") or {}
+            sel = str(ctx.get("css_selector", "")).lower()
+            is_browser = any(b in curr.get("window_name", "").lower() for b in ["firefox", "chrome", "edge", "brave", "opera"])
+            is_logo_or_bg = any(k in sel for k in ["logo", "wordmark", "brand", "banner"])
+            if is_browser and is_logo_or_bg:
+                j = i + 1
+                while j < min(n, i + 3):
+                    if temp_workflow_info[j].get("raw_action") == "type_text":
+                        logger.info(f"Removed non-input click on '{sel}' immediately before typing")
+                        curr = None
+                        break
+                    elif temp_workflow_info[j].get("raw_action") in ["click", "excel_action"]:
+                        break
+                    j += 1
+                if curr is None:
+                    i += 1
+                    continue
+
+        # 3. type_text 直後の残留クリック・Tab等のサジェストノイズを除去
         if act == "type_text":
             result.append(curr)
             tx = curr.get("cursor_x", curr.get("x", 0))
@@ -358,6 +379,10 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
                         i += 1
                         continue
                     break
+                continue
+            else:
+                # Why: 条件非合致時もtype_textの二重追加を確実に防止
+                i += 1
                 continue
 
         result.append(curr)

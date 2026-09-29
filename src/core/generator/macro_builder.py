@@ -500,10 +500,13 @@ def build_and_save_macro(
                     cmd_args["sequence_value"] = params.sequence_value
                 if params.excel_cell:
                     cmd_args["excel_cell"] = params.excel_cell
-                if cur_info.get("cursor_x") is not None:
-                    cmd_args["x"] = cur_info.get("cursor_x")
-                    cmd_args["y"] = cur_info.get("cursor_y")
-                if elem_name:
+                cx = cur_info.get("cursor_x")
+                cy = cur_info.get("cursor_y")
+                # Why: (0, 0)等の無効座標を排除し本物の入力座標のみ付与
+                if cx is not None and cy is not None and (cx > 20 or cy > 20):
+                    cmd_args["x"] = cx
+                    cmd_args["y"] = cy
+                if elem_name and elem_name != params.text and not elem_name.startswith("{{"):
                     cmd_args["element_name"] = elem_name
                 if css_sel:
                     cmd_args["selector"] = css_sel
