@@ -739,10 +739,18 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
+        # Why: 未紐付けタイピングイベントも直前クリックや名前からセレクタを逆引き
+        if act == "type_text" and not sel:
+            for s_k, s_d in scanned_elements_map.items():
+                if s_d.get("control_type") in ["Edit", "Spinner"] and (s_d.get("element_name") == elem_name or f"name:{elem_name}" == s_k):
+                    sel = s_d.get("selector") or s_k
+                    c_type = str(s_d.get("control_type", "")).lower()
+                    break
+
         # Why: チェックボックスおよびセレクトボックスを除外し真のテキスト・数値入力欄のみ集約
         is_input_field = (
             not is_select and
-            ("edit" in c_type or "spinner" in c_type or any(tag in sel.lower() for tag in ["input", "textarea"]) or
+            ("edit" in c_type or "spinner" in c_type or act == "type_text" or any(tag in sel.lower() for tag in ["input", "textarea"]) or
              (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"])))
             and "check" not in c_type and not sel.lower().endswith("newsletter")
         )
@@ -778,8 +786,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     prev_item = result[-1]
                     p_act = prev_item.get("raw_action", "")
                     p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
-                    # Why: セレクタ未確定の別入力(会社名等)を誤消去せず同一セレクタの入力のみ重複排除
-                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (p_sel and p_sel == sel):
+                    # Why: 同一セレクタまたは未特定タイピングの残骸を安全に除去
+                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and ((p_sel and p_sel == sel) or (not p_sel and not sel.startswith("#submit"))):
                         result.pop()
                     else:
                         break
@@ -848,9 +856,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         v_str = str(v).strip()
         if not v_str:
             continue
-        # Why: ユーザーが一度も操作しておらず初期値から無変更の要素は勝手に復元しない
+        # Why: 近傍にカーソル移動があったチェックボックスは明示的な操作対象として復元
+        sc_x = scanned_elem.get("x", 0)
+        sc_y = scanned_elem.get("y", 0)
         has_interaction = any(
-            (e.get("app_context") or {}).get("css_selector") == k or e.get("selector") == k
+            (e.get("app_context") or {}).get("css_selector") == k or e.get("selector") == k or
+            (sc_x > 20 and sc_y > 20 and abs(e.get("cursor_x", e.get("x", 0)) - sc_x) <= 45 and abs(e.get("cursor_y", e.get("y", 0)) - sc_y) <= 45)
             for e in temp_workflow_info
         )
         if not has_interaction and v_str.lower() in ["false", ""]:
@@ -952,7 +963,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "win_w": win_w,
                 "win_h": win_h,
                 "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
-                "fallback_events": [ref_eid],
+                "fallback_events": [f"{ref_eid}_{sel_id.lstrip('#')}", ref_eid],
                 "cursor_x": coords[0],
                 "cursor_y": coords[1],
                 "x": coords[0],
@@ -978,7 +989,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             "win_w": win_w,
             "win_h": win_h,
             "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
-            "fallback_events": [ref_eid],
+            "fallback_events": [f"{ref_eid}_{sel_id.lstrip('#')}", ref_eid],
             "cursor_x": coords[0],
             "cursor_y": coords[1],
             "x": coords[0],

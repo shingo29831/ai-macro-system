@@ -312,6 +312,7 @@ class BrowserController:
         elif action == "set_checkbox":
             desired = True if value is None else (value in [True, "True", "true", 1, "1"])
             elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text)
+            toggled = False
             if elem:
                 try:
                     is_checked = False
@@ -321,17 +322,17 @@ class BrowserController:
                         leg_state = elem.legacy_properties().get("State", 0)
                         is_checked = bool(isinstance(leg_state, int) and (leg_state & 0x10))
                     if is_checked != desired:
-                        elem.click_input()
-                        time.sleep(0.1)
+                        rect = elem.rectangle()
+                        cx = (rect.left + rect.right) // 2
+                        cy = (rect.top + rect.bottom) // 2
+                        if cx > 20 and cy > 20 and self._click_physical_coords(cx, cy, last_win_args):
+                            toggled = True
+                    else:
+                        toggled = True
                     res_data["checked"] = desired
                 except Exception as e:
-                    logger.warning(f"set_checkbox failed, trying click_input: {e}")
-                    try:
-                        elem.click_input()
-                        res_data["checked"] = desired
-                    except Exception:
-                        res_data["status"] = "failed"
-            else:
+                    logger.warning(f"set_checkbox UIA evaluation failed: {e}")
+            if not toggled:
                 x = args.get("x")
                 y = args.get("y")
                 if self._click_physical_coords(x, y, last_win_args):
@@ -439,23 +440,27 @@ class BrowserController:
                         if not scope_ctrl or not scope_ctrl.Exists(0, 0):
                             scope_ctrl = win_ctrl
 
-                        # 1. セレクタ構文から抽出されたAutomationIdを直接探索
+                        # 1. セレクタ構文から抽出されたAutomationIdを直接探索 (深さ16まで走査)
                         for did in direct_auto_ids:
-                            fc = scope_ctrl.Control(AutomationId=did)
+                            fc = scope_ctrl.Control(searchDepth=16, AutomationId=did)
                             if fc and fc.Exists(0, 0):
                                 return UIAWrapper(fc.Element)
 
-                        # 2. 検索語との完全一致・部分一致によるコントロール種別走査
+                        # 2. 検索語との完全一致・部分一致によるコントロール種別走査 (空文字・逆包含誤判定を根絶)
                         valid_types = ["edit", "combo", "button", "check", "spinner", "list", "hyperlink"]
                         for ctrl, depth in auto.WalkControl(scope_ctrl, maxDepth=16):
                             ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
                             if not any(k in ct_name for k in valid_types):
                                 continue
-                            aid = str(getattr(ctrl, "AutomationId", "") or "").lower()
-                            name = str(getattr(ctrl, "Name", "") or "").lower()
+                            aid = str(getattr(ctrl, "AutomationId", "") or "").lower().strip()
+                            name = str(getattr(ctrl, "Name", "") or "").lower().strip()
+                            rect = getattr(ctrl, "BoundingRectangle", None)
+                            if rect and (rect.right - rect.left <= 0 or rect.bottom - rect.top <= 0 or rect.top < 45):
+                                continue
                             for term in search_terms:
-                                if len(term) >= 2 and (term in aid or term in name or aid in term or name in term):
-                                    return UIAWrapper(ctrl.Element)
+                                if len(term) >= 2:
+                                    if (aid and (term == aid or term in aid)) or (name and (term == name or term in name)):
+                                        return UIAWrapper(ctrl.Element)
                 except Exception as ex_auto:
                     logger.debug(f"uiautomation deep walk error: {ex_auto}")
 
@@ -534,14 +539,17 @@ class BrowserController:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2
             cy = (rect.top + rect.bottom) // 2
+            # Why: 画面端・不可視座標への誤クリックを防ぎ物理座標フォールバックへ委譲
+            if cx <= 20 or cy <= 20 or rect.width() <= 0 or rect.height() <= 0:
+                logger.warning(f"UIA element has invalid rectangle ({cx}, {cy}). Falling back to physical coords.")
+                return False
             if platform.system() == "Windows":
-                ctypes.windll.user32.SetCursorPos(cx, cy)
-                ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
+                from core.executor.runner import _smooth_move
+                _smooth_move(cx, cy)
                 time.sleep(0.04)
                 set_system_cursor("run_click")
                 time.sleep(0.03)
-                ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
-                ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+                self._mouse.click(Button.left, 1)
                 time.sleep(0.06)
                 set_system_cursor("run_idle")
             time.sleep(0.2)
