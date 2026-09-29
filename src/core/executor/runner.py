@@ -1769,6 +1769,25 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     raise
             elif method == "browser_action":
                 try:
+                    if last_win_args and platform.system() == "Windows":
+                        mapped_hwnd = last_win_args.get("mapped_hwnd")
+                        hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        root_hwnd = ctypes.windll.user32.GetAncestor(hwnd, 3)
+                        needs_act = False
+                        if mapped_hwnd and hwnd != mapped_hwnd and root_hwnd != mapped_hwnd:
+                            needs_act = True
+                        if needs_act:
+                            activate_and_restore_window(
+                                last_win_args.get("window_title", ""),
+                                last_win_args.get("x", 0),
+                                last_win_args.get("y", 0),
+                                last_win_args.get("width", 0),
+                                last_win_args.get("height", 0),
+                                workflow_id,
+                                last_win_args.get("launch_cmd", ""),
+                                mapped_hwnd,
+                                last_win_args.get("is_maximized")
+                            )
                     from core.executor.browser_controller import BrowserController
                     controller = BrowserController.get_instance()
                     browser_res = controller.execute_action(

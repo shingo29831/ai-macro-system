@@ -8,6 +8,7 @@ import platform
 import ctypes
 import urllib.request
 from pynput.keyboard import Controller as KeyboardController, Key
+from pynput.mouse import Controller as MouseController, Button
 from core.executor.os_env_controller import set_system_cursor
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class BrowserController:
     def __init__(self, cdp_port: int = 9222) -> None:
         self._cdp_port = cdp_port
         self._keyboard = KeyboardController()
+        self._mouse = MouseController()
 
     @classmethod
     def get_instance(cls) -> "BrowserController":
@@ -55,6 +57,9 @@ class BrowserController:
         if last_win_args and platform.system() == "Windows":
             try:
                 target_hwnd = last_win_args.get("mapped_hwnd") or ctypes.windll.user32.GetForegroundWindow()
+                if target_hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(target_hwnd)
+                    time.sleep(0.05)
                 rec_x = last_win_args.get("x", 0)
                 rec_y = last_win_args.get("y", 0)
                 from core.executor.runner import _get_window_offset
@@ -64,16 +69,13 @@ class BrowserController:
 
         actual_x = int(x + off_x)
         actual_y = int(y + off_y)
-        if platform.system() == "Windows":
-            ctypes.windll.user32.SetCursorPos(actual_x, actual_y)
-            ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
-            time.sleep(0.04)
-            set_system_cursor("run_click")
-            time.sleep(0.03)
-            ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
-            ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
-            time.sleep(0.06)
-            set_system_cursor("run_idle")
+        from core.executor.runner import _smooth_move
+        _smooth_move(actual_x, actual_y)
+        time.sleep(0.04)
+        set_system_cursor("run_click")
+        self._mouse.click(Button.left, 1)
+        time.sleep(0.06)
+        set_system_cursor("run_idle")
         time.sleep(0.1)
         return True
 
@@ -96,13 +98,14 @@ class BrowserController:
         ensure_ime_state(target_state=False, timeout=0.4)
         time.sleep(0.04)
 
-        if _set_clipboard_text(norm_text):
+        # Why: クリップボード貼付と直接タイピングを両立し入力漏れを完全防止
+        clip_ok = _set_clipboard_text(norm_text)
+        if clip_ok:
             self._keyboard.press(Key.ctrl)
             self._keyboard.press('v')
             self._keyboard.release('v')
             self._keyboard.release(Key.ctrl)
-            time.sleep(0.04)
-            # Why: React/Vue等の仮想DOM inputイベントを右矢印キーで強制発火
+            time.sleep(0.06)
             self._keyboard.press(Key.right)
             self._keyboard.release(Key.right)
             time.sleep(0.06)
@@ -181,11 +184,19 @@ class BrowserController:
 
         elif action == "type_text":
             elem_name = attr_name or args.get("element_name")
-            typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.6), element_name=elem_name)
+            x = args.get("x")
+            y = args.get("y")
+            typed = False
+            # Why: 確実な物理座標が存在する場合は余白クリックを防ぐため物理クリックを優先
+            if x is not None and y is not None and x > 20 and y > 20:
+                self._click_physical_coords(x, y, last_win_args)
+                self._perform_typing_input(text, clear_before)
+                typed = True
+                res_data["status"] = "coords_typing_succeeded"
+            else:
+                typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.6), element_name=elem_name)
+
             if not typed:
-                x = args.get("x")
-                y = args.get("y")
-                # Why: UIA未検出時は物理座標をクリックして入力欄フォーカスを取り確実に入力
                 self._click_physical_coords(x, y, last_win_args)
                 self._perform_typing_input(text, clear_before)
                 res_data["status"] = "fallback_typing_succeeded"
@@ -339,18 +350,31 @@ class BrowserController:
                         if last_win_args["window_title"].lower() not in title.lower():
                             continue
                     try:
-                        # Why: descendants()の全走査はブラウザCOMを永久ハングさせるため直下2階層に限定
+                        # Why: 画面全体を覆う巨大コンテナの誤判定を排し入力可能要素を優先検出
+                        rect_win = window.rectangle()
+                        win_area = max(1, (rect_win.right - rect_win.left) * (rect_win.bottom - rect_win.top))
+                        candidates = []
                         for child in window.children():
-                            auto_id = str(getattr(child.element_info, "automation_id", "") or "").lower()
-                            name = str(child.window_text() or "").lower()
-                            c_name = str(getattr(child.element_info, "class_name", "") or "").lower()
+                            c_rect = child.rectangle()
+                            c_area = (c_rect.right - c_rect.left) * (c_rect.bottom - c_rect.top)
+                            if c_area > win_area * 0.7:
+                                for sub in child.children():
+                                    candidates.append(sub)
+                            else:
+                                candidates.append(child)
+
+                        for cand in candidates:
+                            c_rect = cand.rectangle()
+                            c_area = (c_rect.right - c_rect.left) * (c_rect.bottom - c_rect.top)
+                            if c_area > win_area * 0.7:
+                                continue
+                            auto_id = str(getattr(cand.element_info, "automation_id", "") or "").lower()
+                            name = str(cand.window_text() or "").lower()
+                            c_name = str(getattr(cand.element_info, "class_name", "") or "").lower()
+                            c_type = str(getattr(cand.element_info, "control_type", "") or "").lower()
                             if any(t in auto_id or t in name or t in c_name for t in search_terms):
-                                return child
-                            for sub in child.children():
-                                s_auto = str(getattr(sub.element_info, "automation_id", "") or "").lower()
-                                s_name = str(sub.window_text() or "").lower()
-                                if any(t in s_auto or t in s_name for t in search_terms):
-                                    return sub
+                                if "edit" in c_type or "combo" in c_type or "button" in c_type or c_area < win_area * 0.4:
+                                    return cand
                     except Exception:
                         continue
             except Exception as e:
