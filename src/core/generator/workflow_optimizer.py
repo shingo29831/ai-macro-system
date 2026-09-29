@@ -484,21 +484,45 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     selector_coords: Dict[str, Tuple[int, int]] = {}
     selector_names: Dict[str, str] = {}
 
+    # Why: 網羅的DOMスキャン情報から物理座標・型・確定値を優先バインド
+    scanned_elements_map: Dict[str, Dict[str, Any]] = {}
+
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
-        ename = ctx.get("element_name") or info.get("element_name") or ""
+        ename = str(ctx.get("element_name") or info.get("element_name") or "").strip()
         cx = info.get("cursor_x", info.get("x", 0))
         cy = info.get("cursor_y", info.get("y", 0))
 
         if sel and cx > 20 and cy > 20:
             selector_coords[sel] = (cx, cy)
+        if ename and cx > 20 and cy > 20:
+            selector_coords[f"name:{ename}"] = (cx, cy)
+            selector_coords[ename] = (cx, cy)
         if sel and ename:
             selector_names[sel] = ename
 
         for snap_src in [ctx.get("form_snapshot"), ctx.get("committed_values")]:
             if isinstance(snap_src, dict):
+                # Why: __elements__詳細スキャンから真の要素物理座標と型を直接統合
+                if "__elements__" in snap_src and isinstance(snap_src["__elements__"], list):
+                    for el in snap_src["__elements__"]:
+                        e_sel = el.get("selector") or (f"#{el.get('automation_id')}" if el.get("automation_id") else "")
+                        e_name = el.get("element_name") or ""
+                        e_x, e_y = el.get("x", 0), el.get("y", 0)
+                        if e_sel:
+                            scanned_elements_map[e_sel] = el
+                            if e_x > 20 and e_y > 20:
+                                selector_coords[e_sel] = (e_x, e_y)
+                        if e_name:
+                            scanned_elements_map[f"name:{e_name}"] = el
+                            if e_x > 20 and e_y > 20:
+                                selector_coords[f"name:{e_name}"] = (e_x, e_y)
+                                selector_coords[e_name] = (e_x, e_y)
+
                 for sk, sv in snap_src.items():
+                    if sk == "__elements__":
+                        continue
                     if sv is not None and str(sv).strip():
                         val_str = str(sv).strip()
                         prev_val = global_form_snapshot.get(sk)
@@ -514,9 +538,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 prev_val = global_form_snapshot.get(ps)
                 if not (prev_val and str(pv).strip() in ["", "None"]):
                     global_form_snapshot[ps] = str(pv).strip()
-
-    # 2. 各要素セレクタごとに全履歴から確定値候補を収集
-    selector_candidates: Dict[str, List[str]] = {}
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
@@ -666,9 +687,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"]))
         )
         if is_input_field:
-            # Why: スナップショット確定値を途中タイピングより最優先
-            snap_val = global_form_snapshot.get(sel)
-            final_val = snap_val or element_final_values.get(sel)
+            # Why: 網羅的スキャン値および確定スナップショット値を最優先
+            scanned_item = scanned_elements_map.get(sel) or scanned_elements_map.get(f"name:{elem_name}") or {}
+            scanned_val = scanned_item.get("value")
+            snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
+            final_val = scanned_val or snap_val or element_final_values.get(sel)
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
 
@@ -685,13 +708,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     else:
                         break
 
-                # Why: 物理座標が(0,0)の場合は全履歴の有効接触座標から自動復元
-                if sel in selector_coords:
-                    cx, cy = selector_coords[sel]
-                    info["cursor_x"] = cx
-                    info["cursor_y"] = cy
-                    info["x"] = cx
-                    info["y"] = cy
+                # Why: スキャンされた正確な物理座標を最優先で割り当て
+                target_x = scanned_item.get("x") or (selector_coords.get(sel)[0] if sel in selector_coords else None)
+                target_y = scanned_item.get("y") or (selector_coords.get(sel)[1] if sel in selector_coords else None)
+                if target_x and target_y and target_x > 20 and target_y > 20:
+                    info["cursor_x"], info["cursor_y"] = target_x, target_y
+                    info["x"], info["y"] = target_x, target_y
 
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"

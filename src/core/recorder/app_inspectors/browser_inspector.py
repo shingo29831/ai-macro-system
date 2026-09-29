@@ -51,6 +51,8 @@ class BrowserInspector(BaseInspector):
     def _extract_value_from_uia(ctrl) -> str:
         if not ctrl: return ""
         c_type = getattr(ctrl, "ControlTypeName", "") or ""
+        
+        # 1. チェックボックスのON/OFF状態判定
         if "CheckBox" in c_type:
             try:
                 return "true" if ctrl.GetTogglePattern().ToggleState == 1 else "false"
@@ -58,54 +60,139 @@ class BrowserInspector(BaseInspector):
                 try:
                     return "true" if (ctrl.GetLegacyIAccessiblePattern().CurrentState & 0x10) else "false"
                 except Exception:
-                    pass
-        val = ""
-        try:
-            val = ctrl.GetValuePattern().Value
-        except Exception:
+                    return "false"
+
+        # 2. セレクトボックス(ComboBox)の現在選択値取得
+        if "ComboBox" in c_type:
+            try:
+                sel_pat = ctrl.GetSelectionPattern()
+                if sel_pat:
+                    sel_items = sel_pat.GetSelection()
+                    if sel_items and len(sel_items) > 0:
+                        s_name = getattr(sel_items[0], "Name", "")
+                        if s_name and str(s_name).strip():
+                            return str(s_name).strip()
+            except Exception:
+                pass
             try:
                 val = ctrl.GetLegacyIAccessiblePattern().CurrentValue
+                if val and str(val).strip():
+                    return str(val).strip()
             except Exception:
-                try:
-                    val = str(ctrl.GetRangeValuePattern().Value)
-                except Exception:
-                    val = getattr(ctrl, "Name", "") or ""
-        return str(val or "").strip()
+                pass
+            try:
+                val = ctrl.GetValuePattern().Value
+                if val and str(val).strip():
+                    return str(val).strip()
+            except Exception:
+                pass
+            try:
+                for child in ctrl.GetChildren():
+                    try:
+                        if child.GetSelectionItemPattern().IsSelected:
+                            return str(child.Name or "").strip()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # 3. テキスト欄・数値欄(Edit/Spinner)の入力値取得
+        try:
+            val = ctrl.GetValuePattern().Value
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        except Exception:
+            pass
+
+        try:
+            val = ctrl.GetLegacyIAccessiblePattern().CurrentValue
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        except Exception:
+            pass
+
+        try:
+            r_val = ctrl.GetRangeValuePattern().Value
+            if r_val is not None:
+                return str(int(r_val) if float(r_val).is_integer() else r_val).strip()
+        except Exception:
+            pass
+
+        name = getattr(ctrl, "Name", "") or ""
+        return str(name or "").strip()
 
     @classmethod
-    def extract_form_snapshot(cls, window_info: Dict[str, Any]) -> Dict[str, str]:
-        # Why: 送信ボタン等押下時にページ内入力要素の確定値を一括スナップショット取得
-        snapshot = dict(cls._form_values_cache)
+    def extract_form_snapshot(cls, window_info: Dict[str, Any]) -> Dict[str, Any]:
+        # Why: ページ全域を網羅的に走査し各フォーム要素のセレクタ・確定値・物理座標を一括抽出
+        snapshot: Dict[str, Any] = dict(cls._form_values_cache)
         hwnd = window_info.get("hwnd") or window_info.get("handle")
         if not hwnd: return snapshot
         try:
             import uiautomation as auto
             win_ctrl = auto.ControlFromHandle(int(hwnd))
-            if win_ctrl and win_ctrl.Exists(0, 0):
-                for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=12):
-                    c_type = ctrl.ControlTypeName
-                    if c_type in ["EditControl", "ComboBoxControl", "CheckBoxControl", "SpinnerControl"]:
-                        aid = getattr(ctrl, "AutomationId", "") or ""
-                        name = getattr(ctrl, "Name", "") or ""
-                        val = cls._extract_value_from_uia(ctrl)
-                        if c_type == "CheckBoxControl":
-                            is_chk = False
-                            try:
-                                is_chk = ctrl.GetTogglePattern().ToggleState == 1
-                            except Exception:
-                                try:
-                                    is_chk = bool(ctrl.GetLegacyIAccessiblePattern().CurrentState & 0x10)
-                                except Exception:
-                                    pass
-                            val = "true" if is_chk else "false"
-                        if val and str(val).strip() and str(val).strip() != name:
-                            v_str = str(val).strip()
-                            if aid:
-                                snapshot[f"#{aid}"] = v_str
-                                cls._form_values_cache[f"#{aid}"] = v_str
-                            if name:
-                                snapshot[f"name:{name}"] = v_str
-                                cls._form_values_cache[f"name:{name}"] = v_str
+            if not win_ctrl or not win_ctrl.Exists(0, 0):
+                return snapshot
+
+            # Why: ブラウザのアドレスバー・タブを除外しWebドキュメント領域へ探索を限定
+            doc_ctrl = None
+            for c in win_ctrl.GetChildren():
+                c_name = getattr(c, "ControlTypeName", "") or ""
+                c_class = getattr(c, "ClassName", "") or ""
+                if c_name == "DocumentControl" or any(cls_name in c_class for cls_name in ["MozillaContent", "Chrome_Render", "Internet Explorer_Server"]):
+                    doc_ctrl = c
+                    break
+
+            scan_root = doc_ctrl if doc_ctrl and doc_ctrl.Exists(0, 0) else win_ctrl
+            elements_detail: List[Dict[str, Any]] = []
+            internal_ids = ["urlbar", "address", "search", "tab", "identity", "tracking"]
+
+            target_types = ["EditControl", "ComboBoxControl", "CheckBoxControl", "SpinnerControl", "ButtonControl"]
+            for ctrl, depth in auto.WalkControl(scan_root, maxDepth=16):
+                c_type = getattr(ctrl, "ControlTypeName", "") or ""
+                if c_type not in target_types:
+                    continue
+
+                aid = getattr(ctrl, "AutomationId", "") or ""
+                name = getattr(ctrl, "Name", "") or ""
+                # Why: ブラウザ自身のUIコントロールを完全に除外
+                if any(w in aid.lower() for w in internal_ids) or any(w in name.lower() for w in ["アドレス", "タブ", "閉じる"]):
+                    continue
+
+                rect = ctrl.BoundingRectangle
+                cx = (rect.left + rect.right) // 2 if rect else 0
+                cy = (rect.top + rect.bottom) // 2 if rect else 0
+                # Why: 画面上部ツールバー内の誤検出を座標で安全に遮断
+                if cy < 110:
+                    continue
+
+                val = cls._extract_value_from_uia(ctrl)
+                sel = f"#{aid}" if aid else ""
+                clean_name = name.strip()
+
+                elem_data = {
+                    "selector": sel,
+                    "automation_id": aid,
+                    "element_name": clean_name,
+                    "control_type": c_type.replace("Control", ""),
+                    "value": val,
+                    "x": cx,
+                    "y": cy,
+                    "rect": [rect.left, rect.top, rect.right, rect.bottom] if rect else [0, 0, 0, 0]
+                }
+                elements_detail.append(elem_data)
+
+                if val and str(val).strip():
+                    v_str = str(val).strip()
+                    if sel:
+                        snapshot[sel] = v_str
+                        cls._form_values_cache[sel] = v_str
+                    if clean_name:
+                        snapshot[f"name:{clean_name}"] = v_str
+                        cls._form_values_cache[f"name:{clean_name}"] = v_str
+
+            if elements_detail:
+                snapshot["__elements__"] = elements_detail
+
         except Exception as e:
             logger.debug(f"[BrowserInspector] extract_form_snapshot error: {e}")
         return snapshot
