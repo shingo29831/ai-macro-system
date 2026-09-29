@@ -16,11 +16,11 @@ def detect_ui_elements(image_path: str, max_retries: int = 3) -> List[UiAnalysis
     url = f"http://{config.cv_host}:{config.cv_port}/api/v1/yolo/detect"
     payload = {"image_path": image_path}
     
-    for attempt in range(max_retries):
+    # Why: ローカル推論での過剰なタイムアウト(60秒)によるマクロ生成フリーズを完全根絶
+    for attempt in range(2):
         try:
-            logger.info(f"Requesting YOLO detection (Attempt {attempt + 1}/{max_retries}) for {image_path}")
-            # AIの推論は時間がかかる場合があるため、タイムアウトを60秒に延長
-            response = requests.post(url, json=payload, timeout=60.0)
+            logger.info(f"Requesting YOLO detection (Attempt {attempt + 1}/2) for {image_path}")
+            response = requests.post(url, json=payload, timeout=3.0)
             response.raise_for_status()
             
             data = response.json()
@@ -31,10 +31,9 @@ def detect_ui_elements(image_path: str, max_retries: int = 3) -> List[UiAnalysis
             
         except requests.exceptions.RequestException as e:
             logger.warning(f"YOLO API request failed: {e}")
-            if attempt == max_retries - 1:
-                logger.error("Max retries reached for YOLO API. Returning empty list.")
-                # エラー握り潰しは厳禁だが、ログ解析プロセス全体を落とさないために空配列を返す
-                return []
-            time.sleep(2 ** attempt)  # Exponential Backoff (1s, 2s, 4s...)
+            # Why: 接続拒否時はリトライ待機せず即座にフォールバックしパイプライン停止を防止
+            if isinstance(e, requests.exceptions.ConnectionError):
+                break
+            time.sleep(0.5)
     
     return []

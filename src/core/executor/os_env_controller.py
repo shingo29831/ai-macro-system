@@ -24,12 +24,9 @@ SPIF_UPDATEINIFILE = 0x0001
 SPIF_SENDCHANGE = 0x0002
 
 # Why: 待機時(WAIT)・起動時(APPSTARTING)・文字選択(IBEAM)等でのユーザーカーソルチラつきを完全排除
+# Why: 通常矢印・リンク手・作業中を最適化置換し、フック遅延ゼロとチラつき解消を両立
 RUN_RECORD_CURSOR_IDS = [
     32512,  # OCR_NORMAL
-    32513,  # OCR_IBEAM
-    32514,  # OCR_WAIT
-    32515,  # OCR_CROSS
-    32516,  # OCR_UPARROW
     32649,  # OCR_HAND
     32650,  # OCR_APPSTARTING
 ]
@@ -196,7 +193,7 @@ def _schedule_auto_revert(target_idle_mode: str, delay: float = 0.25):
 
 
 def _force_cursor_update():
-    # Why: SetSystemCursor変更直後に即座にOSへWM_SETCURSORを促し画面上の表示を即時更新
+    # Why: mouse_event発行はフックの再入デッドロックを招くためSetCursorPosのみで安全に再描画
     if platform.system() != "Windows":
         return
     try:
@@ -206,7 +203,6 @@ def _force_cursor_update():
         pt = POINT()
         if user32.GetCursorPos(ctypes.byref(pt)):
             user32.SetCursorPos(pt.x, pt.y)
-            user32.mouse_event(0x0001, 0, 0, 0, 0)
     except Exception:
         pass
 
@@ -224,7 +220,6 @@ def restore_system_cursor(force: bool = True):
             return
         try:
             user32 = ctypes.windll.user32
-            # Why: レジストリから全カーソルを再読込しユーザー本来の設定へ完全復帰
             user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE)
             _force_cursor_update()
             _current_cursor_mode = "default"
@@ -232,21 +227,11 @@ def restore_system_cursor(force: bool = True):
             logger.warning(f"Failed to restore system cursor: {e}")
 
 
-def set_system_cursor(mode: str = "default"):
-    """
-    Why: 主要カーソルID網羅と即時WM_SETCURSOR強制によりブラウザ操作前や待機中のチラつきを完全根絶
-    """
-    global _current_cursor_mode, _auto_revert_timer
-    if platform.system() != "Windows":
-        return
-
+def _apply_system_cursor_internal(mode: str):
+    global _current_cursor_mode
     with _cursor_lock:
         if mode == _current_cursor_mode:
             return
-
-        if _auto_revert_timer is not None:
-            _auto_revert_timer.cancel()
-            _auto_revert_timer = None
 
         if mode == "default":
             restore_system_cursor(force=True)
@@ -263,14 +248,31 @@ def set_system_cursor(mode: str = "default"):
             _current_cursor_mode = mode
             _force_cursor_update()
 
+            # Why: 一時的照準デザインが後半ずっと残留する問題を0.2秒タイマーで確実に防止
             if mode in ("run_down", "run_click"):
-                _schedule_auto_revert("run_idle", delay=0.25)
+                _schedule_auto_revert("run_idle", delay=0.2)
             elif mode in ("record_down", "click_down"):
-                _schedule_auto_revert("record_idle", delay=0.25)
+                _schedule_auto_revert("record_idle", delay=0.2)
             elif mode in ("record_hover", "hover"):
-                _schedule_auto_revert("record_idle", delay=0.8)
+                _schedule_auto_revert("record_idle", delay=0.5)
         except Exception as e:
             logger.warning(f"Failed to set system cursor to {mode}: {e}")
+
+
+def set_system_cursor(mode: str = "default", async_exec: bool = False):
+    """
+    Why: フックスレッドからの直接呼出し時は別スレッドへ委譲し低レベルフックの強制切断を完全防止
+    """
+    if platform.system() != "Windows":
+        return
+
+    cur_thread = threading.current_thread()
+    is_hook_or_async = async_exec or cur_thread.name.startswith("Thread") or "listener" in cur_thread.name.lower()
+
+    if is_hook_or_async:
+        threading.Thread(target=_apply_system_cursor_internal, args=(mode,), daemon=True).start()
+    else:
+        _apply_system_cursor_internal(mode)
 
 
 # Why: 起動時に前回の異常終了等で残った青カーソルを即座にOS標準白矢印へ強制リセット

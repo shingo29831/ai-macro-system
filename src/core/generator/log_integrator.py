@@ -69,7 +69,13 @@ def generate_macro_workflow(
                 logger.info(f"[{workflow_id}] Generation cancelled by user.")
                 raise InterruptedError("Generation cancelled by user")
 
-            parsed_info = parse_raw_event(log_entry, i, total_events, workflow_id, macros_root, progress_callback)
+            # Why: 単一イベント解析のエラーやAI推論障害による生成パイプライン全体のスタックを完全防止
+            try:
+                parsed_info = parse_raw_event(log_entry, i, total_events, workflow_id, macros_root, progress_callback)
+            except Exception as parse_err:
+                logger.warning(f"[{workflow_id}] Event parse failed for entry {i}: {parse_err}")
+                parsed_info = None
+
             if parsed_info:
                 integrated_events.append(parsed_info.pop("integrated_event"))
                 temp_workflow_info.append(parsed_info)
