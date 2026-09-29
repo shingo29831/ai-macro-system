@@ -13,6 +13,7 @@ from pynput.keyboard import Controller as KeyboardController, Key, Listener as K
 
 from models.data_types import AppConfig
 from core.executor.window_manager import set_dpi_awareness, set_ime_state, activate_and_restore_window, reset_browser_activation_flag
+from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
 from core.executor.screen_matcher import wait_for_screen_match, is_screen_match
 
 logger = logging.getLogger(__name__)
@@ -670,6 +671,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
     _is_running = True
     _stop_requested = False
     reset_browser_activation_flag()
+    set_system_cursor("run")
     
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     mouse = MouseController()
@@ -1567,6 +1569,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
         logger.error(f"[{workflow_id}] Execution failed: {e}")
         raise
     finally:
+        restore_system_cursor()
         try:
             execution_log["end_time"] = datetime.now().isoformat()
             log_dir = target_dir / "execution_logs"

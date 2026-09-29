@@ -13,6 +13,7 @@ from core.recorder.log_builder import create_end_log, save_input_logs
 
 from core.recorder.key_hook import KeyHookManager
 from core.recorder.office_monitor import OfficeMonitorManager
+from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
 
 _mouse_listener = None
 _keyboard_listener = None
@@ -71,6 +72,7 @@ def start_recording():
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         _mouse_listener.start()
         _keyboard_listener.start()
+        set_system_cursor("record")
 
         print("記録を開始しました")
         print(f"macro: {state.recording_dirs['macro_name']}")
@@ -95,6 +97,7 @@ def start_recording():
         stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
+        restore_system_cursor()
         print("記録開始に失敗しました")
         traceback.print_exc()
         raise
@@ -161,11 +164,13 @@ def stop_recording():
         state.append_log(create_end_log(diff_str, end_ref))
         process_monitor.stop_process_monitors()
         save_input_logs()
+        restore_system_cursor()
 
         print("記録を停止しました")
         print("recording_end: evt_End_pre.png")
 
     except Exception:
+        restore_system_cursor()
         print("記録停止中にエラーが発生しました")
         traceback.print_exc()
         raise
