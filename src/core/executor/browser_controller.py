@@ -242,7 +242,7 @@ class BrowserController:
                 import uiautomation as auto
                 ctrl = auto.ControlFromElement(elem.element_info._element) if elem else None
 
-                # 1. フォーカス前の現在値照合（既に一致していれば即時完了）
+                # 1. フォーカス前の現在値照合（既に一致していれば即座に完了）
                 cur_v = self._get_combobox_current_value(ctrl, elem, elem_name_arg)
                 if cur_v and (cur_v.lower() == target_val.lower() or target_val.lower() in cur_v.lower()):
                     logger.info(f"select_option: '{target_val}' is already selected.")
@@ -250,21 +250,24 @@ class BrowserController:
                     return res_data
 
                 # 2. フォーカス確保 (クリック)
-                focused_clicked = False
                 if elem:
                     rect = elem.rectangle()
                     cx = (rect.left + rect.right) // 2
                     cy = (rect.top + rect.bottom) // 2
                     if cx > 20 and cy > 20:
-                        focused_clicked = self._click_physical_coords(cx, cy, last_win_args)
+                        self._click_physical_coords(cx, cy, last_win_args)
                     else:
                         elem.click_input()
-                        focused_clicked = True
                 elif opt_x is not None and opt_y is not None:
-                    focused_clicked = self._click_physical_coords(opt_x, opt_y, last_win_args)
+                    self._click_physical_coords(opt_x, opt_y, last_win_args)
 
-                time.sleep(0.15)
-                # クリック後にフォーカス要素または座標から再度ctrl取得
+                time.sleep(0.12)
+
+                # Why: 展開状態では確定までValueが変化しないためEscで閉じフォーカスを保持
+                self._keyboard.press(Key.esc)
+                self._keyboard.release(Key.esc)
+                time.sleep(0.08)
+
                 if not ctrl:
                     try:
                         ctrl = auto.GetFocusedControl()
@@ -278,70 +281,35 @@ class BrowserController:
                     except Exception:
                         pass
 
-                # 3. フィードバック監視型ナビゲーション (Home -> Down連打で現在値を照合)
-                self._keyboard.press(Key.home)
-                self._keyboard.release(Key.home)
-                time.sleep(0.08)
+                # 3. 閉状態での現在値照合 (既に目標値であれば完了)
+                cur_v = self._get_combobox_current_value(ctrl, elem, elem_name_arg)
+                if cur_v and (cur_v.lower() == target_val.lower() or target_val.lower() in cur_v.lower()):
+                    selected_ok = True
 
-                prev_v = ""
-                for step in range(25):
-                    cur_v = self._get_combobox_current_value(ctrl, elem, elem_name_arg)
-                    if cur_v and (cur_v.lower() == target_val.lower() or target_val.lower() in cur_v.lower()):
-                        logger.info(f"select_option: matched '{target_val}' at index {step} (detected: '{cur_v}')")
-                        selected_ok = True
-                        break
-                    if cur_v and cur_v == prev_v and step > 1:
-                        break
-                    prev_v = cur_v
-                    self._keyboard.press(Key.down)
-                    self._keyboard.release(Key.down)
-                    time.sleep(0.06)
-
-                if selected_ok:
-                    self._keyboard.press(Key.enter)
-                    self._keyboard.release(Key.enter)
+                # 4. Homeキーで先頭に移動し、1ステップずつ現在値を監視照合
+                if not selected_ok:
+                    self._keyboard.press(Key.home)
+                    self._keyboard.release(Key.home)
                     time.sleep(0.08)
-                else:
-                    # 4. フィードバック未一致時の確実なポップアップ走査
-                    self._keyboard.press(Key.alt)
-                    self._keyboard.press(Key.down)
-                    self._keyboard.release(Key.down)
-                    self._keyboard.release(Key.alt)
-                    time.sleep(0.2)
 
-                    target_item = None
-                    search_roots = []
-                    if ctrl and ctrl.Exists(0, 0): search_roots.append(ctrl)
-                    for top_win in auto.GetRootControl().GetChildren():
-                        if any(k in top_win.ControlTypeName.lower() for k in ["combo", "menu", "list", "window", "pane"]):
-                            search_roots.append(top_win)
-
-                    for s_root in search_roots:
-                        for item in auto.WalkControl(s_root, maxDepth=8):
-                            it_type = getattr(item, "ControlTypeName", "")
-                            if it_type in ["ListItemControl", "MenuItemControl", "TextControl"]:
-                                it_name = str(getattr(item, "Name", "") or "").strip()
-                                if target_val.lower() == it_name.lower() or target_val.lower() in it_name.lower():
-                                    target_item = item
-                                    break
-                        if target_item:
-                            break
-
-                    if target_item:
-                        it_rect = getattr(target_item, "BoundingRectangle", None)
-                        if it_rect and it_rect.right - it_rect.left > 0 and it_rect.bottom - it_rect.top > 0:
-                            ix = (it_rect.left + it_rect.right) // 2
-                            iy = (it_rect.top + it_rect.bottom) // 2
-                            from core.executor.runner import _smooth_move
-                            _smooth_move(ix, iy)
-                            time.sleep(0.04)
-                            self._mouse.click(Button.left, 1)
-                            time.sleep(0.1)
+                    prev_v = ""
+                    for step in range(30):
+                        cur_v = self._get_combobox_current_value(ctrl, elem, elem_name_arg)
+                        if cur_v and (cur_v.lower() == target_val.lower() or target_val.lower() in cur_v.lower()):
+                            logger.info(f"select_option: matched '{target_val}' at step {step} (detected: '{cur_v}')")
                             selected_ok = True
-                    if not selected_ok:
-                        self._keyboard.press(Key.enter)
-                        self._keyboard.release(Key.enter)
+                            break
+                        if cur_v and cur_v == prev_v and step > 1:
+                            break
+                        prev_v = cur_v
+                        self._keyboard.press(Key.down)
+                        self._keyboard.release(Key.down)
+                        time.sleep(0.08)
 
+                # 5. 選択の確定 (Enter送信でchangeイベントを発火)
+                self._keyboard.press(Key.enter)
+                self._keyboard.release(Key.enter)
+                time.sleep(0.06)
                 res_data["selected"] = target_val
             except Exception as e:
                 logger.warning(f"select_option failed: {e}")
