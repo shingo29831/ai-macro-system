@@ -16,6 +16,15 @@ class BrowserInspector(BaseInspector):
     _form_values_cache: Dict[str, str] = {}
 
     @classmethod
+    def reset_state(cls):
+        # Why: 記録セッション間での直前セレクタ・値キャッシュの混入・汚染を完全防止
+        cls._last_input_element = None
+        cls._last_input_selector = None
+        cls._last_input_name = None
+        cls._last_input_hwnd = None
+        cls._form_values_cache.clear()
+
+    @classmethod
     def _commit_previous_element(cls) -> Optional[Dict[str, str]]:
         # Why: フォーカス離脱(blur)時に直前入力要素の最新確定値を再取得してコミット
         if not cls._last_input_element and not cls._last_input_selector:
@@ -470,10 +479,13 @@ class BrowserInspector(BaseInspector):
                             log_debug(f"フォーカス要素直接取得成功: id='{auto_id}', name='{elem_name}', val='{val}'")
                 except Exception as ef:
                     log_debug(f"フォーカス要素特定例外: {ef}")
-                    if BrowserInspector._last_input_selector and BrowserInspector._last_input_selector in BrowserInspector._form_values_cache:
-                        result["css_selector"] = BrowserInspector._last_input_selector
-                        result["value"] = BrowserInspector._form_values_cache[BrowserInspector._last_input_selector]
-                        result["text"] = result["value"]
+                    # Why: 別コントロールの残留セレクタ誤適用を防ぎ同一HWNDの直前要素のみ厳密継承
+                    cur_hwnd = window_info.get("hwnd") or window_info.get("handle")
+                    if cur_hwnd and BrowserInspector._last_input_hwnd == cur_hwnd:
+                        if BrowserInspector._last_input_selector and BrowserInspector._last_input_selector in BrowserInspector._form_values_cache:
+                            result["css_selector"] = BrowserInspector._last_input_selector
+                            result["value"] = BrowserInspector._form_values_cache[BrowserInspector._last_input_selector]
+                            result["text"] = result["value"]
 
             extracted_text = ""
             primary_elem = None

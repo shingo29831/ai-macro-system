@@ -801,7 +801,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
     for sel_id, val_str in snapshot_items:
         clean_name = selector_names.get(sel_id, sel_id.lstrip("#"))
-        coords = selector_coords.get(sel_id)
+        scanned_elem = scanned_elements_map.get(sel_id) or scanned_elements_map.get(f"name:{clean_name}") or {}
+        # Why: 網羅的スキャンで特定された物理座標を最優先で復元
+        sc_x = scanned_elem.get("x", 0)
+        sc_y = scanned_elem.get("y", 0)
+        coords = (sc_x, sc_y) if (sc_x > 20 and sc_y > 20) else selector_coords.get(sel_id)
 
         # Why: セレクタ名に依存せず値がコミットされた実イベントから座標を動的逆引き
         if not coords or coords[0] <= 20 or coords[1] <= 20:
@@ -933,6 +937,40 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             form_inputs.append(item)
         else:
             other_actions.append(item)
+
+    # Why: ページスキャン情報に存在する送信ボタンをフォーム末尾に確実に配置
+    has_submit_btn = any(
+        r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])
+        for r in result
+    )
+    if not has_submit_btn:
+        for s_key, s_data in scanned_elements_map.items():
+            if str(s_data.get("control_type", "")).lower() == "button" or "submit" in s_key.lower() or "登録" in str(s_data.get("element_name", "")):
+                btn_x = s_data.get("x", 0)
+                btn_y = s_data.get("y", 0)
+                btn_name = s_data.get("element_name") or "登録する"
+                submit_buttons.append({
+                    "raw_action": "browser_action",
+                    "raw_type": "browser_action",
+                    "action": "click_element",
+                    "selector": s_data.get("selector") or "#submit-btn",
+                    "selector_type": "css",
+                    "element_name": btn_name,
+                    "semantic_role": btn_name,
+                    "text": btn_name,
+                    "window_name": ref_win,
+                    "win_x": ref_evt.get("win_x", 0),
+                    "win_y": ref_evt.get("win_y", 0),
+                    "win_w": ref_evt.get("win_w", 0),
+                    "win_h": ref_evt.get("win_h", 0),
+                    "event_id": f"{ref_eid}_submit_btn",
+                    "fallback_events": [ref_eid],
+                    "cursor_x": btn_x,
+                    "cursor_y": btn_y,
+                    "x": btn_x,
+                    "y": btn_y
+                })
+                break
 
     if form_inputs:
         # Why: 辞書検索index()を完全排除しタプルインデックスで安全かつ安定に整流化

@@ -256,20 +256,30 @@ class BrowserController:
 
                     if not selected_ok:
                         elem.click_input()
-                        time.sleep(0.1)
-                        from core.executor.os_env_controller import ensure_ime_state
-                        from core.executor.runner import _set_clipboard_text
-                        ensure_ime_state(target_state=False, timeout=0.3)
-                        if _set_clipboard_text(target_val):
-                            self._keyboard.press(Key.ctrl)
-                            self._keyboard.press('v')
-                            self._keyboard.release('v')
-                            self._keyboard.release(Key.ctrl)
-                        else:
-                            self._keyboard.type(target_val)
-                        time.sleep(0.05)
-                        self._keyboard.press(Key.enter)
-                        self._keyboard.release(Key.enter)
+                        time.sleep(0.15)
+                        # Why: ドロップダウン展開後のポップアップツリーから該当項目を走査クリック
+                        clicked_popup = False
+                        try:
+                            import uiautomation as auto
+                            for top_win in auto.GetRootControl().GetChildren():
+                                if any(k in top_win.ControlTypeName.lower() for k in ["combo", "menu", "list", "window", "pane"]):
+                                    for item in auto.WalkControl(top_win, maxDepth=4):
+                                        if target_val.lower() in str(getattr(item, "Name", "")).lower():
+                                            item.Click()
+                                            clicked_popup = True
+                                            break
+                                if clicked_popup:
+                                    break
+                        except Exception:
+                            pass
+
+                        if not clicked_popup:
+                            # Why: ポップアップ未捕捉時は矢印キーと文字入力で選択肢を確定
+                            self._keyboard.press(Key.down)
+                            self._keyboard.release(Key.down)
+                            time.sleep(0.05)
+                            self._keyboard.press(Key.enter)
+                            self._keyboard.release(Key.enter)
                     res_data["selected"] = target_val
                 except Exception as e:
                     logger.warning(f"select_option failed: {e}")
