@@ -182,7 +182,9 @@ def build_and_save_macro(
                 prev_window_name = current_window
                 prev_win_rect = current_win_rect
         
-        final_semantic_role = llm_enhanced_data.get(event_id, info["semantic_role"])
+        final_semantic_role = llm_enhanced_data.get(
+            event_id, info.get("semantic_role") or info.get("element_name") or info.get("text") or ""
+        )
         
         target_id = None
         if raw_action in ["click", "move", "type_text", "key_down"]:

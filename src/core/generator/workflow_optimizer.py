@@ -681,6 +681,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                         "selector_type": "css",
                         "value": target_val,
                         "element_name": elem_label,
+                        "semantic_role": elem_label,
                         "window_name": ref_win,
                         "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
                         "fallback_events": [ref_eid]
@@ -726,6 +727,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "selector": final_btn_sel,
                 "selector_type": "css",
                 "element_name": final_btn_name,
+                "semantic_role": final_btn_name,
                 "window_name": ref_win,
                 "event_id": f"{ref_eid}_submit_btn",
                 "fallback_events": [ref_eid]
