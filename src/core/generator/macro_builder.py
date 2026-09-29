@@ -336,19 +336,26 @@ def build_and_save_macro(
             continue
 
         current_timestamp = integ_evt.timestamp if integ_evt else prev_timestamp or 0
-        if prev_timestamp is not None:
+        prev_step_cmd = raw_commands_data[-1].get("method") if raw_commands_data else ""
+        if prev_step_cmd == "move":
+            # Why: ホバー後のドロップダウンメニュー展開アニメーション時間を最低0.5秒保証
+            calc_dur = max(0.5, min((current_timestamp - (prev_timestamp or current_timestamp)) / 1000.0, 1.5))
+            raw_commands_data.append({
+                "method": "wait",
+                "args": {"duration": round(calc_dur, 3)}
+            })
+            prev_timestamp = current_timestamp
+        elif prev_timestamp is not None:
             duration = (current_timestamp - prev_timestamp) / 1000.0
             if duration > 0.01:
                 duration = min(duration, 1.5)
-                # Why: ホバー後のドロップダウンメニュー展開アニメーション時間を最低0.5秒確保
-                prev_step_cmd = raw_commands_data[-1].get("method") if raw_commands_data else ""
-                if prev_step_cmd == "move" and cmd_type in ["MOUSE_CLICK", "MOUSE_SCROLL"]:
-                    duration = max(duration, 0.5)
                 raw_commands_data.append({
                     "method": "wait",
                     "args": {"duration": round(duration, 3)}
                 })
-        prev_timestamp = current_timestamp
+            prev_timestamp = current_timestamp
+        else:
+            prev_timestamp = current_timestamp
         
         params = step.action.parameters
         target_id_for_healer = None

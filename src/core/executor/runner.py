@@ -7,6 +7,8 @@ import platform
 import ctypes
 import subprocess
 import threading
+import sys
+import traceback
 from pathlib import Path
 import numpy as np
 from pynput.mouse import Controller as MouseController, Button
@@ -398,6 +400,15 @@ class WorkflowFreezeException(Exception):
     pass
 
 
+def get_thread_stack_trace(thread_id: int) -> str:
+    """Why: フリーズ発生時にスレッドがどの関数の何行目で止まっていたかを外部から強制ダンプ"""
+    frames = sys._current_frames()
+    frame = frames.get(thread_id)
+    if frame is not None:
+        return "".join(traceback.format_stack(frame))
+    return "スタックフレームの取得に失敗しました（スレッドが存在しないか既に終了しています）。"
+
+
 def _inject_async_exception(thread_id: int, exc_type: type):
     """Why: ブロッキング中の実行スレッドに非同期例外を注入しフリーズから強制脱出"""
     if not thread_id or platform.system() != "Windows":
@@ -413,13 +424,13 @@ def _inject_async_exception(thread_id: int, exc_type: type):
 
 
 class ExecutionWatchdog:
-    """実行ステップの無応答（フリーズ）を常時監視し、規定秒数超過時に強制終了する"""
+    """実行ステップの無応答（フリーズ）を常時監視し、規定秒数超過時に強制終了とスタックダンプを実行する"""
     def __init__(self, target_thread_id: int, timeout_sec: float = 30.0, on_freeze_callback=None):
         self.target_thread_id = target_thread_id
         self.timeout_sec = timeout_sec
         self.on_freeze_callback = on_freeze_callback
         self.last_beat_time = time.time()
-        self.current_step_info = "初期化"
+        self.current_step_info = "初期化中"
         self._is_active = True
         self._lock = threading.Lock()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True, name="ExecWatchdog")
@@ -447,12 +458,19 @@ class ExecutionWatchdog:
                 if elapsed > self.timeout_sec:
                     frozen_step = self.current_step_info
                     self._is_active = False
-                    logger.error(f"Watchdog: Step freeze detected! No heartbeat for {elapsed:.1f}s at: {frozen_step}")
+                    
+                    frozen_stack = get_thread_stack_trace(self.target_thread_id)
+                    logger.error(
+                        f"Watchdog: Step freeze detected! No heartbeat for {elapsed:.1f}s at: {frozen_step}\n"
+                        f"Frozen Thread Stack Trace:\n{frozen_stack}"
+                    )
+                    
                     if self.on_freeze_callback:
                         try:
-                            self.on_freeze_callback(frozen_step, elapsed)
-                        except Exception:
-                            pass
+                            self.on_freeze_callback(frozen_step, elapsed, frozen_stack)
+                        except Exception as cb_err:
+                            logger.error(f"Error in on_freeze_callback: {cb_err}")
+
                     _inject_async_exception(self.target_thread_id, WorkflowFreezeException)
                     break
 
@@ -732,7 +750,7 @@ def _execute_excel_action(args: dict, variables: dict, excel_app, last_win_args:
     return excel_app, result
 
 
-def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp_commands: list[dict] = None):
+def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp_commands: list[dict] = None, on_freeze_callback=None):
     global _is_running, _stop_requested
     _is_running = True
     _stop_requested = False
@@ -742,10 +760,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     exec_thread_id = threading.get_ident()
 
-    def on_freeze(step_info: str, elapsed: float):
+    def on_freeze(step_info: str, elapsed: float, stack_trace: str):
         stop_workflow()
         restore_system_cursor(force=True)
         update_ui(f"フリーズ検知により強制終了 ({step_info})", is_warning=True)
+        if on_freeze_callback:
+            try:
+                on_freeze_callback(step_info, elapsed, stack_trace)
+            except Exception as e:
+                logger.error(f"Failed to propagate on_freeze_callback: {e}")
 
     watchdog = ExecutionWatchdog(exec_thread_id, timeout_sec=30.0, on_freeze_callback=on_freeze)
     watchdog.start()
@@ -1429,7 +1452,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     
                     if not skip_physical:
                         _smooth_move(int(x), int(y))
-                        time.sleep(0.08)
+                        # Why: ブラウザのレンダラプロセスにWM_MOUSEMOVEを確実に受領させホバーメニューを展開
+                        if platform.system() == "Windows":
+                            mouse.position = (int(x), int(y))
+                            ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
+                            ctypes.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
+                        time.sleep(0.35)
                         
                 elif method == "scroll":
                     dx = args.get("dx", 0.0)

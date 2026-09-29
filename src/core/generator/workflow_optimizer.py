@@ -10,10 +10,12 @@ from typing import List, Dict, Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 def _is_residual_hover(move_info: Dict[str, Any], temp_workflow_info: List[Dict[str, Any]], current_idx: int) -> bool:
-    # Why: 直前クリックと同一座標(15px以内)かつ有意な遷移URLを持たない残留ホバーを判定
+    # Why: 直前クリックと同一座標(15px以内)かつ画面変化・有意なUI要素を持たない残留ホバーを判定
+    if move_info.get("is_nav_hover") or move_info.get("diff_val", 0.0) >= 0.005:
+        return False
     ctx = move_info.get("app_context") or {}
     url = str(ctx.get("url") or ctx.get("text") or "").strip()
-    if url.startswith("http") and "denpa.ac.jp/course" in url:
+    if url.startswith("http"):
         return False
     mx, my = move_info.get("cursor_x", move_info.get("x", 0)), move_info.get("cursor_y", move_info.get("y", 0))
     for k in range(current_idx - 1, max(-1, current_idx - 4), -1):
@@ -103,8 +105,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             cx, cy = curr_info.get("cursor_x", curr_info.get("x", 0)), curr_info.get("cursor_y", curr_info.get("y", 0))
             px, py = prev_info.get("cursor_x", prev_info.get("x", 0)), prev_info.get("cursor_y", prev_info.get("y", 0))
             dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
-            # Why: 下方向かつ近距離(120px以内)の移動のみドロップダウンサブメニューと判定
-            if 15 <= dist <= 120 and cy >= py - 10:
+            # Why: 下方向かつメガメニュー等の距離(250px以内)の移動をドロップダウンサブメニューと判定
+            if 15 <= dist <= 250 and cy >= py - 15:
                 curr_info["raw_action"] = "click"
                 curr_info["raw_type"] = "mouse_click"
                 curr_info["button"] = "left"
@@ -273,10 +275,15 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     next_info = temp_workflow_info[k]
                     break
 
-            # Why: スクロール直前またはスクロール間に挟まる移動はメニューホバーではないため除去
+            # Why: スクロール合間の無駄な移動を除去しつつ、画面変化を伴うメニュー展開ホバーやUI要素ホバーは確実に保持
             if next_act == "scroll":
-                i += 1
-                continue
+                prev_act = filtered[-1].get("raw_action", "") if filtered else ""
+                diff_val = curr.get("diff_val", 0.0)
+                has_ui_context = bool(curr.get("app_context", {}).get("element_name") or curr.get("app_context", {}).get("css_selector"))
+                is_meaningful = curr.get("is_nav_hover") or diff_val >= 0.005 or (has_ui_context and prev_act != "scroll")
+                if not is_meaningful:
+                    i += 1
+                    continue
 
             # Why: 直後にクリックがある場合はホバーメニュー展開の可能性を厳密評価
             if next_act == "click" and next_info:
@@ -343,7 +350,9 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                 ]
 
                 if parent_hovers:
-                    deduped.append(parent_hovers[-1])
+                    # Why: 最も画面変化をもたらした真の親メニュー展開ホバーを確実に選定
+                    best_parent = max(parent_hovers, key=lambda m: (m.get("diff_val", 0.0), bool(m.get("app_context", {}).get("element_name"))))
+                    deduped.append(best_parent)
                 if child_hovers and child_hovers[-1].get("diff_val", 0.0) >= 0.005:
                     deduped.append(child_hovers[-1])
                 elif not parent_hovers and not child_hovers:
@@ -690,8 +699,14 @@ def optimize_workflow_events(
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:
-        if temp_workflow_info[0].get("raw_action") == "move":
-            temp_workflow_info.pop(0)
+        first_evt = temp_workflow_info[0]
+        if first_evt.get("raw_action") == "move":
+            diff = first_evt.get("diff_val", 0.0)
+            elem = first_evt.get("app_context", {}).get("element_name")
+            if diff < 0.005 and not elem:
+                temp_workflow_info.pop(0)
+            else:
+                break
         else:
             break
 
