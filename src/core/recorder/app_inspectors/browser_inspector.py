@@ -510,8 +510,14 @@ class BrowserInspector(BaseInspector):
                 if snapshot:
                     result["form_snapshot"] = snapshot
 
-            # Why: 入力可能要素への接触時は直前編集要素参照を更新して次回のblurコミットに備える
-            is_input = any(t in c_type_l for t in ["edit", "combobox", "checkbox", "spinner"]) or any(sel_l.startswith(p) for p in ["#company", "#contact", "#plan", "#amount", "#newsletter", "input", "select"])
+            # Why: コントロール種別およびタグ構造に基づく普遍的な入力要素判定
+            input_controls = {"edit", "combobox", "checkbox", "spinner", "radiobutton", "listitem"}
+            input_tags = {"input", "select", "textarea", "button"}
+            is_input = (
+                any(t in c_type_l for t in input_controls) or
+                any(sel_l.startswith(tag) or f">{tag}" in sel_l for tag in input_tags) or
+                "textbox" in c_type_l or "editable" in c_type_l
+            )
             if is_input and primary_elem:
                 BrowserInspector._last_input_element = primary_elem
                 BrowserInspector._last_input_selector = result.get("css_selector")

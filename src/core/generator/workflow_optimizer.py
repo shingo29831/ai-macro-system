@@ -87,9 +87,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             if act_act in ["type_text"] or (
                 act_act in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
             ):
-                if not (curr_url.startswith("http") and "google" not in curr_url.lower()):
-                    has_recent_nav_action = True
-                    break
+                # Why: URL直接遷移以外のキー入力・Enterによる画面遷移アクションを普遍的に検知
+                has_recent_nav_action = True
+                break
 
         if recent_click_info:
             clean_target_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
@@ -118,14 +118,9 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                     click_ctx["xpath"] = f"//a[contains(., '{clean_title_esc}')]"
 
                     if click_url and any(kw.lower() not in click_url.lower() for kw in target_keywords):
-                        if "denpa.ac.jp" in click_url and "comprehensive" not in click_url and "情報総合" in clean_target_title:
-                            fixed_url = re.sub(r"[a-z0-9_]+\.html", "comprehensive_information.html", click_url)
-                            logger.info(f"Reconciled destination URL from '{click_url}' to '{fixed_url}'")
-                            recent_click_info["url"] = fixed_url
-                            click_ctx["url"] = fixed_url
-                        else:
-                            recent_click_info.pop("url", None)
-                            click_ctx.pop("url", None)
+                        # Why: 遷移先タイトルと乖離したURL属性は消去しセレクタによる安全なDOM探索へ委譲
+                        recent_click_info.pop("url", None)
+                        click_ctx.pop("url", None)
 
         if has_recent_nav_action:
             i += 1
@@ -657,10 +652,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if snap_key in processed_selectors or clean_k in processed_selectors:
             continue
         val_str = str(snap_val).strip().lower()
-        is_chk = "newsletter" in snap_key.lower() or "check" in snap_key.lower() or val_str in ["true", "false"]
+        # Why: セレクタまたは真偽値属性から普遍的にチェックボックスを特定
+        is_chk = "check" in snap_key.lower() or val_str in ["true", "false"]
         if is_chk:
             target_val = val_str in ["true", "1", "checked"]
-            # Why: Trueまたは記録時に対象フォームで触れられた要素のみ過不足なく反映
             was_interacted = any(
                 snap_key in str(e.get("app_context") or {}) or clean_k in str(e.get("app_context") or {})
                 for e in temp_workflow_info
@@ -668,14 +663,16 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             if target_val or was_interacted:
                 target_sel = snap_key if snap_key.startswith(("#", ".")) else ""
                 if not target_sel:
+                    # 関連するIDセレクタを探索
                     for sk in global_form_snapshot.keys():
-                        if sk.startswith("#") and any(p in sk.lower() for p in ["newsletter", "check", "mail"]):
+                        if sk.startswith("#") and clean_k.lower() in sk.lower():
                             target_sel = sk
                             break
                 if not target_sel:
-                    target_sel = "#newsletter" if "newsletter" in snap_key.lower() else "input[type='checkbox']"
+                    target_sel = f"#{clean_k}" if clean_k and " " not in clean_k else "input[type='checkbox']"
 
                 if target_sel not in processed_selectors:
+                    elem_label = clean_k if "name:" in snap_key else "チェックボックス"
                     result.append({
                         "raw_action": "browser_action",
                         "raw_type": "browser_action",
@@ -683,7 +680,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                         "selector": target_sel,
                         "selector_type": "css",
                         "value": target_val,
-                        "element_name": clean_k if "name:" in snap_key else "お知らせ・更新通知メールを受信する",
+                        "element_name": elem_label,
                         "window_name": ref_win,
                         "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
                         "fallback_events": [ref_eid]
@@ -692,10 +689,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     processed_selectors.add(snap_key)
                     logger.info(f"Auto-injected checkbox action from snapshot: {target_sel} = {target_val}")
 
-    # Why: フォーム送信シグナル(Enterキーまたは送信意図)検知時、登録ボタン押下を確実に補完
+    # Why: 汎用フォーム送信シグナル(Enterキーまたは送信ボタン接触)検知時にSubmitを補完
+    submit_keywords = ["登録", "送信", "保存", "検索", "ログイン", "確定", "submit", "save", "search", "login", "send"]
     has_submit_signal = any(
         (e.get("raw_action") in ["key_down", "key_press", "press_key"] and str(e.get("semantic_role", "")).lower() in ["enter", "return"]) or
-        any(k in str((e.get("app_context") or {}).get("element_name") or "").lower() for k in ["登録", "送信", "submit", "save"])
+        any(k in str((e.get("app_context") or {}).get("element_name") or "").lower() for k in submit_keywords)
         for e in temp_workflow_info
     )
     if has_submit_signal:
@@ -705,18 +703,34 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             for r in result
         )
         if not has_existing_submit:
+            # ログ内から実在する送信ボタン要素を優先探索、未検出時は標準type='submit'セレクタを採用
+            detected_btn_sel = ""
+            detected_btn_name = ""
+            for e in temp_workflow_info:
+                ctx = e.get("app_context") or {}
+                ename = str(ctx.get("element_name") or e.get("element_name") or "").strip()
+                esel = str(ctx.get("css_selector") or e.get("selector") or "").strip()
+                if any(k in ename.lower() for k in submit_keywords) or any(k in esel.lower() for k in ["submit", "btn", "button"]):
+                    if esel and esel not in ["#entryForm", "form"]:
+                        detected_btn_sel = esel
+                        detected_btn_name = ename
+                        break
+
+            final_btn_sel = detected_btn_sel or "button[type='submit'], input[type='submit'], button"
+            final_btn_name = detected_btn_name or "送信"
+
             result.append({
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
                 "action": "click_element",
-                "selector": "#submit-btn",
+                "selector": final_btn_sel,
                 "selector_type": "css",
-                "element_name": "登録する",
+                "element_name": final_btn_name,
                 "window_name": ref_win,
                 "event_id": f"{ref_eid}_submit_btn",
                 "fallback_events": [ref_eid]
             })
-            logger.info("Auto-injected form submit button click: #submit-btn (登録する)")
+            logger.info(f"Auto-injected generic form submit action: {final_btn_sel} ({final_btn_name})")
 
     return result
 
