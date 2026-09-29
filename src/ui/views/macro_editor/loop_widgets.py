@@ -107,8 +107,8 @@ class LoopSettingDialog(QDialog):
         row_box.addWidget(self.end_row_spin)
         e_layout.addRow("対象行範囲:", row_box)
 
-        self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
-        self.status_col_edit.setPlaceholderText("例: E")
+        self.status_col_edit = QLineEdit(self.args.get("status_column", ""))
+        self.status_col_edit.setPlaceholderText("空欄で書込無 (例: F)")
         e_layout.addRow("ステータス記録列:", self.status_col_edit)
 
         self.skip_check = QCheckBox("完了ステータス済みの行をスキップ")
@@ -391,8 +391,8 @@ class LoopCountWidget(QFrame):
         self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
         eg_layout.addRow("終了行:", self.ed_row_spin)
 
-        self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
-        self.status_col_edit.setPlaceholderText("例: E")
+        self.status_col_edit = QLineEdit(self.args.get("status_column", ""))
+        self.status_col_edit.setPlaceholderText("空欄で書込無 (例: F)")
         self.status_col_edit.setFixedWidth(110)
         self.status_col_edit.textChanged.connect(lambda v: self._update_field("status_column", v.upper()))
         eg_layout.addRow("ステータス列:", self.status_col_edit)

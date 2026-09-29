@@ -204,8 +204,8 @@ def _col_idx_to_letter(col_idx: int) -> str:
     return res
 
 
-def _extract_referenced_columns(commands_slice: list[dict]) -> set[str]:
-    # Why: 文字列テンプレートからExcel抽出参照列を網羅検出しデータ破壊を完全防止
+def _extract_referenced_columns(commands_slice: list[dict], header_map: dict = None) -> set[str]:
+    # Why: 日本語ヘッダー名と列文字の双方を網羅検出し元データ列の上書き破壊を完全遮断
     import re
     ref_cols = set()
     pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
@@ -217,6 +217,10 @@ def _extract_referenced_columns(commands_slice: list[dict]) -> set[str]:
                 if "." in token:
                     token = token.split(".")[-1].strip()
                 ref_cols.add(token.upper())
+                if header_map:
+                    for col_letter, h_name in header_map.items():
+                        if token.lower() == str(h_name).lower():
+                            ref_cols.add(col_letter.upper())
         elif isinstance(val, dict):
             for v in val.values():
                 _scan(v)
@@ -1269,10 +1273,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         variables[k] = v
                     variables[item_var] = records[0]
 
-                    # Why: クラッシュ時の二重登録を防ぐため開始直後に行ステータスを処理中に更新
-                    if st_col and f_path:
-                        _write_excel_status(f_path, s_name, records[0].get("_row_idx"), st_col, "処理中")
-
+                    # Why: 中間ステータス「処理中」書き込みによる元データ汚染・誤入力を完全撤廃
                     max_iter = args.get("max_iterations", 10000)
                     clamped_records = records[:max_iter]
                     loop_stack.append({
@@ -1319,11 +1320,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             for k, v in next_rec.items():
                                 variables[k] = v
                             variables[item_var] = next_rec
-                            st_col = current_loop.get("status_column")
-                            f_path = current_loop.get("file_path")
-                            s_name = current_loop.get("sheet_name")
-                            if st_col and f_path:
-                                _write_excel_status(f_path, s_name, next_rec.get("_row_idx"), st_col, "処理中")
+                            # Why: 次行開始時の「処理中」上書きを撤廃
                         i = current_loop["start_index"] + 1
                         continue
                     else:

@@ -1282,6 +1282,18 @@ def optimize_workflow_events(
 
     from core.executor.os_env_controller import is_link_or_url, normalize_text_width
 
+    # Why: Web自動化マクロにおいて記録時に混入したExcelセル書き込み(write_cell)を完全排除
+    has_browser_ops = any(
+        info.get("raw_action") == "browser_action" or 
+        any(b in str(info.get("window_name", "")).lower() for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        for info in temp_workflow_info
+    )
+    if has_browser_ops:
+        temp_workflow_info = [
+            info for info in temp_workflow_info 
+            if not (info.get("raw_action") == "excel_action" and info.get("action") == "write_cell")
+        ]
+
     # Why: 直前クリック先要素のセレクタ・コンテキストを入力イベント(type_text)へ自動バインド
     last_browser_click_ctx = {}
     last_browser_win = ""
