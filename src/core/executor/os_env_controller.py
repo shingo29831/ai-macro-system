@@ -187,31 +187,45 @@ def set_ime_state(text: str = "", target_state: bool | None = None):
 
 
 def restore_system_cursor(force: bool = True):
-    """OSシステムカーソルを標準設定へ完全復元する（SPIと標準ファイル適用の多重防護）"""
+    """OSシステムカーソルを標準設定へ完全復元する（レジストリ・フォールバック網羅）"""
     global _current_cursor_mode
     if platform.system() != "Windows":
         return
     try:
         user32 = ctypes.windll.user32
-
-        # 1. Windows公式SystemParametersInfo (引数はすべて0)
         user32.SystemParametersInfoW(SPI_SETCURSORS, 0, 0, 0)
 
-        # 2. Windows 10/11でSPIが効かない環境への確実なフォールバック
+        # Why: Windows標準カーソルファイルを網羅探索して青カーソル焼き付きを強制解除
         import os
-        win_dir = os.environ.get("SystemRoot", "C:\\Windows")
-        default_cur = Path(win_dir) / "Cursors" / "aero_arrow.cur"
+        win_dir = Path(os.environ.get("SystemRoot", "C:\\Windows"))
+        candidate_paths = [
+            win_dir / "Cursors" / "aero_arrow.cur",
+            win_dir / "Cursors" / "arrow_m.cur",
+            win_dir / "Cursors" / "arrow.cur",
+            win_dir / "Cursors" / "aero_arrow_l.cur",
+        ]
+        found_cur = next((p for p in candidate_paths if p.exists()), None)
 
-        if default_cur.exists():
-            base_hcur = user32.LoadCursorFromFileW(str(default_cur))
+        if not found_cur:
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors") as key:
+                    val, _ = winreg.QueryValueEx(key, "Arrow")
+                    if val and Path(val).exists():
+                        found_cur = Path(val)
+            except Exception:
+                pass
+
+        if found_cur:
+            base_hcur = user32.LoadCursorFromFileW(str(found_cur))
             if base_hcur:
                 for cid in SYSTEM_CURSOR_IDS:
-                    # Why: IMAGE_CURSOR=2, LR_COPYRETURNORG=0x0004 で正規のカーソルハンドルを複製
                     copy_h = user32.CopyImage(base_hcur, 2, 0, 0, 0x0004)
                     if copy_h:
                         user32.SetSystemCursor(copy_h, cid)
                 user32.DestroyCursor(base_hcur)
 
+        user32.SystemParametersInfoW(SPI_SETCURSORS, 0, 0, 0x0002)
         _current_cursor_mode = "default"
     except Exception as e:
         logger.warning(f"Failed to restore system cursor: {e}")
@@ -219,42 +233,12 @@ def restore_system_cursor(force: bool = True):
 
 def set_system_cursor(mode: str = "default"):
     """
-    全システムカーソルを一括置換し、チカチカを発生させずにイベント別デザインへ瞬時に切り替える。
-    mode: 'record_idle', 'record_down', 'record_drag', 'record_hover', 'run_idle', 'run_down', 'default'
+    Why: SetSystemCursorはOSリソース汚染とチカチカを招くため常時改変を廃止し標準を維持
     """
-    global _current_cursor_mode
-    if platform.system() != "Windows":
-        return
     if mode == "default":
         restore_system_cursor(force=True)
-        return
-
-    if _current_cursor_mode == mode:
-        return
-
-    try:
-        user32 = ctypes.windll.user32
-        cur_path = _get_or_create_cur_file(mode)
-        if not cur_path.exists():
-            return
-
-        base_hcur = user32.LoadCursorFromFileW(str(cur_path))
-        if not base_hcur:
-            return
-
-        # Why: CopyIconはIcon専用のため属性が壊れる。CopyImage(IMAGE_CURSOR=2)で正規クローン
-        for cid in SYSTEM_CURSOR_IDS:
-            copy_hcur = user32.CopyImage(base_hcur, 2, 0, 0, 0x0004)
-            if copy_hcur:
-                user32.SetSystemCursor(copy_hcur, cid)
-
-        user32.DestroyCursor(base_hcur)
-        _current_cursor_mode = mode
-    except Exception as e:
-        logger.warning(f"Failed to set system cursor ({mode}): {e}")
 
 
-# Why: プロセスが異常終了した場合でもOSカーソルが壊れたまま残るのを完全防止
-atexit.register(lambda: restore_system_cursor(force=True))
-# Why: 起動時に前回の異常終了等で残ったカーソルを即座にOS標準へリセット
+# Why: 起動時に前回の異常終了等で残った青カーソルを即座にOS標準白矢印へ強制リセット
 restore_system_cursor(force=True)
+atexit.register(lambda: restore_system_cursor(force=True))

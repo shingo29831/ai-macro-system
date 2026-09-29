@@ -72,7 +72,6 @@ def start_recording():
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         _mouse_listener.start()
         _keyboard_listener.start()
-        set_system_cursor("record_idle")
 
         print("記録を開始しました")
         print(f"macro: {state.recording_dirs['macro_name']}")
