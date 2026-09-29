@@ -500,6 +500,17 @@ def build_and_save_macro(
                     cmd_args["sequence_value"] = params.sequence_value
                 if params.excel_cell:
                     cmd_args["excel_cell"] = params.excel_cell
+                if cur_info.get("cursor_x") is not None:
+                    cmd_args["x"] = cur_info.get("cursor_x")
+                    cmd_args["y"] = cur_info.get("cursor_y")
+                if elem_name:
+                    cmd_args["element_name"] = elem_name
+                if css_sel:
+                    cmd_args["selector"] = css_sel
+                    cmd_args["selector_type"] = "css"
+                elif xpath_sel:
+                    cmd_args["selector"] = xpath_sel
+                    cmd_args["selector_type"] = "xpath"
                     
                 raw_commands_data.append({
                     "method": "type_text",

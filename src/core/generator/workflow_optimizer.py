@@ -279,6 +279,92 @@ def _reorder_displaced_clicks_before_scroll(temp_workflow_info: List[Dict[str, A
         i += 1
     return result
 
+def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Why: タイピング前の確実なフォーカスと入力後のサジェスト手ブレノイズを除去しEnter検索遷移を完全保証
+    if not temp_workflow_info:
+        return temp_workflow_info
+
+    n = len(temp_workflow_info)
+    result = []
+    i = 0
+    while i < n:
+        curr = temp_workflow_info[i]
+        act = curr.get("raw_action", "")
+
+        if act == "move":
+            ctx = curr.get("app_context") or {}
+            c_type = str(ctx.get("control_type", "")).lower()
+            is_input_elem = "edit" in c_type or bool(ctx.get("css_selector")) or bool(curr.get("element_name"))
+            
+            j = i + 1
+            has_subsequent_type = False
+            while j < n:
+                next_act = temp_workflow_info[j].get("raw_action", "")
+                if next_act == "type_text":
+                    has_subsequent_type = True
+                    break
+                elif next_act in ["click", "excel_action", "browser_action"]:
+                    break
+                j += 1
+
+            if is_input_elem and has_subsequent_type:
+                curr["raw_action"] = "click"
+                curr["raw_type"] = "mouse_click"
+                curr["button"] = "left"
+                logger.info(f"Promoted pre-typing move to click for focus at ({curr.get('cursor_x')}, {curr.get('cursor_y')})")
+
+        if act == "type_text":
+            result.append(curr)
+            tx = curr.get("cursor_x", curr.get("x", 0))
+            ty = curr.get("cursor_y", curr.get("y", 0))
+            t_win = curr.get("window_name", "")
+
+            k = i + 1
+            skipped_indices = set()
+            found_enter_or_nav = False
+
+            while k < min(n, i + 6):
+                nxt = temp_workflow_info[k]
+                n_act = nxt.get("raw_action", "")
+                n_role = str(nxt.get("semantic_role", "")).lower()
+                n_win = nxt.get("window_name", "")
+
+                if n_win != t_win:
+                    found_enter_or_nav = True
+                    break
+
+                if n_act in ["key_down", "key_press", "press_key"] and n_role in ["enter", "return"]:
+                    found_enter_or_nav = True
+                    break
+
+                nx = nxt.get("cursor_x", nxt.get("x", 0))
+                ny = nxt.get("cursor_y", nxt.get("y", 0))
+                dist = ((nx - tx) ** 2 + (ny - ty) ** 2) ** 0.5
+
+                is_same_input_click = (n_act == "click" and dist <= 30)
+                is_tab_key = (n_act in ["key_down", "key_press", "press_key"] and n_role in ["tab"])
+
+                if is_same_input_click or is_tab_key:
+                    skipped_indices.add(k)
+                    k += 1
+                else:
+                    break
+
+            if found_enter_or_nav and skipped_indices:
+                logger.info(f"Cleaned {len(skipped_indices)} post-typing noise events before navigation")
+                i += 1
+                while i < n:
+                    if i in skipped_indices:
+                        i += 1
+                        continue
+                    break
+                continue
+
+        result.append(curr)
+        i += 1
+
+    return result
+
 def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: スクロール合間の無駄な移動を除去してスクロールを集約しつつ、メニュー出現用ホバーを確実に保持
     if not temp_workflow_info:
@@ -750,6 +836,7 @@ def optimize_workflow_events(
         layout_cleaned.append(info)
 
     temp_workflow_info = layout_cleaned
+    temp_workflow_info = _optimize_typing_and_search_flow(temp_workflow_info)
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)

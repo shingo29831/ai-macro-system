@@ -129,10 +129,18 @@ class BrowserController:
 
         return res_data
 
-    def _find_uia_element(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout_sec: float = 0.5):
-        if not selector:
+    def _find_uia_element(
+        self,
+        selector: Optional[str] = None,
+        last_win_args: Optional[Dict[str, Any]] = None,
+        timeout_sec: float = 0.5,
+        element_name: Optional[str] = None,
+        url: Optional[str] = None
+    ):
+        if not selector and not element_name and not url:
             return None
         import concurrent.futures
+        import re
 
         def _search():
             try:
@@ -140,7 +148,18 @@ class BrowserController:
                 import pythoncom
                 pythoncom.CoInitialize()
                 desktop = pywinauto.Desktop(backend="uia")
-                clean_sel = selector.lstrip("#").lstrip(".").strip().lower()
+                
+                search_terms = []
+                if selector:
+                    clean_sel = selector.lstrip("#").lstrip(".").strip().lower()
+                    has_text_match = re.search(r"has-text\(['\"]([^'\"]+)['\"]\)", selector)
+                    if has_text_match:
+                        search_terms.append(has_text_match.group(1).lower())
+                    search_terms.append(clean_sel)
+                if element_name:
+                    search_terms.append(element_name.strip().lower())
+                if url:
+                    search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
                 windows = []
@@ -163,12 +182,12 @@ class BrowserController:
                             auto_id = str(getattr(child.element_info, "automation_id", "") or "").lower()
                             name = str(child.window_text() or "").lower()
                             c_name = str(getattr(child.element_info, "class_name", "") or "").lower()
-                            if clean_sel in auto_id or clean_sel in name or clean_sel in c_name:
+                            if any(t in auto_id or t in name or t in c_name for t in search_terms):
                                 return child
                             for sub in child.children():
                                 s_auto = str(getattr(sub.element_info, "automation_id", "") or "").lower()
                                 s_name = str(sub.window_text() or "").lower()
-                                if clean_sel in s_auto or clean_sel in s_name:
+                                if any(t in s_auto or t in s_name for t in search_terms):
                                     return sub
                     except Exception:
                         continue
@@ -195,8 +214,15 @@ class BrowserController:
             logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'.")
             return None
 
-    def _click_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float = 0.5) -> None:
-        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout, 0.5))
+    def _click_by_uia_or_selector(
+        self,
+        selector: Optional[str],
+        last_win_args: Optional[Dict[str, Any]],
+        timeout: float = 0.5,
+        element_name: Optional[str] = None,
+        url: Optional[str] = None
+    ) -> bool:
+        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout, 0.5), element_name=element_name, url=url)
         if elem:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2
@@ -212,13 +238,23 @@ class BrowserController:
                 time.sleep(0.06)
                 set_system_cursor("run_idle")
             time.sleep(0.2)
+            return True
         else:
-            logger.info(f"UIA element not resolved for selector: '{selector}'. Falling back to physical coordinates.")
+            logger.info(f"UIA element not resolved for selector: '{selector}', name: '{element_name}'. Falling back.")
+            return False
 
     def _type_by_uia_or_selector(
-        self, selector: str, text: str, clear_before: bool, last_win_args: Optional[Dict[str, Any]], timeout: float
-    ) -> None:
-        self._click_by_uia_or_selector(selector, last_win_args, timeout)
+        self,
+        selector: Optional[str],
+        text: str,
+        clear_before: bool,
+        last_win_args: Optional[Dict[str, Any]],
+        timeout: float,
+        element_name: Optional[str] = None
+    ) -> bool:
+        clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout, element_name=element_name)
+        if not clicked:
+            return False
         if clear_before:
             self._keyboard.press(Key.ctrl)
             self._keyboard.press('a')
@@ -232,6 +268,7 @@ class BrowserController:
             self._keyboard.type(char)
             time.sleep(0.02)
         time.sleep(0.2)
+        return True
 
     def _read_text_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float) -> str:
         elem = self._find_uia_element(selector, last_win_args)

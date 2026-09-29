@@ -1406,6 +1406,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     button_str = args.get("button", "left")
                     clicks = args.get("clicks", 1)
                     excel_dest_cell = args.get("excel_dest_cell")
+                    selector = args.get("selector")
+                    elem_name = args.get("element_name")
+                    target_url = args.get("url")
                     
                     skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
@@ -1422,7 +1425,17 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
-                    # Why: UIA要素探索によるCOMデッドロック・永久フリーズを完全排除し物理座標で確実にクリック
+                    # Why: ブラウザ専用セレクタ/UIA要素が存在する場合は高精度クリックを最優先実行
+                    if not skip_physical and (selector or elem_name) and is_browser_target:
+                        try:
+                            from core.executor.browser_controller import BrowserController
+                            bc = BrowserController.get_instance()
+                            if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url):
+                                logger.info(f"[{workflow_id}] High-precision browser click succeeded on '{elem_name or selector}'.")
+                                skip_physical = True
+                        except Exception as b_err:
+                            logger.info(f"[{workflow_id}] High-precision browser click bypassed: {b_err}")
+
                     if not skip_physical:
                         btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
                         _smooth_move(int(x), int(y))
@@ -1509,6 +1522,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     clear_before = args.get("clear_before_typing", False)
                     use_clip = args.get("use_clipboard")
                     ime_mode = args.get("ime_mode", "auto")
+                    selector = args.get("selector")
+                    elem_name = args.get("element_name")
+                    type_x = args.get("x")
+                    type_y = args.get("y")
 
                     # Why: 突発的ダイアログの割り込みによる入力消失を事前検出
                     has_dlg, dlg_title = _detect_unexpected_dialog(last_win_args.get("mapped_hwnd") if last_win_args else None)
@@ -1533,7 +1550,27 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 logger.warning(f"[{workflow_id}] Failed to set Excel cell value {excel_cell}: {e}")
                                 excel_app_cache = None
 
+                        # Why: ブラウザ専用セレクタがある場合は高精度タイピングを最優先実行
+                        if not skip_physical and is_browser_target and (selector or elem_name):
+                            try:
+                                from core.executor.browser_controller import BrowserController
+                                bc = BrowserController.get_instance()
+                                if bc._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=0.6, element_name=elem_name):
+                                    logger.info(f"[{workflow_id}] High-precision browser typing succeeded on '{elem_name or selector}'.")
+                                    skip_physical = True
+                            except Exception as b_err:
+                                logger.info(f"[{workflow_id}] High-precision browser typing bypassed: {b_err}")
+
                         if not skip_physical:
+                            # Why: 入力位置(座標)がある場合、事前クリックでフォーカスを確実に確立し入力消失を完全防止
+                            if type_x is not None and type_y is not None:
+                                fx = int(type_x + off_x)
+                                fy = int(type_y + off_y)
+                                _smooth_move(fx, fy)
+                                time.sleep(0.04)
+                                mouse.click(Button.left, 1)
+                                time.sleep(0.06)
+
                             # Why: ブラウザ起動直後のクリックなし入力時はCtrl+Lでアドレスバーフォーカスを完全保証
                             is_prev_browser_activate = False
                             for prev_cmd_idx in range(i - 1, -1, -1):
@@ -1547,7 +1584,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                         is_prev_browser_activate = True
                                     break
 
-                            if is_prev_browser_activate:
+                            if is_prev_browser_activate and type_x is None:
                                 keyboard.press(Key.ctrl)
                                 keyboard.press('l')
                                 keyboard.release('l')
