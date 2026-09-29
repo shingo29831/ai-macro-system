@@ -416,9 +416,9 @@ class LoopCountWidget(QFrame):
     def _refresh_columns_preview(self):
         f_path = self.args.get("file_path", "")
         s_name = self.args.get("sheet_name")
-        cols_map = get_excel_columns_map(f_path, s_name)
+        cols_map = get_excel_columns_map(f_path, s_name, self.workflow_dir)
         self.args["columns_map"] = cols_map
-        preview_texts = [f"{{{{{col}}}}} {name}" for col, name in list(cols_map.items())[:6]]
+        preview_texts = [f"{col}列:{name}" for col, name in list(cols_map.items())[:6]]
         if len(cols_map) > 6:
             preview_texts.append(f"...他{len(cols_map)-6}列")
         self.cols_preview_label.setText(" | ".join(preview_texts) if preview_texts else "列未検出")
@@ -503,13 +503,18 @@ class LoopCountWidget(QFrame):
         if fp:
             self.file_edit.setText(fp)
             self._on_file_changed(fp)
-def get_excel_columns_map(file_path: str, sheet_name: str = None) -> dict[str, str]:
+def get_excel_columns_map(file_path: str, sheet_name: str = None, base_dir: Path = None) -> dict[str, str]:
     """Excelの1行目を軽量スキャンし、列文字とヘッダー名の辞書を返す"""
-    if not file_path or not Path(file_path).exists():
+    if not file_path:
+        return {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+    p = Path(file_path)
+    if not p.exists() and base_dir and (base_dir / file_path).exists():
+        p = base_dir / file_path
+    if not p.exists():
         return {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
     try:
         import openpyxl
-        resolved = str(Path(file_path).resolve())
+        resolved = str(p.resolve())
         wb = openpyxl.load_workbook(resolved, read_only=True, data_only=True)
         ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
         cols = {}

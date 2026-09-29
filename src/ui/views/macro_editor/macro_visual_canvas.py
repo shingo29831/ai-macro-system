@@ -69,14 +69,33 @@ class MacroVisualCanvas(QWidget):
             block.delete_requested.connect(self._on_delete_requested)
             block.content_changed.connect(self.commands_changed.emit)
 
-            # Why: ループ内ブロックへ親ループのExcel列一覧を渡し入力変数として選択可能化
+            # Why: ループ内外を問わず利用可能なExcel列情報を自動解決して配備
+            cols = None
             if is_in_loop:
                 for loop in self.loops:
                     if loop.get("start_action_idx", -1) <= i <= loop.get("end_action_idx", -1):
                         loop_cmd = self.commands[loop["loop_start_idx"]]
-                        cols = loop_cmd.get("args", {}).get("columns_map", {})
+                        l_args = loop_cmd.setdefault("args", {})
+                        cols = l_args.get("columns_map")
+                        if not cols and l_args.get("data_source") == "excel" and l_args.get("file_path"):
+                            from .loop_widgets import get_excel_columns_map
+                            cols = get_excel_columns_map(l_args.get("file_path"), l_args.get("sheet_name"), self.workflow_dir)
+                            l_args["columns_map"] = cols
                         if cols:
                             block.set_available_variables(cols)
+                        break
+
+            if not cols:
+                for c in self.commands:
+                    if c.get("method") == "loop_start" and c.get("args", {}).get("data_source") == "excel" and c.get("args", {}).get("file_path"):
+                        c_args = c["args"]
+                        c_map = c_args.get("columns_map")
+                        if not c_map:
+                            from .loop_widgets import get_excel_columns_map
+                            c_map = get_excel_columns_map(c_args.get("file_path"), c_args.get("sheet_name"), self.workflow_dir)
+                            c_args["columns_map"] = c_map
+                        if c_map:
+                            block.set_available_variables(c_map)
                         break
 
             self.main_layout.addWidget(block)
@@ -121,7 +140,12 @@ class MacroVisualCanvas(QWidget):
         # Why: ループ設定変更時にExcel列情報を配下ブロックへ動的再配布
         if 0 <= loop_start_idx < len(self.commands):
             start_cmd = self.commands[loop_start_idx]
-            cols = start_cmd.get("args", {}).get("columns_map", {})
+            s_args = start_cmd.setdefault("args", {})
+            cols = s_args.get("columns_map")
+            if not cols and s_args.get("data_source") == "excel" and s_args.get("file_path"):
+                from .loop_widgets import get_excel_columns_map
+                cols = get_excel_columns_map(s_args.get("file_path"), s_args.get("sheet_name"), self.workflow_dir)
+                s_args["columns_map"] = cols
             if cols:
                 for loop in self.loops:
                     if loop.get("loop_start_idx") == loop_start_idx:
