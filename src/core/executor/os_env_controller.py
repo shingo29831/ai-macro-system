@@ -4,7 +4,9 @@ import platform
 import ctypes
 import time
 import logging
-import io
+import struct
+import tempfile
+from pathlib import Path
 from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
@@ -13,85 +15,66 @@ logger = logging.getLogger(__name__)
 # 設定定数
 # =========================
 
-import atexit
-
 WM_IME_CONTROL = 0x0283
 IMC_SETOPENSTATUS = 0x0006
-OCR_NORMAL = 32512
+TARGET_SYSTEM_CURSORS = [32512, 32513, 32649]  # OCR_NORMAL, OCR_IBEAM, OCR_HAND
 SPI_SETCURSORS = 0x0057
 
 _cursor_changed = False
 
 
-class ICONINFO(ctypes.Structure):
-    _fields_ = [
-        ("fIcon", ctypes.c_bool),
-        ("xHotspot", ctypes.c_uint32),
-        ("yHotspot", ctypes.c_uint32),
-        ("hbmMask", ctypes.c_void_p),
-        ("hbmColor", ctypes.c_void_p),
-    ]
-
-
-def _generate_app_cursor_image(mode: str) -> tuple[Image.Image, tuple[int, int]]:
-    # Why: 外部ファイル依存ゼロで高視認性の独自矢印+状態バッジカーソルを動的生成
+def _build_cur_file(file_path: Path, mode: str):
+    # Why: Windows標準.curバイナリ(ICONDIR+DIB)を直接生成しLoadCursorFromFileWに完全適合
     img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    arrow_poly = [(0, 0), (0, 17), (4, 13), (8, 20), (11, 19), (7, 12), (13, 12)]
-    draw.polygon(arrow_poly, fill=(255, 255, 255, 255), outline=(20, 20, 20, 255))
+    arrow_poly = [(0, 0), (0, 18), (5, 14), (9, 22), (12, 21), (8, 13), (14, 13)]
+    draw.polygon(arrow_poly, fill=(255, 255, 255, 255), outline=(10, 10, 10, 255))
 
     if mode == "record":
-        # 録画バッジ: 赤いREC発光リングと中央ドット
-        draw.ellipse([(13, 13), (29, 29)], fill=(220, 38, 38, 240), outline=(255, 255, 255, 255), width=1)
-        draw.ellipse([(18, 18), (24, 24)], fill=(255, 255, 255, 255))
+        draw.ellipse([(14, 14), (30, 30)], fill=(220, 38, 38, 255), outline=(255, 255, 255, 255), width=2)
+        draw.ellipse([(19, 19), (25, 25)], fill=(255, 255, 255, 255))
     elif mode == "run":
-        # 実行バッジ: 青いAI実行リングと再生三角シンボル
-        draw.ellipse([(13, 13), (29, 29)], fill=(37, 99, 235, 240), outline=(255, 255, 255, 255), width=1)
-        draw.polygon([(19, 17), (19, 25), (26, 21)], fill=(255, 255, 255, 255))
+        draw.ellipse([(14, 14), (30, 30)], fill=(37, 99, 235, 255), outline=(255, 255, 255, 255), width=2)
+        draw.polygon([(20, 18), (20, 26), (27, 22)], fill=(255, 255, 255, 255))
 
-    return img, (0, 0)
+    width, height = 32, 32
+    hotspot_x, hotspot_y = 0, 0
+
+    pixels = img.load()
+    xor_data = bytearray()
+    and_mask = bytearray()
+
+    for y in reversed(range(height)):
+        and_row = 0
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            xor_data.extend([b, g, r, a])
+            bit = 1 if a < 128 else 0
+            and_row = (and_row << 1) | bit
+        and_mask.extend(and_row.to_bytes(4, byteorder="big"))
+
+    header = struct.pack(
+        "<IIIHHIIIIII",
+        40, width, height * 2, 1, 32, 0, len(xor_data) + len(and_mask), 0, 0, 0, 0
+    )
+    image_data = header + bytes(xor_data) + bytes(and_mask)
+    icondir = struct.pack("<HHH", 0, 2, 1)
+    direntry = struct.pack(
+        "<BBBBHHII",
+        width, height, 0, 0, hotspot_x, hotspot_y, len(image_data), 22
+    )
+
+    with open(file_path, "wb") as f:
+        f.write(icondir + direntry + image_data)
 
 
-def _create_custom_cursor_from_image(img: Image.Image, hotspot: tuple[int, int]) -> int | None:
-    # Why: PNGバイト列からGDIビットマップを経由してホットスポット付きHCURSORを生成
-    if platform.system() != "Windows":
-        return None
-    try:
-        user32 = ctypes.windll.user32
-        gdi32 = ctypes.windll.gdi32
-
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
-
-        h_icon = user32.CreateIconFromResourceEx(
-            png_bytes, len(png_bytes), True, 0x00030000, img.width, img.height, 0
-        )
-        if not h_icon:
-            return None
-
-        icon_info = ICONINFO()
-        if not user32.GetIconInfo(h_icon, ctypes.byref(icon_info)):
-            user32.DestroyIcon(h_icon)
-            return None
-
-        icon_info.fIcon = False
-        icon_info.xHotspot = hotspot[0]
-        icon_info.yHotspot = hotspot[1]
-
-        h_cursor = user32.CreateIconIndirect(ctypes.byref(icon_info))
-
-        if icon_info.hbmColor:
-            gdi32.DeleteObject(icon_info.hbmColor)
-        if icon_info.hbmMask:
-            gdi32.DeleteObject(icon_info.hbmMask)
-        user32.DestroyIcon(h_icon)
-
-        return h_cursor
-    except Exception as e:
-        logger.warning(f"Failed to create custom HCURSOR: {e}")
-        return None
+def _get_app_cur_path(mode: str) -> Path:
+    temp_dir = Path(tempfile.gettempdir())
+    cur_path = temp_dir / f"aimacro_{mode}.cur"
+    if not cur_path.exists():
+        _build_cur_file(cur_path, mode)
+    return cur_path
 
 
 def set_dpi_awareness():
@@ -165,22 +148,14 @@ def set_system_cursor(mode: str = "default"):
 
     try:
         user32 = ctypes.windll.user32
-        img, hotspot = _generate_app_cursor_image(mode)
-        h_cursor = _create_custom_cursor_from_image(img, hotspot)
+        cur_path = _get_app_cur_path(mode)
 
-        if not h_cursor:
-            # フォールバック: 組み込みカーソル
-            cursor_map = {"record": 32515, "run": 32650}
-            cid = cursor_map.get(mode)
-            if cid:
-                h_sys = user32.LoadCursorW(0, cid)
-                if h_sys:
-                    h_cursor = user32.CopyIcon(h_sys)
-
-        if h_cursor:
-            # Why: SetSystemCursorがハンドルの破棄を担うためリークなく安全に差し替え
-            if user32.SetSystemCursor(h_cursor, OCR_NORMAL):
-                _cursor_changed = True
+        # Why: SetSystemCursorは渡されたハンドルを内部破棄するためターゲット毎に個別ロード
+        for cursor_id in TARGET_SYSTEM_CURSORS:
+            h_cur = user32.LoadCursorFromFileW(str(cur_path))
+            if h_cur:
+                if user32.SetSystemCursor(h_cur, cursor_id):
+                    _cursor_changed = True
     except Exception as e:
         logger.warning(f"Failed to set custom system cursor ({mode}): {e}")
 
