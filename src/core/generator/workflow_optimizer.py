@@ -465,14 +465,27 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     if not temp_workflow_info:
         return temp_workflow_info
 
-    # 1. ブラウザから直接取得されたフォーム確定値スナップショットを全イベントから集約
+    # 1. フォーム確定値スナップショットおよび有効物理座標を全イベントから包括集約
     global_form_snapshot: Dict[str, str] = {}
+    selector_coords: Dict[str, Tuple[int, int]] = {}
+    selector_names: Dict[str, str] = {}
+
     for info in temp_workflow_info:
         ctx = info.get("app_context") or {}
+        sel = ctx.get("css_selector") or info.get("selector") or ""
+        ename = ctx.get("element_name") or info.get("element_name") or ""
+        cx = info.get("cursor_x", info.get("x", 0))
+        cy = info.get("cursor_y", info.get("y", 0))
+
+        if sel and cx > 20 and cy > 20:
+            selector_coords[sel] = (cx, cy)
+        if sel and ename:
+            selector_names[sel] = ename
+
         for snap_src in [ctx.get("form_snapshot"), ctx.get("committed_values")]:
             if isinstance(snap_src, dict):
                 for sk, sv in snap_src.items():
-                    if sv and str(sv).strip():
+                    if sv is not None and str(sv).strip():
                         global_form_snapshot[sk] = str(sv).strip()
         prev_c = ctx.get("committed_previous_value")
         if isinstance(prev_c, dict):
@@ -524,14 +537,17 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         c_type = str(ctx.get("control_type", "")).lower()
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
 
-        # Why: 処理済みセレクタ、通過ホバー移動、および外枠・Document要素を除外
+        # Why: システムUI、IME候補窓、処理済みセレクタ、通過ホバー移動、および外枠・Document要素を除外
+        if _is_system_ui_event(info):
+            i += 1
+            continue
         if sel and sel in processed_selectors:
             i += 1
             continue
         if act == "move":
             i += 1
             continue
-        if "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
+        if "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "CoreWindow"]):
             i += 1
             continue
 
@@ -542,6 +558,25 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             (c_type in ["group", "pane", "custom", "window"] and not elem_name)
         )
         if is_container_click:
+            i += 1
+            continue
+
+        # Why: 送信ボタン(Button, submit)のクリックを専用ブラウザアクションへ即時昇格
+        is_submit_btn = act == "click" and (
+            "button" in c_type or
+            any(k in sel.lower() for k in ["submit", "btn", "button"]) or
+            any(k in elem_name.lower() for k in ["登録", "送信", "保存", "submit", "save", "ログイン"])
+        )
+        if is_submit_btn:
+            info["raw_action"] = "browser_action"
+            info["raw_type"] = "browser_action"
+            info["action"] = "click_element"
+            info["selector"] = sel or "button[type='submit']"
+            info["selector_type"] = "css"
+            info["element_name"] = elem_name or "登録する"
+            info["semantic_role"] = elem_name or "登録する"
+            result.append(info)
+            processed_selectors.add(sel)
             i += 1
             continue
 
@@ -610,6 +645,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     else:
                         break
 
+                # Why: 物理座標が(0,0)の場合は全履歴の有効接触座標から自動復元
+                if sel in selector_coords:
+                    cx, cy = selector_coords[sel]
+                    info["cursor_x"] = cx
+                    info["cursor_y"] = cy
+                    info["x"] = cx
+                    info["y"] = cy
+
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "type_text"
@@ -647,92 +690,145 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     ref_eid = last_evt_ref.get("event_id", "evt_auto")
     ref_win = last_evt_ref.get("window_name", "")
 
-    for snap_key, snap_val in global_form_snapshot.items():
-        clean_k = snap_key.replace("name:", "").strip()
-        if snap_key in processed_selectors or clean_k in processed_selectors:
+    # 4. スナップショットに存在する確定値のうち、イベント列で脱落したフォーム要素を完全復元
+    ref_evt = temp_workflow_info[0] if temp_workflow_info else {}
+    ref_eid = ref_evt.get("event_id", "evt_auto")
+    ref_win = ref_evt.get("window_name", "")
+
+    # スナップショットキーのうち、未処理のIDセレクタ (#id) を抽出
+    snapshot_items = []
+    for k, v in global_form_snapshot.items():
+        if not k.startswith("#") or k in processed_selectors:
             continue
-        val_str = str(snap_val).strip().lower()
-        # Why: セレクタまたは真偽値属性から普遍的にチェックボックスを特定
-        is_chk = "check" in snap_key.lower() or val_str in ["true", "false"]
+        v_str = str(v).strip()
+        if not v_str or v_str == "ContentSelectDropdown":
+            continue
+        snapshot_items.append((k, v_str))
+
+    # 送信ボタンより前に挿入するため、既存result内の送信ボタン位置を特定
+    insert_pos = len(result)
+    for r_idx, r_item in enumerate(result):
+        if r_item.get("action") == "click_element" and any(b in str(r_item.get("selector", "")).lower() for b in ["submit", "btn", "button"]):
+            insert_pos = r_idx
+            break
+
+    for sel_id, val_str in snapshot_items:
+        clean_name = selector_names.get(sel_id, sel_id.lstrip("#"))
+        coords = selector_coords.get(sel_id, (0, 0))
+
+        # A. チェックボックス復元
+        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"]
         if is_chk:
-            target_val = val_str in ["true", "1", "checked"]
-            was_interacted = any(
-                snap_key in str(e.get("app_context") or {}) or clean_k in str(e.get("app_context") or {})
-                for e in temp_workflow_info
-            )
-            if target_val or was_interacted:
-                target_sel = snap_key if snap_key.startswith(("#", ".")) else ""
-                if not target_sel:
-                    # 関連するIDセレクタを探索
-                    for sk in global_form_snapshot.keys():
-                        if sk.startswith("#") and clean_k.lower() in sk.lower():
-                            target_sel = sk
-                            break
-                if not target_sel:
-                    target_sel = f"#{clean_k}" if clean_k and " " not in clean_k else "input[type='checkbox']"
-
-                if target_sel not in processed_selectors:
-                    elem_label = clean_k if "name:" in snap_key else "チェックボックス"
-                    result.append({
-                        "raw_action": "browser_action",
-                        "raw_type": "browser_action",
-                        "action": "set_checkbox",
-                        "selector": target_sel,
-                        "selector_type": "css",
-                        "value": target_val,
-                        "element_name": elem_label,
-                        "semantic_role": elem_label,
-                        "window_name": ref_win,
-                        "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
-                        "fallback_events": [ref_eid]
-                    })
-                    processed_selectors.add(target_sel)
-                    processed_selectors.add(snap_key)
-                    logger.info(f"Auto-injected checkbox action from snapshot: {target_sel} = {target_val}")
-
-    # Why: 汎用フォーム送信シグナル(Enterキーまたは送信ボタン接触)検知時にSubmitを補完
-    submit_keywords = ["登録", "送信", "保存", "検索", "ログイン", "確定", "submit", "save", "search", "login", "send"]
-    has_submit_signal = any(
-        (e.get("raw_action") in ["key_down", "key_press", "press_key"] and str(e.get("semantic_role", "")).lower() in ["enter", "return"]) or
-        any(k in str((e.get("app_context") or {}).get("element_name") or "").lower() for k in submit_keywords)
-        for e in temp_workflow_info
-    )
-    if has_submit_signal:
-        has_existing_submit = any(
-            (r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])) or
-            (r.get("raw_action") in ["key_down", "key_press", "press_key"] and str(r.get("semantic_role", "")).lower() in ["enter", "return"])
-            for r in result
-        )
-        if not has_existing_submit:
-            # ログ内から実在する送信ボタン要素を優先探索、未検出時は標準type='submit'セレクタを採用
-            detected_btn_sel = ""
-            detected_btn_name = ""
-            for e in temp_workflow_info:
-                ctx = e.get("app_context") or {}
-                ename = str(ctx.get("element_name") or e.get("element_name") or "").strip()
-                esel = str(ctx.get("css_selector") or e.get("selector") or "").strip()
-                if any(k in ename.lower() for k in submit_keywords) or any(k in esel.lower() for k in ["submit", "btn", "button"]):
-                    if esel and esel not in ["#entryForm", "form"]:
-                        detected_btn_sel = esel
-                        detected_btn_name = ename
-                        break
-
-            final_btn_sel = detected_btn_sel or "button[type='submit'], input[type='submit'], button"
-            final_btn_name = detected_btn_name or "送信"
-
-            result.append({
+            b_val = val_str.lower() in ["true", "1", "checked"]
+            new_item = {
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
-                "action": "click_element",
-                "selector": final_btn_sel,
+                "action": "set_checkbox",
+                "selector": sel_id,
                 "selector_type": "css",
-                "element_name": final_btn_name,
-                "semantic_role": final_btn_name,
+                "value": b_val,
+                "text": str(b_val),
+                "element_name": clean_name or "チェックボックス",
+                "semantic_role": clean_name or "チェックボックス",
                 "window_name": ref_win,
-                "event_id": f"{ref_eid}_submit_btn",
-                "fallback_events": [ref_eid]
-            })
-            logger.info(f"Auto-injected generic form submit action: {final_btn_sel} ({final_btn_name})")
+                "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
+                "fallback_events": [ref_eid],
+                "cursor_x": coords[0],
+                "cursor_y": coords[1],
+                "x": coords[0],
+                "y": coords[1]
+            }
+            result.insert(insert_pos, new_item)
+            insert_pos += 1
+            processed_selectors.add(sel_id)
+            logger.info(f"Restored missing checkbox from snapshot: {sel_id} = {b_val}")
+            continue
+
+        # B. セレクトボックス復元（#plan等）
+        is_select = any(k in sel_id.lower() for k in ["plan", "select", "type", "category", "option", "dropdown"])
+        if is_select:
+            new_item = {
+                "raw_action": "browser_action",
+                "raw_type": "browser_action",
+                "action": "select_option",
+                "selector": sel_id,
+                "selector_type": "css",
+                "value": val_str,
+                "text": val_str,
+                "element_name": clean_name or "選択項目",
+                "semantic_role": val_str,
+                "window_name": ref_win,
+                "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
+                "fallback_events": [ref_eid],
+                "cursor_x": coords[0],
+                "cursor_y": coords[1],
+                "x": coords[0],
+                "y": coords[1]
+            }
+            result.insert(insert_pos, new_item)
+            insert_pos += 1
+            processed_selectors.add(sel_id)
+            logger.info(f"Restored missing select_option from snapshot: {sel_id} = {val_str}")
+            continue
+
+        # C. テキスト / 数値入力欄復元（#amount等）
+        new_item = {
+            "raw_action": "browser_action",
+            "raw_type": "browser_action",
+            "action": "type_text",
+            "selector": sel_id,
+            "selector_type": "css",
+            "text": val_str,
+            "semantic_role": val_str,
+            "element_name": clean_name or "入力項目",
+            "window_name": ref_win,
+            "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
+            "fallback_events": [ref_eid],
+            "cursor_x": coords[0],
+            "cursor_y": coords[1],
+            "x": coords[0],
+            "y": coords[1]
+        }
+        result.insert(insert_pos, new_item)
+        insert_pos += 1
+        processed_selectors.add(sel_id)
+        logger.info(f"Restored missing type_text from snapshot: {sel_id} = {val_str}")
+
+    # 5. フォーム送信アクションの保証（未存在時のみ安全に補完）
+    has_submit_btn = any(
+        r.get("action") == "click_element" and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn", "button"])
+        for r in result
+    )
+    if not has_submit_btn:
+        target_btn_sel = ""
+        target_btn_name = ""
+        for e in temp_workflow_info:
+            ctx = e.get("app_context") or {}
+            c_type = str(ctx.get("control_type") or "").lower()
+            ename = str(ctx.get("element_name") or e.get("element_name") or "").strip()
+            esel = str(ctx.get("css_selector") or e.get("selector") or "").strip()
+            if "window" in c_type or "document" in c_type or any(cls in esel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
+                continue
+            if "button" in c_type or any(k in esel.lower() for k in ["submit", "btn"]):
+                target_btn_sel = esel
+                target_btn_name = ename
+                break
+
+        final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
+        final_name = target_btn_name or "登録する"
+        result.append({
+            "raw_action": "browser_action",
+            "raw_type": "browser_action",
+            "action": "click_element",
+            "selector": final_sel,
+            "selector_type": "css",
+            "element_name": final_name,
+            "semantic_role": final_name,
+            "window_name": ref_win,
+            "event_id": f"{ref_eid}_submit_btn",
+            "fallback_events": [ref_eid]
+        })
+        logger.info(f"Appended generic form submit button: {final_sel} ({final_name})")
 
     return result
 
@@ -1133,8 +1229,13 @@ def optimize_workflow_events(
         elem_text = str(ctx.get("text", "")).lower()
         role = str(evt.get("semantic_role", "")).lower()
         css = str(ctx.get("css_selector", "")).lower()
-        system_terms = ["記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中", "qapplication.qwidget"]
-        return any(term in elem_name or term in elem_text or term in role or term in css for term in system_terms)
+        c_type = str(ctx.get("control_type", "")).lower()
+        system_terms = [
+            "記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中",
+            "qapplication.qwidget", "windows 入力エクスペリエンス", "textinputhost",
+            "corewindow", "windows.ui.core"
+        ]
+        return any(term in elem_name or term in elem_text or term in role or term in css or term in c_type for term in system_terms)
 
     shell_cut_info = []
     skip_until_new_window = False

@@ -337,6 +337,27 @@ class BrowserController:
                     search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+                # Why: uiautomationの高速ネイティブC++深層走査でWebContent深層コントロールを瞬時に検出
+                try:
+                    import uiautomation as auto
+                    win_ctrl = auto.ControlFromHandle(int(target_hwnd)) if target_hwnd else None
+                    if not win_ctrl or not win_ctrl.Exists(0, 0):
+                        top_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        if top_hwnd: win_ctrl = auto.ControlFromHandle(top_hwnd)
+
+                    if win_ctrl and win_ctrl.Exists(0, 0):
+                        for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=14):
+                            aid = str(getattr(ctrl, "AutomationId", "") or "").lower()
+                            name = str(getattr(ctrl, "Name", "") or "").lower()
+                            ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
+
+                            if any(t in aid or t in name for t in search_terms if len(t) >= 2):
+                                if any(k in ct_name for k in ["edit", "combo", "button", "check", "spinner", "list"]):
+                                    from pywinauto.controls.uiawrapper import UIAWrapper
+                                    return UIAWrapper(ctrl.Element)
+                except Exception as ex_auto:
+                    logger.debug(f"uiautomation deep walk error: {ex_auto}")
+
                 windows = []
                 if target_hwnd:
                     try:
@@ -352,7 +373,6 @@ class BrowserController:
                         if last_win_args["window_title"].lower() not in title.lower():
                             continue
                     try:
-                        # Why: 画面全体を覆う巨大コンテナの誤判定を排し入力可能要素を優先検出
                         rect_win = window.rectangle()
                         win_area = max(1, (rect_win.right - rect_win.left) * (rect_win.bottom - rect_win.top))
                         candidates = []
@@ -366,17 +386,12 @@ class BrowserController:
                                 candidates.append(child)
 
                         for cand in candidates:
-                            c_rect = cand.rectangle()
-                            c_area = (c_rect.right - c_rect.left) * (c_rect.bottom - c_rect.top)
-                            if c_area > win_area * 0.7:
-                                continue
                             auto_id = str(getattr(cand.element_info, "automation_id", "") or "").lower()
                             name = str(cand.window_text() or "").lower()
                             c_name = str(getattr(cand.element_info, "class_name", "") or "").lower()
                             c_type = str(getattr(cand.element_info, "control_type", "") or "").lower()
-                            if any(t in auto_id or t in name or t in c_name for t in search_terms):
-                                if "edit" in c_type or "combo" in c_type or "button" in c_type or c_area < win_area * 0.4:
-                                    return cand
+                            if any(t in auto_id or t in name or t in c_name for t in search_terms if len(t) >= 2):
+                                return cand
                     except Exception:
                         continue
             except Exception as e:
