@@ -592,6 +592,26 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
             if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
                 clean_txt = str(final_val).strip()
+
+                # Why: 直前に残った同一入力の断片タイピングや修飾キー残骸を遡及除去し検索欄への誤爆を根絶
+                while result:
+                    prev_item = result[-1]
+                    p_act = prev_item.get("raw_action", "")
+                    p_role = str(prev_item.get("semantic_role", "")).strip()
+                    p_ctx = prev_item.get("app_context") or {}
+                    p_sel = p_ctx.get("css_selector") or prev_item.get("selector") or ""
+                    p_elem = str(p_ctx.get("element_name") or prev_item.get("element_name") or "").strip()
+
+                    is_orphan_typing = p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (
+                        not p_sel or p_sel == sel or p_elem == elem_name or
+                        (p_role and clean_txt and (p_role in clean_txt or clean_txt.startswith(p_role))) or
+                        any(mod in p_role.lower() for mod in ["tab", "shift", "space", "enter"])
+                    )
+                    if is_orphan_typing and prev_item.get("action") != "type_text":
+                        result.pop()
+                    else:
+                        break
+
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "type_text"
@@ -1186,11 +1206,13 @@ def optimize_workflow_events(
             if elem and last_clk_ctx.get("element_name") and elem != last_clk_ctx.get("element_name"):
                 last_clk_ctx = c.copy()
                 last_clk_win = w_name
-        elif act in ["type_text", "key_combo"] and last_clk_ctx and w_name == last_clk_win:
-            i_ctx = info.setdefault("app_context", {})
-            for k in ["css_selector", "xpath", "element_name", "control_type"]:
-                if not i_ctx.get(k) and last_clk_ctx.get(k):
-                    i_ctx[k] = last_clk_ctx[k]
+        elif act in ["type_text", "key_combo"] and last_clk_ctx:
+            is_win_match = (w_name == last_clk_win) or not last_clk_win or not w_name
+            if is_win_match:
+                i_ctx = info.setdefault("app_context", {})
+                for k in ["css_selector", "xpath", "element_name", "control_type"]:
+                    if not i_ctx.get(k) and last_clk_ctx.get(k):
+                        i_ctx[k] = last_clk_ctx[k]
 
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 

@@ -45,7 +45,9 @@ class TypingSessionAggregator:
                     last_click_ctx = ctx.copy()
                     last_click_win = ev_win
             elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
-                if ev_win == last_click_win:
+                # Why: タスクバーやポップアップ経由でWindowNameが空の場合もブラウザ操作なら安全にコンテキストを伝播
+                is_win_match = (ev_win == last_click_win) or not last_click_win or not ev_win
+                if is_win_match:
                     e_ctx = ev.setdefault("app_context", {})
                     for k in ["element_name", "css_selector", "xpath", "control_type"]:
                         if not e_ctx.get(k) and last_click_ctx.get(k):
