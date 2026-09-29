@@ -29,10 +29,35 @@ class BrowserController:
     def _resolve_template(self, text: Optional[str], variables: Dict[str, Any]) -> str:
         if not text:
             return ""
+        import re
         resolved = str(text)
         for key, val in variables.items():
             resolved = resolved.replace(f"{{{{{key}}}}}", str(val)).replace(f"${{{key}}}", str(val))
-        return resolved
+        var_lower_map = {str(k).strip().lower(): v for k, v in variables.items()}
+        pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
+        def _get_nested_val(root_key: str, sub_path: list[str]):
+            cur = variables.get(root_key)
+            if cur is None and root_key.lower() in var_lower_map:
+                cur = var_lower_map[root_key.lower()]
+            for p in sub_path:
+                if isinstance(cur, dict):
+                    cur = cur.get(p, cur.get(p.lower()))
+                else:
+                    return None
+            return cur
+        def _repl(match):
+            raw_key = (match.group(1) or match.group(2)).strip()
+            if "." in raw_key:
+                parts = raw_key.split(".")
+                val = _get_nested_val(parts[0].strip(), [p.strip() for p in parts[1:]])
+                if val is not None:
+                    return str(val)
+            if raw_key in variables:
+                return str(variables[raw_key])
+            if raw_key.lower() in var_lower_map:
+                return str(var_lower_map[raw_key.lower()])
+            return match.group(0)
+        return pattern.sub(_repl, resolved)
 
     def _get_active_cdp_tab(self) -> Optional[Dict[str, Any]]:
         # Why: ChromiumのJSONエンドポイントからアクティブタブのCDP情報を検出
@@ -141,6 +166,42 @@ class BrowserController:
             res_data["extracted_attribute"] = content
             if var_name:
                 variables[var_name] = content
+
+        elif action == "select_option":
+            target_val = str(value if value is not None else text)
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 1.0), element_name=attr_name or args.get("element_name"))
+            if elem:
+                try:
+                    elem.click_input()
+                    time.sleep(0.1)
+                    # Why: コンボボックス展開後に選択肢テキストを直接入力または確定
+                    self._keyboard.type(target_val)
+                    time.sleep(0.05)
+                    self._keyboard.press(Key.enter)
+                    self._keyboard.release(Key.enter)
+                    res_data["selected"] = target_val
+                except Exception as e:
+                    logger.warning(f"select_option failed: {e}")
+                    res_data["status"] = "failed"
+            else:
+                res_data["status"] = "element_not_found"
+
+        elif action == "set_checkbox":
+            desired = True if value is None else bool(value)
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 1.0), element_name=attr_name or args.get("element_name"))
+            if elem:
+                try:
+                    toggle_state = getattr(elem.element_info, "toggle_state", None)
+                    current_checked = toggle_state == 1 if toggle_state is not None else False
+                    if current_checked != desired:
+                        elem.click_input()
+                        time.sleep(0.1)
+                    res_data["checked"] = desired
+                except Exception as e:
+                    logger.warning(f"set_checkbox failed: {e}")
+                    res_data["status"] = "failed"
+            else:
+                res_data["status"] = "element_not_found"
 
         elif action == "wait_element":
             found = self._wait_element_exist(selector, last_win_args, timeout_sec)

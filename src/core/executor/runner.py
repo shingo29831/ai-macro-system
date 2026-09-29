@@ -83,9 +83,25 @@ def _resolve_variables(data, variables: dict):
         for k, v in variables.items():
             res = res.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
         var_lower_map = {str(k).strip().lower(): v for k, v in variables.items()}
-        pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+        pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
+        def _get_nested_val(root_key: str, sub_path: list[str]):
+            cur = variables.get(root_key)
+            if cur is None and root_key.lower() in var_lower_map:
+                cur = var_lower_map[root_key.lower()]
+            for p in sub_path:
+                if isinstance(cur, dict):
+                    cur = cur.get(p, cur.get(p.lower()))
+                else:
+                    return None
+            return cur
+
         def _repl(match):
-            raw_key = match.group(1).strip()
+            raw_key = (match.group(1) or match.group(2)).strip()
+            if "." in raw_key:
+                parts = raw_key.split(".")
+                val = _get_nested_val(parts[0].strip(), [p.strip() for p in parts[1:]])
+                if val is not None:
+                    return str(val)
             if raw_key in variables:
                 return str(variables[raw_key])
             if raw_key.lower() in var_lower_map:
@@ -340,6 +356,33 @@ def _write_excel_status(file_path: str, sheet_name: str, row_idx: int, status_co
                 except Exception:
                     pass
                 del excel
+
+
+def _skip_failed_loop_step(current_i: int, commands: list, loop_stack: list, workflow_id: str, update_ui, err_msg: str) -> int:
+    # Why: エラー発生時に行ステータスを更新し対応するloop_endまで安全にジャンプして次行へ継続
+    curr_loop = loop_stack[-1]
+    curr_loop["current_had_error"] = True
+    logger.warning(f"[{workflow_id}] Step error: {err_msg}. continue_on_error enabled, skipping to next record.")
+    if curr_loop.get("data_source") == "excel":
+        curr_rec = curr_loop["records"][curr_loop["current_iteration"]]
+        st_col = curr_loop.get("status_column")
+        f_path = curr_loop.get("file_path")
+        s_name = curr_loop.get("sheet_name")
+        if st_col and f_path:
+            _write_excel_status(f_path, s_name, curr_rec.get("_row_idx"), st_col, f"エラー: {str(err_msg)[:25]}")
+    if update_ui:
+        update_ui(f"エラー行スキップ: {err_msg[:20]}", is_warning=True)
+    nest = 1
+    j = current_i + 1
+    while j < len(commands) and nest > 0:
+        if commands[j].get("method") == "loop_start":
+            nest += 1
+        elif commands[j].get("method") == "loop_end":
+            nest -= 1
+        if nest == 0:
+            break
+        j += 1
+    return j
 
 
 def _wait_for_screen_settle(timeout: float = 6.0, settle_threshold: float = 0.003) -> bool:
@@ -739,7 +782,7 @@ def _execute_excel_action(args: dict, variables: dict, excel_app, last_win_args:
             variables[var_name] = records
         result = records
     elif action == "update_status":
-        r_idx = args.get("row_index")
+        r_idx = args.get("row_index") or variables.get("_row_idx")
         st_col = args.get("status_column")
         st_val = str(args.get("value", "完了"))
         _write_excel_status(file_path, sheet_name, r_idx, st_col, st_val)
@@ -1175,12 +1218,14 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 if loop_stack:
                     current_loop = loop_stack[-1]
                     if current_loop.get("data_source") == "excel":
-                        curr_rec = current_loop["records"][current_loop["current_iteration"]]
-                        st_col = current_loop.get("status_column")
-                        f_path = current_loop.get("file_path")
-                        s_name = current_loop.get("sheet_name")
-                        if st_col and f_path:
-                            _write_excel_status(f_path, s_name, curr_rec.get("_row_idx"), st_col, "完了")
+                        # Why: エラー行に対する「完了」ステータスの上書きを防止
+                        if not current_loop.pop("current_had_error", False):
+                            curr_rec = current_loop["records"][current_loop["current_iteration"]]
+                            st_col = current_loop.get("status_column")
+                            f_path = current_loop.get("file_path")
+                            s_name = current_loop.get("sheet_name")
+                            if st_col and f_path:
+                                _write_excel_status(f_path, s_name, curr_rec.get("_row_idx"), st_col, "完了")
 
                     current_loop["current_iteration"] += 1
                     if current_loop["current_iteration"] < current_loop["total_count"]:
@@ -1287,9 +1332,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
                                 macro_needs_save = True
                         else:
-                            logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'. Aborting execution.")
+                            logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'.")
                             if status_callback:
                                 status_callback("実行中...", False)
+                            if loop_stack and loop_stack[-1].get("continue_on_error"):
+                                i = _skip_failed_loop_step(i, commands, loop_stack, workflow_id, update_ui, "UI検出失敗")
+                                continue
                             execution_log["status"] = "failed"
                             execution_log["error"] = "Healer failed to recover target"
                             raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
@@ -1599,7 +1647,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 keyboard.release(Key.ctrl)
                                 time.sleep(0.08)
 
-                            if clear_before and not is_prev_browser_activate:
+                            if clear_before:
                                 keyboard.press(Key.ctrl)
                                 keyboard.press('a')
                                 keyboard.release('a')
@@ -1679,6 +1727,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     step_log["excel_result"] = excel_res
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Excel action execution failed: {e}")
+                    if loop_stack and loop_stack[-1].get("continue_on_error"):
+                        i = _skip_failed_loop_step(i, commands, loop_stack, workflow_id, update_ui, str(e))
+                        continue
                     raise
             elif method == "browser_action":
                 try:
@@ -1690,6 +1741,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     step_log["browser_result"] = browser_res
                 except Exception as e:
                     logger.error(f"[{workflow_id}] Browser action execution failed: {e}")
+                    if loop_stack and loop_stack[-1].get("continue_on_error"):
+                        i = _skip_failed_loop_step(i, commands, loop_stack, workflow_id, update_ui, str(e))
+                        continue
                     raise
             else:
                 logger.warning(f"Unknown method: {method}")
