@@ -1735,13 +1735,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 mouse.click(Button.left, 1)
                                 time.sleep(0.06)
 
-                            # Why: ブラウザ操作で入力先座標が未特定の場合はCtrl+Lで検索・アドレスバーへ確実にフォーカス
-                            if is_browser_target and not has_valid_coords:
-                                keyboard.press(Key.ctrl)
-                                keyboard.press('l')
-                                keyboard.release('l')
-                                keyboard.release(Key.ctrl)
-                                time.sleep(0.08)
 
                             if clear_before:
                                 keyboard.press(Key.ctrl)

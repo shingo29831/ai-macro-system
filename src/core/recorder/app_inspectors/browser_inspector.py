@@ -131,6 +131,10 @@ class BrowserInspector(BaseInspector):
         except Exception:
             pass
 
+        # Why: Edit/Spinnerではラベル名(Name)を入力値として偽装返却せず空値を保証
+        if any(t in c_type for t in ["Edit", "Spinner"]):
+            return ""
+
         name = getattr(ctrl, "Name", "") or ""
         return str(name or "").strip()
 

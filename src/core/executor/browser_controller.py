@@ -170,13 +170,23 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            # Why: タイムアウトを極小制限せずUIA探索時間を確保し確実にボタンを特定
-            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
+            clicked = False
+            # Why: UIA要素探索で見つかった場合はコントロールの正規クリックを実行
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
+            if elem:
+                try:
+                    elem.click_input()
+                    time.sleep(0.1)
+                    clicked = True
+                    res_data["status"] = "uia_click_succeeded"
+                except Exception:
+                    pass
+
             if not clicked:
                 x = args.get("x")
                 y = args.get("y")
                 if self._click_physical_coords(x, y, last_win_args):
-                    logger.info(f"[{workflow_id}] Selector click fell back to physical click at ({x}, {y})")
+                    logger.info(f"[{workflow_id}] Button click fell back to physical click at ({x}, {y})")
                     res_data["status"] = "fallback_click_succeeded"
                 else:
                     logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no valid fallback coordinates.")
@@ -187,26 +197,30 @@ class BrowserController:
             x = args.get("x")
             y = args.get("y")
             typed = False
-            # Why: タイムアウトを確保しUIA探索による確実な対象要素特定とフォーカスを最優先
+
+            # 1. UIA探索による高精度タイピング
             if selector or elem_name:
                 typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name)
                 if typed:
                     res_data["status"] = "selector_typing_succeeded"
 
+            # 2. 物理座標クリックによるフォーカス確保後のタイピング
             if not typed and x is not None and y is not None and x > 20 and y > 20:
                 self._click_physical_coords(x, y, last_win_args)
+                time.sleep(0.08)
                 self._perform_typing_input(text, clear_before)
                 typed = True
                 res_data["status"] = "coords_typing_succeeded"
 
+            # 3. どちらも失敗した場合は別要素への誤入力を防ぐため物理座標を再探索
             if not typed:
-                # Why: フォーカス移動できない場合に直前項目へ誤入力するのを防止しセレクタ再探索で保護
                 if self._click_by_uia_or_selector(selector, last_win_args, timeout=2.0, element_name=elem_name):
+                    time.sleep(0.08)
                     self._perform_typing_input(text, clear_before)
                     res_data["status"] = "retry_typing_succeeded"
                 else:
-                    self._perform_typing_input(text, clear_before)
-                    res_data["status"] = "fallback_typing_succeeded"
+                    logger.warning(f"[{workflow_id}] type_text failed to locate focus for '{selector or elem_name}', skipped to prevent mis-typing.")
+                    res_data["status"] = "typing_skipped_no_focus"
 
         elif action == "read_text":
             content = self._read_text_by_uia_or_selector(selector, last_win_args, timeout_sec)
@@ -288,17 +302,10 @@ class BrowserController:
                 x = args.get("x")
                 y = args.get("y")
                 if self._click_physical_coords(x, y, last_win_args):
-                    time.sleep(0.1)
-                    from core.executor.os_env_controller import ensure_ime_state
-                    from core.executor.runner import _set_clipboard_text
-                    ensure_ime_state(target_state=False, timeout=0.3)
-                    if _set_clipboard_text(target_val):
-                        self._keyboard.press(Key.ctrl)
-                        self._keyboard.press('v')
-                        self._keyboard.release('v')
-                        self._keyboard.release(Key.ctrl)
-                    else:
-                        self._keyboard.type(target_val)
+                    time.sleep(0.15)
+                    # Why: セレクトボックスにはCtrl+Vが効かないため下矢印キーで選択肢を移動確定
+                    self._keyboard.press(Key.down)
+                    self._keyboard.release(Key.down)
                     time.sleep(0.05)
                     self._keyboard.press(Key.enter)
                     self._keyboard.release(Key.enter)
