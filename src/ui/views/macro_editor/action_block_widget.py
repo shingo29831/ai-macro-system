@@ -340,10 +340,56 @@ class ActionBlockWidget(QFrame):
                 self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
                 self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
 
+                b_text_row = QHBoxLayout()
                 self.b_text_edit = QLineEdit(self.args.get("text", ""))
-                self.b_text_edit.setPlaceholderText("入力テキスト または 変数名")
+                self.b_text_edit.setPlaceholderText("入力テキスト または {{row.列名}}")
                 self.b_text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
-                self.edit_layout.addRow("入力テキスト:", self.b_text_edit)
+                b_text_row.addWidget(self.b_text_edit)
+
+                self.b_var_combo = QComboBox()
+                self.b_var_combo.setFixedWidth(136)
+                self._populate_var_combo_widget(self.b_var_combo)
+                self.b_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_var_combo, self.b_text_edit, idx))
+                b_text_row.addWidget(self.b_var_combo)
+                self.edit_layout.addRow("入力テキスト:", b_text_row)
+
+            elif cur_act == "select_option":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ (例: #plan)")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                b_opt_row = QHBoxLayout()
+                self.b_opt_edit = QLineEdit(str(self.args.get("value") or self.args.get("text", "")))
+                self.b_opt_edit.setPlaceholderText("選択項目名 または {{row.列名}}")
+                self.b_opt_edit.textChanged.connect(lambda v: (self._update_arg("value", v), self._update_arg("text", v)))
+                b_opt_row.addWidget(self.b_opt_edit)
+
+                self.b_opt_var_combo = QComboBox()
+                self.b_opt_var_combo.setFixedWidth(136)
+                self._populate_var_combo_widget(self.b_opt_var_combo)
+                self.b_opt_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_opt_var_combo, self.b_opt_edit, idx))
+                b_opt_row.addWidget(self.b_opt_var_combo)
+                self.edit_layout.addRow("選択する値:", b_opt_row)
+
+            elif cur_act == "set_checkbox":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ (例: #newsletter)")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                b_chk_row = QHBoxLayout()
+                self.b_chk_edit = QLineEdit(str(self.args.get("value", True)))
+                self.b_chk_edit.setPlaceholderText("True / False または {{row.列名}}")
+                self.b_chk_edit.textChanged.connect(lambda v: self._update_arg("value", v))
+                b_chk_row.addWidget(self.b_chk_edit)
+
+                self.b_chk_var_combo = QComboBox()
+                self.b_chk_var_combo.setFixedWidth(136)
+                self._populate_var_combo_widget(self.b_chk_var_combo)
+                self.b_chk_var_combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(self.b_chk_var_combo, self.b_chk_edit, idx))
+                b_chk_row.addWidget(self.b_chk_var_combo)
+                self.edit_layout.addRow("チェック状態:", b_chk_row)
             elif cur_act == "read_text":
                 self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
                 self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
@@ -410,24 +456,47 @@ class ActionBlockWidget(QFrame):
         if hasattr(self, 'var_combo'):
             self._populate_var_combo()
 
-    def _populate_var_combo(self):
-        if not hasattr(self, 'var_combo'):
-            return
-        self.var_combo.blockSignals(True)
-        self.var_combo.clear()
-        self.var_combo.addItem("+ 変数を挿入...", "")
-        vars_dict = getattr(self, 'available_vars', {}) or {chr(65 + i): f"列{chr(65 + i)}" for i in range(8)}
+    def _populate_var_combo_widget(self, combo: QComboBox):
+        # Why: ワークスペース直下のExcelファイルからヘッダー列を自動検出して変数候補に列挙
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("+ Excel列を挿入...", "")
+        vars_dict = getattr(self, 'available_vars', {})
+        if not vars_dict:
+            try:
+                import openpyxl
+                candidates = list(self.workflow_dir.glob("*.xlsx")) + list(self.workflow_dir.parent.glob("*.xlsx")) + list(Path.cwd().glob("*.xlsx"))
+                for p in candidates:
+                    if not p.name.startswith("~$"):
+                        wb = openpyxl.load_workbook(str(p), data_only=True)
+                        ws = wb.active
+                        vars_dict = {f"row.{str(ws.cell(1, c).value or '').strip()}": str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1) if ws.cell(1, c).value}
+                        wb.close()
+                        if vars_dict:
+                            break
+            except Exception:
+                pass
+        if not vars_dict:
+            vars_dict = {"row.会社名": "会社名", "row.担当者名": "担当者名", "row.プラン": "プラン", "row.金額": "金額", "row.メール配信": "メール配信"}
         for col, desc in vars_dict.items():
-            self.var_combo.addItem(f"{{{{{col}}}}} ({desc})", f"{{{{{col}}}}}")
-        self.var_combo.blockSignals(False)
+            combo.addItem(f"{{{{{col}}}}} ({desc})", f"{{{{{col}}}}}")
+        combo.blockSignals(False)
 
-    def _on_var_selected(self, idx):
+    def _populate_var_combo(self):
+        if hasattr(self, 'var_combo'):
+            self._populate_var_combo_widget(self.var_combo)
+
+    def _on_var_selected_for_edit(self, combo: QComboBox, target_edit: QLineEdit, idx: int):
         if idx <= 0:
             return
-        var_text = self.var_combo.itemData(idx)
-        if var_text and hasattr(self, 'text_edit'):
-            self.text_edit.insert(var_text)
-        self.var_combo.setCurrentIndex(0)
+        var_text = combo.itemData(idx)
+        if var_text and target_edit:
+            target_edit.setText(var_text)
+        combo.setCurrentIndex(0)
+
+    def _on_var_selected(self, idx):
+        if hasattr(self, 'var_combo') and hasattr(self, 'text_edit'):
+            self._on_var_selected_for_edit(self.var_combo, self.text_edit, idx)
 
     def _browse_excel_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -492,7 +561,8 @@ class ActionBlockWidget(QFrame):
             b_act = self.args.get("action", "")
             b_map = {
                 "open_url": "ブラウザ: URLを開く", "click_element": "ブラウザ: 要素クリック",
-                "type_text": "ブラウザ: テキスト入力", "read_text": "ブラウザ: テキスト取得",
+                "type_text": "ブラウザ: テキスト入力", "select_option": "ブラウザ: リスト選択",
+                "set_checkbox": "ブラウザ: チェックボックス", "read_text": "ブラウザ: テキスト取得",
                 "wait_element": "ブラウザ: 要素待機", "close_tab": "ブラウザ: タブを閉じる",
                 "switch_tab": "ブラウザ: タブ切り替え"
             }
@@ -552,6 +622,11 @@ class ActionBlockWidget(QFrame):
                 return f"対象: {elem}{url_extra}" if elem else f"URLクリック: {target_url}"
             elif b_act == "type_text":
                 return f"対象: {elem} | 入力: {self.args.get('text', '')}"
+            elif b_act == "select_option":
+                return f"対象: {elem} | 選択値: {self.args.get('value') or self.args.get('text', '')}"
+            elif b_act == "set_checkbox":
+                val = self.args.get("value", True)
+                return f"対象: {elem} | 状態: {'ON' if val in [True, 'True', 'true'] else 'OFF'}"
             elif b_act == "read_text":
                 return f"対象: {elem} | 変数: {self.args.get('variable_name', '')}"
             return f"操作: {b_act}"

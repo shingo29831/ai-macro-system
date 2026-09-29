@@ -192,19 +192,21 @@ def build_and_save_macro(
                 "ui_type": info.get("ui_type", "unknown")
             }
         
-        if raw_action == "browser_action" or raw_type == "browser_action":
+        elif raw_action == "browser_action" or raw_type == "browser_action":
             cmd = "BROWSER_ACTION"
             b_act = info.get("action", "open_url")
             intent = f"BROWSER_{b_act.upper()}"
             desc = f"Execute browser action: {b_act}"
             app_ctx = info.get("app_context") or {}
+            # Why: select_optionやset_checkboxの選択値をbrowser_valueフィールドへ確実にバインド
+            b_val = info.get("value") if info.get("value") is not None else (info.get("text") if b_act in ["select_option", "set_checkbox"] else None)
             params = ActionParameters(
                 browser_action=b_act,
                 browser_url=info.get("url") or app_ctx.get("url"),
                 browser_selector=info.get("selector") or app_ctx.get("css_selector") or app_ctx.get("xpath"),
                 browser_selector_type=info.get("selector_type", "css"),
-                text=info.get("text") or final_semantic_role,
-                value=info.get("value")
+                text=info.get("text") or (final_semantic_role if final_semantic_role != "left_click" else ""),
+                browser_value=b_val
             )
         elif raw_action == "excel_action" or raw_type == "excel_action":
             cmd = "EXCEL_ACTION"
@@ -560,13 +562,19 @@ def build_and_save_macro(
             })
         elif cmd_type == "BROWSER_ACTION":
             elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name")
+            b_act = params.browser_action or "open_url"
+            b_val = params.browser_value if params.browser_value is not None else cur_info.get("value")
+            b_text = params.text or (str(b_val) if b_val is not None else "")
+            # Why: select_option時のleft_click誤認を防止し選択テキストをvalueへフォールバック補完
+            if b_act == "select_option" and (b_val is None or b_val == "left_click"):
+                b_val = b_text if b_text and b_text != "left_click" else cur_info.get("value")
             b_args = {
-                "action": params.browser_action or "open_url",
+                "action": b_act,
                 "url": params.browser_url,
                 "selector": params.browser_selector,
                 "selector_type": params.browser_selector_type or "css",
-                "text": params.text,
-                "value": params.browser_value,
+                "text": b_text,
+                "value": b_val,
                 "element_name": elem_name_val,
                 "timeout_sec": 10.0,
                 "target_id": target_id_for_healer,

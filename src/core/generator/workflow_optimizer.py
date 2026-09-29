@@ -430,6 +430,41 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
+def _find_excel_binding_map(workflow_id: str) -> dict[str, str]:
+    # Why: 参照中Excelの全列値から逆引き辞書を構築し手入力なしで{{row.列名}}へ自動バインド
+    from pathlib import Path
+    binding_map = {}
+    candidate_paths = []
+    
+    from core.recorder.screen_capturer import get_macros_root
+    macros_root = get_macros_root()
+    wf_dir = macros_root / workflow_id
+    candidate_paths.extend(list(wf_dir.glob("*.xlsx")) + list(macros_root.glob("*.xlsx")) + list(Path.cwd().glob("*.xlsx")))
+    
+    for xlsx_path in candidate_paths:
+        if not xlsx_path.exists() or xlsx_path.name.startswith("~$"):
+            continue
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(str(xlsx_path), data_only=True)
+            ws = wb.active
+            headers = [str(ws.cell(1, c).value or "").strip() for c in range(1, ws.max_column + 1)]
+            for r in range(2, min(ws.max_row + 1, 10)):
+                for c_idx, h in enumerate(headers):
+                    if not h:
+                        continue
+                    v = ws.cell(r, c_idx + 1).value
+                    if v is not None and str(v).strip():
+                        v_str = str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()
+                        binding_map[v_str.lower()] = f"{{{{row.{h}}}}}"
+            wb.close()
+            if binding_map:
+                break
+        except Exception:
+            pass
+    return binding_map
+
+
 def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: IME未確定入力や過渡的クリックを排除し各フォーム要素の最終確定値でクリーンなアクションに完全統合
     if not temp_workflow_info:
@@ -466,30 +501,33 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         # Why: ドロップダウン(ComboBox/Select)の選択操作をselect_optionへ自動昇格
         if sel and ("combobox" in c_type or "select" in sel or "plan" in sel):
             final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
-            if final_val and str(final_val).strip() not in ["契約プラン", ""]:
+            if final_val and str(final_val).strip() not in ["契約プラン", "", "left_click"]:
+                opt_val = str(final_val).strip()
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "select_option"
                 info["selector"] = sel
-                info["value"] = str(final_val).strip()
+                info["value"] = opt_val
+                info["text"] = opt_val
                 info["element_name"] = ctx.get("element_name") or "契約プラン"
                 result.append(info)
                 j = i + 1
-                while j < n and (temp_workflow_info[j].get("app_context", {}).get("css_selector") == sel or temp_workflow_info[j].get("raw_action") == "move"):
+                while j < n and (temp_workflow_info[j].get("app_context", {}).get("css_selector") == sel or temp_workflow_info[j].get("raw_action") in ["move", "click"]):
                     j += 1
                 i = j
                 continue
 
-        # Why: テキスト/数値入力要素のIME過渡キーを破棄し最終確定値で単一type_textに集約
+        # Why: テキスト/数値入力要素のIME過渡キー・手ブレクリックを完全破棄し最終確定値で単一type_textに集約
         if sel and ("edit" in c_type or "spinner" in c_type or any(k in sel for k in ["company", "contact", "amount"])):
-            final_val = element_final_values.get(sel)
-            if final_val and sel not in processed_selectors:
+            final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
+            if final_val and str(final_val).strip() and sel not in processed_selectors:
+                clean_txt = str(final_val).strip()
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
                 info["action"] = "type_text"
                 info["selector"] = sel
-                info["text"] = final_val
-                info["semantic_role"] = final_val
+                info["text"] = clean_txt
+                info["semantic_role"] = clean_txt
                 info["element_name"] = ctx.get("element_name") or "入力項目"
                 result.append(info)
                 processed_selectors.add(sel)
@@ -500,13 +538,13 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     n_sel = n_ctx.get("css_selector") or nxt.get("selector") or ""
                     n_act = nxt.get("raw_action", "")
                     n_role = str(nxt.get("semantic_role", "")).lower()
-                    if n_sel == sel:
+                    if n_sel == sel or ("div:has-text" in n_sel and any(k in sel for k in ["company", "contact", "amount"])):
                         j += 1
                         continue
-                    if n_act in ["type_text", "key_down", "key_press"] and n_role in ["enter", "tab", "shift", "space"]:
+                    if n_act in ["type_text", "key_down", "key_press"] and (n_role in ["enter", "tab", "shift", "space"] or len(n_role) <= 3):
                         j += 1
                         continue
-                    if n_act == "move" and not n_sel:
+                    if n_act == "move":
                         j += 1
                         continue
                     break
@@ -1052,6 +1090,33 @@ def optimize_workflow_events(
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
+
+    # Why: 参照Excelから合致する列名を検知し入力値を{{row.列名}}へゼロ入力自動バインド
+    excel_map = _find_excel_binding_map(workflow_id)
+    if excel_map:
+        for info in temp_workflow_info:
+            act = info.get("raw_action", "")
+            if act == "browser_action":
+                b_act = info.get("action", "")
+                if b_act == "type_text":
+                    curr_txt = str(info.get("text", "")).strip().lower()
+                    for ev_val, ev_var in excel_map.items():
+                        if curr_txt == ev_val or (len(ev_val) >= 2 and ev_val in curr_txt):
+                            info["text"] = ev_var
+                            info["semantic_role"] = ev_var
+                            break
+                elif b_act == "select_option":
+                    curr_val = str(info.get("value", "")).strip().lower()
+                    for ev_val, ev_var in excel_map.items():
+                        if curr_val == ev_val:
+                            info["value"] = ev_var
+                            info["text"] = ev_var
+                            break
+                elif b_act == "set_checkbox":
+                    for ev_val, ev_var in excel_map.items():
+                        if ev_val in ["true", "1", "希望する", "on"]:
+                            info["value"] = ev_var
+                            break
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:
