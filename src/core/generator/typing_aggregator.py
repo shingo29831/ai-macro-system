@@ -105,7 +105,10 @@ class TypingSessionAggregator:
 
             role_lower = str(event.get("semantic_role", "")).lower()
             
-            is_shift_char = action == "key_combo" and "shift" in role_lower and len(role_lower.split("+")) == 2 and len(role_lower.split("+")[1]) == 1
+            combo_parts = [p for p in role_lower.split("+") if p]
+            combo_alphas = [p for p in combo_parts if len(p) == 1 and p.isalpha()]
+            # Why: 複合コンボ(shift+a+tab等)でも英字1字が含まれる場合は大文字入力として救出
+            is_shift_char = action == "key_combo" and "shift" in role_lower and len(combo_alphas) == 1
             
             # Why: 修飾キーや機能キーが文字入力セッションへ誤混入するのを防止
             special_key_names = {
@@ -289,7 +292,7 @@ class TypingSessionAggregator:
                     is_valid = True
                 elif has_screen_diff:
                     # 画面差分がある場合でも、修飾キーを含まない3キー以上のコンボはノイズとみなす
-                    if not is_shortcut and len(role_lower.split("+")) >= 3:
+                    if not is_shortcut and len(role_lower.split("+")) >= 3 and not any(p.isalpha() and len(p) == 1 for p in role_lower.split("+")):
                         is_valid = False
                     else:
                         is_valid = True

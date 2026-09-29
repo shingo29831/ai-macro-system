@@ -225,13 +225,31 @@ class BrowserInspector(BaseInspector):
                     except Exception as e2:
                         log_debug(f"フォーカス要素フォールバック失敗: {e2}")
             else:
-                # Why: キー入力時(座標None)は現在フォーカス要素を特定してターゲットに設定
+                # Why: キー入力時は現在フォーカス要素をuiautomationから直接特定しDOM例外を防止
                 try:
                     import uiautomation as auto
                     focused = auto.GetFocusedControl()
-                    if focused and focused.NativeWindowHandle:
-                        f_elem = desktop.window(handle=focused.NativeWindowHandle)
-                        target_elements.append(("FocusedElement", f_elem))
+                    if focused:
+                        val = ""
+                        try:
+                            val = focused.GetValuePattern().Value
+                        except Exception:
+                            try:
+                                val = focused.GetLegacyIAccessiblePattern().CurrentValue
+                            except Exception:
+                                val = focused.CurrentName
+                        auto_id = getattr(focused, "AutomationId", "") or ""
+                        ctrl_type = auto.ControlTypeNamesMap.get(focused.ControlType, "Edit")
+                        elem_name = focused.CurrentName or ""
+                        if val or auto_id or elem_name:
+                            result["text"] = str(val or "").strip()
+                            result["value"] = result["text"]
+                            result["control_type"] = ctrl_type
+                            result["element_name"] = elem_name
+                            if auto_id:
+                                result["css_selector"] = f"#{auto_id}"
+                                result["xpath"] = f"//*[@id='{auto_id}']"
+                            log_debug(f"フォーカス要素直接取得成功: id='{auto_id}', name='{elem_name}', val='{val}'")
                 except Exception as ef:
                     log_debug(f"フォーカス要素特定例外: {ef}")
 

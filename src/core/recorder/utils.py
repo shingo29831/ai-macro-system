@@ -30,10 +30,19 @@ def normalize_key_name(key) -> str:
     except AttributeError:
         pass
 
+    # Why: テンキー(VK_NUMPAD0~9: 96~105)を通常数字キーへ正規化
+    vk = getattr(key, "vk", None)
+    if vk is not None and 96 <= vk <= 105:
+        return str(vk - 96)
+
     text = str(key)
     if text.startswith("Key."):
         text = text.replace("Key.", "")
     text = text.replace("cmd", "win")
+    if text.startswith("<") and text.endswith(">") and text[1:-1].isdigit():
+        num_vk = int(text[1:-1])
+        if 96 <= num_vk <= 105:
+            return str(num_vk - 96)
     return text.lower()
 
 def key_to_string(key) -> str:
@@ -52,6 +61,10 @@ def make_combo_text(keys: list[str]) -> str:
 
 def should_record_key_combo(pressed_keys: set[str], current_key: str) -> bool:
     has_modifier = any(pressed_key in MODIFIER_KEYS for pressed_key in pressed_keys)
+    # Why: Shift+英字単体は大文字入力のためコンボではなく通常キーとして記録
+    only_shift = all(pk in ["shift", "shift_l", "shift_r"] for pk in pressed_keys if pk in MODIFIER_KEYS)
+    if only_shift and len(current_key) == 1 and current_key.isalpha():
+        return False
     return has_modifier and current_key in COMBO_TRIGGER_KEYS
 
 def calculate_distance(x1: int, y1: int, x2: int, y2: int) -> float:

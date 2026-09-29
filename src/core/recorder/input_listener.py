@@ -162,6 +162,10 @@ def on_press(key):
 
     try:
         with state.pressed_keys_lock:
+            # Why: フォーカス遷移等で消失した古い機能キーの残骸を除去し誤コンボを防止
+            if key_text not in MODIFIER_KEYS:
+                for stale_k in ["tab", "enter", "space", "esc"]:
+                    state.pressed_keys.discard(stale_k)
             state.pressed_keys.add(key_text)
             current_keys = set(state.pressed_keys)
 
