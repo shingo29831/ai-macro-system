@@ -81,11 +81,13 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             if act_info.get("window_name") != prev_win:
                 break
             act_role = str(act_info.get("semantic_role", "")).lower()
-            if act_info.get("raw_action") == "click":
+            act_act = str(act_info.get("raw_action", "")).lower()
+            act_tp = str(act_info.get("raw_type", "")).lower()
+            if "click" in act_act or "click" in act_tp:
                 has_recent_nav_action = True
                 break
-            if act_info.get("raw_action") in ["type_text"] or (
-                act_info.get("raw_action") in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
+            if act_act in ["type_text"] or (
+                act_act in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
             ):
                 has_recent_nav_action = True
                 break
@@ -100,8 +102,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
         # Why: 直前クリックの残留ホバーは親メニューと誤認させず後続の個別昇格・除去へ誘導
         is_prev_residual = _is_residual_hover(prev_info, temp_workflow_info, i - 1)
 
-        # Why: 親ホバー直後にメニュー項目へのカーソル移動がある場合、親をホバーに残し子項目位置をクリックに昇格
-        if curr_act == "move" and prev_act == "move" and not is_prev_residual:
+        # Why: 同一ウィンドウ内での親ホバー直後の子項目移動のみクリックに昇格し別画面移動の誤昇格を防止
+        if curr_act == "move" and prev_act == "move" and not is_prev_residual and (prev_win == curr_win):
             cx, cy = curr_info.get("cursor_x", curr_info.get("x", 0)), curr_info.get("cursor_y", curr_info.get("y", 0))
             px, py = prev_info.get("cursor_x", prev_info.get("x", 0)), prev_info.get("cursor_y", prev_info.get("y", 0))
             dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
@@ -217,8 +219,8 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
 
                 temp_workflow_info.insert(candidate_idx + 1, nav_click)
                 i += 2
-        elif curr_act == "move":
-            # Why: 遷移前ウィンドウにホバーがない場合でも親ホバーを先行生成して空クリックを防止
+        elif curr_act == "move" and (prev_win == curr_win):
+            # Why: 同一画面内のみ親ホバーを先行生成し、別ウィンドウ遷移直後の移動誤クリック化を完全防止
             lead_hover = curr_info.copy()
             lead_hover["raw_action"] = "move"
             lead_hover["raw_type"] = "mouse_move"
@@ -247,6 +249,38 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
 
     return temp_workflow_info
+
+def _reorder_displaced_clicks_before_scroll(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Why: クリック直後のスクロール割り込みによる時系列逆転(ホバー->スクロール->同位置クリック)を自動正規化
+    if len(temp_workflow_info) < 3:
+        return temp_workflow_info
+
+    reordered = list(temp_workflow_info)
+    i = 0
+    while i < len(reordered) - 2:
+        curr = reordered[i]
+        if curr.get("raw_action") == "move":
+            mx, my = curr.get("cursor_x", curr.get("x", 0)), curr.get("cursor_y", curr.get("y", 0))
+            m_win = curr.get("window_name", "")
+            j = i + 1
+            scroll_count = 0
+            while j < len(reordered) and reordered[j].get("raw_action") == "scroll":
+                if reordered[j].get("window_name", "") == m_win:
+                    scroll_count += 1
+                j += 1
+            if scroll_count > 0 and j < len(reordered):
+                after_scroll = reordered[j]
+                if after_scroll.get("raw_action") == "click" and after_scroll.get("window_name", "") == m_win:
+                    cx = after_scroll.get("cursor_x", after_scroll.get("x", 0))
+                    cy = after_scroll.get("cursor_y", after_scroll.get("y", 0))
+                    if ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5 <= 25:
+                        click_item = reordered.pop(j)
+                        reordered.insert(i + 1, click_item)
+                        logger.info(f"Reordered click (Event: {click_item.get('event_id')}) before scroll at ({cx}, {cy})")
+                        i = j
+                        continue
+        i += 1
+    return reordered
 
 def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: スクロール合間の無駄な移動を除去してスクロールを集約しつつ、メニュー出現用ホバーを確実に保持
@@ -695,6 +729,7 @@ def optimize_workflow_events(
 
     temp_workflow_info = layout_cleaned
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
+    temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去

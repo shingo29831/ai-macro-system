@@ -71,6 +71,13 @@ def calculate_and_update_diff(current_img) -> str:
 
 def process_move_event(event: dict):
     try:
+        x, y = int(event["x"]), int(event["y"])
+        # Why: クリック位置から20px以上移動時はダブルクリック判定を打ち切り即時確定
+        with state.pending_click_lock:
+            p_evt = state.pending_click_event
+            if p_evt and ((x - int(p_evt["x"])) ** 2 + (y - int(p_evt["y"])) ** 2) > 400:
+                process_pending_single_click(sync=True)
+
         window_info = window_inspector.get_foreground_window_info()
         if window_inspector.should_ignore_window(window_info.get("title")):
             return
@@ -278,13 +285,19 @@ def is_same_click(first_event: dict | None, second_event: dict | None) -> bool:
     return distance_sq <= DOUBLE_CLICK_MAX_DISTANCE**2
 
 
-def process_pending_single_click():
+def process_pending_single_click(sync: bool = False):
     with state.pending_click_lock:
         event = state.pending_click_event
+        timer = state.pending_click_timer
+        if timer:
+            timer.cancel()
         state.pending_click_event = None
         state.pending_click_timer = None
     if event is not None:
-        run_click_process_thread(event, input_type="mouse_click", click_count=1)
+        if sync:
+            process_click_event(event, input_type="mouse_click", click_count=1)
+        else:
+            run_click_process_thread(event, input_type="mouse_click", click_count=1)
 
 
 _last_scroll_time = 0.0
@@ -294,6 +307,8 @@ _scroll_dedup_lock = threading.Lock()
 def process_scroll_event(event: dict):
     global _last_scroll_time, _last_scroll_info
     try:
+        # Why: スクロール操作直前に保留クリックを同期確定させ順序逆転を完全防止
+        process_pending_single_click(sync=True)
         import time
         now = time.time()
         x = int(event["x"])

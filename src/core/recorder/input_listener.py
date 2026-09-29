@@ -6,7 +6,7 @@ import threading
 import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
-from core.recorder.event_processor import enqueue_key_event, process_scroll_event
+from core.recorder.event_processor import enqueue_key_event
 from core.recorder.ime_detector import is_ime_active
 from core.recorder.romaji_converter import to_hiragana
 from core.executor.os_env_controller import set_system_cursor
@@ -104,8 +104,9 @@ def on_scroll(x, y, dx, dy):
     if getattr(state, "native_scroll_hook_active", False):
         return
     try: 
-        # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
-        process_scroll_event({
+        # Why: マウスイベントキューに完全統合しクリックや移動との時系列順序を完全保証
+        state.mouse_event_queue.put({
+            "type": "scroll",
             "x": int(x),
             "y": int(y),
             "dx": float(dx),

@@ -81,6 +81,9 @@ def enqueue_key_event(
     capture_now: bool = False,
     ime_active: bool = False,
 ):
+    # Why: キー入力開始時に保留中のクリックを即時確定し順序逆転を完全防止
+    process_pending_single_click(sync=True)
+
     window_info = window_inspector.get_foreground_window_info()
     if window_inspector.should_ignore_window(window_info.get("title")):
         return
