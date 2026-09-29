@@ -512,8 +512,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 info["element_name"] = ctx.get("element_name") or "セレクト項目"
                 result.append(info)
                 j = i + 1
-                while j < n and (temp_workflow_info[j].get("app_context", {}).get("css_selector") == sel or temp_workflow_info[j].get("raw_action") in ["move", "click"]):
-                    j += 1
+                # Why: 同一セレクタ以外の別UI要素クリックを巻き込んで削除するのを完全阻止
+                while j < n:
+                    nxt_ctx = temp_workflow_info[j].get("app_context") or {}
+                    nxt_sel = nxt_ctx.get("css_selector") or temp_workflow_info[j].get("selector") or ""
+                    if nxt_sel == sel:
+                        j += 1
+                        continue
+                    break
                 i = j
                 continue
 
@@ -551,8 +557,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: チェックボックスコントロール(CheckBox)の汎用昇格
-        if "checkbox" in c_type or "checkbox" in sel.lower():
+        # Why: チェックボックスコントロール(CheckBox/文言含有Group)の汎用昇格
+        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_name for k in ["受信", "メール", "通知", "同意", "check"])
+        if is_chk and sel:
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
             info["action"] = "set_checkbox"
@@ -1100,8 +1107,10 @@ def optimize_workflow_events(
                 b_act = info.get("action", "")
                 if b_act == "type_text":
                     curr_txt = str(info.get("text", "")).strip().lower()
+                    # Why: 短い数値等の部分一致誤爆を排除し完全一致または有為文字列のみバインド
                     for ev_val, ev_var in excel_map.items():
-                        if curr_txt == ev_val or (len(ev_val) >= 2 and ev_val in curr_txt):
+                        is_num = ev_val.isdigit() or curr_txt.isdigit()
+                        if curr_txt == ev_val or (not is_num and len(ev_val) >= 4 and ev_val in curr_txt):
                             info["text"] = ev_var
                             info["semantic_role"] = ev_var
                             break
@@ -1294,7 +1303,7 @@ def optimize_workflow_events(
             if not (info.get("raw_action") == "excel_action" and info.get("action") == "write_cell")
         ]
 
-    # Why: 直前クリック先要素のセレクタ・コンテキストを入力イベント(type_text)へ自動バインド
+    # Why: 直前クリック先要素のセレクタ・コンテキストを入力イベント(type_text)へ安全にバインド
     last_browser_click_ctx = {}
     last_browser_win = ""
     for info in temp_workflow_info:
@@ -1302,7 +1311,9 @@ def optimize_workflow_events(
         w_name = info.get("window_name", "")
         if act == "click":
             ctx = info.get("app_context") or {}
-            if ctx.get("css_selector") or ctx.get("xpath") or ctx.get("element_name"):
+            # Why: ドロップダウンや別コンテナのクリックをテキスト欄へ誤付与しない
+            c_type = str(ctx.get("control_type", "")).lower()
+            if "combobox" not in c_type and (ctx.get("css_selector") or ctx.get("xpath") or ctx.get("element_name")):
                 last_browser_click_ctx = ctx.copy()
                 last_browser_win = w_name
         elif act in ["type_text", "key_combo"] and last_browser_click_ctx:
@@ -1310,9 +1321,11 @@ def optimize_workflow_events(
                 if not info.get("app_context"):
                     info["app_context"] = last_browser_click_ctx.copy()
                 else:
-                    for k, v in last_browser_click_ctx.items():
-                        if not info["app_context"].get(k):
-                            info["app_context"][k] = v
+                    info_ctx = info["app_context"]
+                    if not info_ctx.get("css_selector") and not info_ctx.get("xpath"):
+                        for k, v in last_browser_click_ctx.items():
+                            if not info_ctx.get(k):
+                                info_ctx[k] = v
 
     # Why: ブラウザ内のリンククリック、要素操作、URL入力を専用ブラウザアクション(browser_action)へ網羅昇格
     promoted_browser_info = []
@@ -1367,6 +1380,17 @@ def optimize_workflow_events(
                         info["semantic_role"] = elem_name
 
         promoted_browser_info.append(info)
+    # Why: Webフォーム自動化において各入力直後の不要なEnter・Tabを除去しフォーカス暴走を防止
+    cleaned_after_promoted = []
+    m_len = len(promoted_browser_info)
+    for p_idx, p_info in enumerate(promoted_browser_info):
+        p_act = p_info.get("raw_action", "")
+        p_role = str(p_info.get("semantic_role", "")).lower()
+        if p_act in ["key_down", "key_press", "press_key"] and p_role in ["enter", "tab"]:
+            if p_idx > 0 and promoted_browser_info[p_idx - 1].get("raw_action") == "browser_action":
+                continue
+        cleaned_after_promoted.append(p_info)
+    promoted_browser_info = cleaned_after_promoted
     temp_workflow_info = promoted_browser_info
 
     variables = {}

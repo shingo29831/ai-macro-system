@@ -111,9 +111,18 @@ class TypingSessionAggregator:
                 current_session.append(event)
                 continue
             elif is_mouse_move:
-                # Why: タイピング継続中の微小なマウス移動はセッションを分断させず破棄
+                # Why: 要素変更や一定以上のカーソル移動は入力終了と判定しセッションを確定
                 if current_session:
-                    continue
+                    last_ev = current_session[-1]
+                    lx, ly = last_ev.get("cursor_x", last_ev.get("x", 0)), last_ev.get("cursor_y", last_ev.get("y", 0))
+                    cx, cy = event.get("cursor_x", event.get("x", 0)), event.get("cursor_y", event.get("y", 0))
+                    dist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+                    curr_ctx = event.get("app_context") or event.get("AppSpecificContext") or {}
+                    has_new_target = bool(curr_ctx.get("element_name") or curr_ctx.get("css_selector"))
+                    if dist > 35 or has_new_target:
+                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                    else:
+                        continue
                 aggregated_events.append(event)
                 continue
 
@@ -488,7 +497,9 @@ class TypingSessionAggregator:
                             latest_uia_text = extracted
 
         confirmed_future_queries = []
+        future_elem_text = ""
         if future_events:
+            target_elem = (session[0].get("app_context") or session[0].get("AppSpecificContext") or {}).get("element_name", "")
             for f_evt in future_events[:15]:
                 f_win = f_evt.get("window_name") or f_evt.get("WindowName", "")
                 title_q = _extract_query_from_title(f_win)
@@ -496,6 +507,13 @@ class TypingSessionAggregator:
                     confirmed_future_queries.append(title_q)
 
                 f_ctx = f_evt.get("app_context") or f_evt.get("AppSpecificContext") or f_evt.get("appSpecificContext") or {}
+                f_name = f_ctx.get("element_name", "")
+                f_val = f_ctx.get("value") or f_ctx.get("text")
+                # Why: 直後フレームの確定入力値(50000等)を未確定バッファ(50)より優先採用
+                if f_val and isinstance(f_val, str) and str(f_val).strip() and not future_elem_text:
+                    if not target_elem or f_name == target_elem:
+                        future_elem_text = str(f_val).strip()
+
                 for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
                     if url_candidate and isinstance(url_candidate, str):
                         extracted, is_url_query = _extract_search_query(url_candidate)
@@ -537,6 +555,8 @@ class TypingSessionAggregator:
             final_text = confirmed_queries[0]
         elif matched_future_query:
             final_text = matched_future_query
+        elif future_elem_text:
+            final_text = future_elem_text
         elif (has_suggest_selection or any_ime_active) and latest_uia_text:
             final_text = latest_uia_text
         elif latest_uia_text and fallback_text and (fallback_text in latest_uia_text or latest_uia_text in fallback_text):

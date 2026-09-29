@@ -186,14 +186,17 @@ class BrowserController:
             x = args.get("x")
             y = args.get("y")
             typed = False
-            # Why: 確実な物理座標が存在する場合は余白クリックを防ぐため物理クリックを優先
-            if x is not None and y is not None and x > 20 and y > 20:
+            # Why: セレクタや要素名がある場合は物理座標ズレを回避するためUI特定を最優先
+            if selector or elem_name:
+                typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.8), element_name=elem_name)
+                if typed:
+                    res_data["status"] = "selector_typing_succeeded"
+
+            if not typed and x is not None and y is not None and x > 20 and y > 20:
                 self._click_physical_coords(x, y, last_win_args)
                 self._perform_typing_input(text, clear_before)
                 typed = True
                 res_data["status"] = "coords_typing_succeeded"
-            else:
-                typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=min(timeout_sec, 0.6), element_name=elem_name)
 
             if not typed:
                 self._click_physical_coords(x, y, last_win_args)
