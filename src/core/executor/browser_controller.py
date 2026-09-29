@@ -222,16 +222,54 @@ class BrowserController:
 
         elif action == "select_option":
             target_val = str(value if value is not None else text)
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name"))
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name"), text=target_val)
             if elem:
                 try:
-                    elem.click_input()
-                    time.sleep(0.1)
-                    # Why: コンボボックス展開後に選択肢テキストを直接入力または確定
-                    self._keyboard.type(target_val)
-                    time.sleep(0.05)
-                    self._keyboard.press(Key.enter)
-                    self._keyboard.release(Key.enter)
+                    selected_ok = False
+                    try:
+                        import uiautomation as auto
+                        ctrl = auto.ControlFromElement(elem.element_info._element)
+                        if ctrl and ctrl.Exists(0, 0):
+                            # Why: UIAの標準展開・選択パターンによる言語・文字コード非依存の選択
+                            exp_pat = ctrl.GetExpandCollapsePattern()
+                            if exp_pat:
+                                exp_pat.Expand()
+                                time.sleep(0.1)
+                                for sub_c in ctrl.GetChildren():
+                                    if target_val.lower() in str(sub_c.Name).lower():
+                                        sel_pat = sub_c.GetSelectionItemPattern()
+                                        if sel_pat:
+                                            sel_pat.Select()
+                                            selected_ok = True
+                                            break
+                                        else:
+                                            sub_c.Click()
+                                            selected_ok = True
+                                            break
+                            if not selected_ok:
+                                val_pat = ctrl.GetValuePattern()
+                                if val_pat:
+                                    val_pat.SetValue(target_val)
+                                    selected_ok = True
+                    except Exception:
+                        pass
+
+                    if not selected_ok:
+                        elem.click_input()
+                        time.sleep(0.1)
+                        from core.executor.os_env_controller import ensure_ime_state
+                        from core.executor.runner import _set_clipboard_text
+                        ensure_ime_state(target_state=False, timeout=0.3)
+                        if _set_clipboard_text(target_val):
+                            self._keyboard.press(Key.ctrl)
+                            self._keyboard.press('v')
+                            self._keyboard.release('v')
+                            self._keyboard.release(Key.ctrl)
+                        else:
+                            self._keyboard.type(target_val)
+                        time.sleep(0.05)
+                        self._keyboard.press(Key.enter)
+                        self._keyboard.release(Key.enter)
                     res_data["selected"] = target_val
                 except Exception as e:
                     logger.warning(f"select_option failed: {e}")
@@ -241,7 +279,16 @@ class BrowserController:
                 y = args.get("y")
                 if self._click_physical_coords(x, y, last_win_args):
                     time.sleep(0.1)
-                    self._keyboard.type(target_val)
+                    from core.executor.os_env_controller import ensure_ime_state
+                    from core.executor.runner import _set_clipboard_text
+                    ensure_ime_state(target_state=False, timeout=0.3)
+                    if _set_clipboard_text(target_val):
+                        self._keyboard.press(Key.ctrl)
+                        self._keyboard.press('v')
+                        self._keyboard.release('v')
+                        self._keyboard.release(Key.ctrl)
+                    else:
+                        self._keyboard.type(target_val)
                     time.sleep(0.05)
                     self._keyboard.press(Key.enter)
                     self._keyboard.release(Key.enter)
@@ -308,7 +355,9 @@ class BrowserController:
         last_win_args: Optional[Dict[str, Any]] = None,
         timeout_sec: float = 0.5,
         element_name: Optional[str] = None,
-        url: Optional[str] = None
+        url: Optional[str] = None,
+        text: Optional[str] = None,
+        **kwargs
     ):
         if not selector and not element_name and not url:
             return None
@@ -348,7 +397,7 @@ class BrowserController:
                                     search_terms.append(sub_word)
                 if element_name and not element_name.startswith("http"):
                     search_terms.append(element_name.strip().lower())
-                btn_text = kwargs.get("text")
+                btn_text = text or kwargs.get("text")
                 if btn_text and str(btn_text).strip() and not str(btn_text).startswith("http"):
                     search_terms.append(str(btn_text).strip().lower())
                 if url:
@@ -467,7 +516,7 @@ class BrowserController:
         **kwargs
     ) -> bool:
         effective_timeout = timeout_sec if timeout_sec is not None else timeout
-        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(effective_timeout, 0.5), element_name=element_name, url=url)
+        elem = self._find_uia_element(selector, last_win_args, timeout_sec=effective_timeout, element_name=element_name, url=url, **kwargs)
         if elem:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2

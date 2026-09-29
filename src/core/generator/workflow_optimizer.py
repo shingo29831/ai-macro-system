@@ -753,12 +753,41 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
     for sel_id, val_str in snapshot_items:
         clean_name = selector_names.get(sel_id, sel_id.lstrip("#"))
-        coords = selector_coords.get(sel_id, (0, 0))
+        coords = selector_coords.get(sel_id)
 
-        # A. チェックボックス復元
-        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"]
+        # Why: セレクタ名に依存せず値がコミットされた実イベントから座標を動的逆引き
+        if not coords or coords[0] <= 20 or coords[1] <= 20:
+            for info in temp_workflow_info:
+                i_ctx = info.get("app_context") or {}
+                i_snap = i_ctx.get("form_snapshot") or {}
+                i_comm = i_ctx.get("committed_values") or {}
+                if i_snap.get(sel_id) == val_str or i_comm.get(sel_id) == val_str:
+                    cx = info.get("cursor_x", info.get("x", 0))
+                    cy = info.get("cursor_y", info.get("y", 0))
+                    if cx > 20 and cy > 20:
+                        coords = (cx, cy)
+                        break
+
+        if not coords:
+            coords = (0, 0)
+
+        win_x = ref_evt.get("win_x", 0)
+        win_y = ref_evt.get("win_y", 0)
+        win_w = ref_evt.get("win_w", 0)
+        win_h = ref_evt.get("win_h", 0)
+
+        # Why: 値の真偽値特性とUIAコントロール種別履歴に基づく普遍的な動作決定
+        is_chk = val_str.lower() in ["true", "false"]
+        is_combo = False
+        for info in temp_workflow_info:
+            i_ctx = info.get("app_context") or {}
+            c_type = str(i_ctx.get("control_type", "")).lower()
+            if (i_ctx.get("css_selector") == sel_id or i_ctx.get("form_snapshot", {}).get(sel_id) == val_str):
+                if any(t in c_type for t in ["combo", "select", "list", "dropdown"]):
+                    is_combo = True
+                    break
+
         if is_chk:
-            # Why: フォーム内チェックボックス要素を真のトグル要求(True)として普遍復元
             chk_eid = f"{ref_eid}_{sel_id.lstrip('#')}"
             chk_x = coords[0] if coords[0] > 20 else ref_evt.get("cursor_x", ref_evt.get("x", 0))
             chk_y = coords[1] if coords[1] > 20 else ref_evt.get("cursor_y", ref_evt.get("y", 0))
@@ -768,11 +797,15 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "action": "set_checkbox",
                 "selector": sel_id,
                 "selector_type": "css",
-                "value": True,
-                "text": "True",
+                "value": val_str.lower() == "true",
+                "text": str(val_str.lower() == "true"),
                 "element_name": clean_name or sel_id.lstrip("#"),
                 "semantic_role": clean_name or sel_id.lstrip("#"),
                 "window_name": ref_win,
+                "win_x": win_x,
+                "win_y": win_y,
+                "win_w": win_w,
+                "win_h": win_h,
                 "event_id": chk_eid,
                 "fallback_events": [chk_eid, ref_eid],
                 "cursor_x": chk_x,
@@ -783,12 +816,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             result.insert(insert_pos, new_item)
             insert_pos += 1
             processed_selectors.add(sel_id)
-            logger.info(f"Restored missing checkbox from snapshot: {sel_id} = True")
             continue
 
-        # B. セレクトボックス復元（#plan等）
-        is_select = any(k in sel_id.lower() for k in ["plan", "select", "type", "category", "option", "dropdown"])
-        if is_select:
+        if is_combo:
             new_item = {
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
@@ -800,6 +830,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "element_name": clean_name or "選択項目",
                 "semantic_role": val_str,
                 "window_name": ref_win,
+                "win_x": win_x,
+                "win_y": win_y,
+                "win_w": win_w,
+                "win_h": win_h,
                 "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
                 "fallback_events": [ref_eid],
                 "cursor_x": coords[0],
@@ -810,10 +844,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             result.insert(insert_pos, new_item)
             insert_pos += 1
             processed_selectors.add(sel_id)
-            logger.info(f"Restored missing select_option from snapshot: {sel_id} = {val_str}")
             continue
 
-        # C. テキスト / 数値入力欄復元（#amount等）
         new_item = {
             "raw_action": "browser_action",
             "raw_type": "browser_action",
@@ -824,6 +856,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             "semantic_role": val_str,
             "element_name": clean_name or "入力項目",
             "window_name": ref_win,
+            "win_x": win_x,
+            "win_y": win_y,
+            "win_w": win_w,
+            "win_h": win_h,
             "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
             "fallback_events": [ref_eid],
             "cursor_x": coords[0],
@@ -834,7 +870,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         result.insert(insert_pos, new_item)
         insert_pos += 1
         processed_selectors.add(sel_id)
-        logger.info(f"Restored missing type_text from snapshot: {sel_id} = {val_str}")
 
     # 5. フォーム送信アクションの保証（未存在時のみ安全に補完）
     has_submit_btn = any(
@@ -896,7 +931,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             other_actions.append(item)
 
     if form_inputs:
-        form_inputs.sort(key=lambda x: x.get("cursor_y", x.get("y", 0)))
+        # Why: 物理y座標が有効な要素のみ整流化し未特定座標要素(<=45px)は元の相対順を保持
+        def _get_sort_y(item, default_idx):
+            cy = item.get("cursor_y", item.get("y", 0))
+            return cy if cy > 45 else (10000 + default_idx)
+        form_inputs.sort(key=lambda x: _get_sort_y(x, form_inputs.index(x)))
         result = other_actions + form_inputs + submit_buttons
 
     return result

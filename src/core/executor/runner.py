@@ -641,6 +641,9 @@ def _get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> tuple[int, int]:
     # Why: 記録時と実行時のウィンドウ配置の差分をオフセットとして補正
     if not hwnd or platform.system() != "Windows":
         return 0, 0
+    # Why: 記録時原点が未計測(0,0)の場合はオフセット誤加算による枠外ズレを防止
+    if rec_x == 0 and rec_y == 0:
+        return 0, 0
     try:
         class RECT(ctypes.Structure):
             _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
@@ -1333,6 +1336,18 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                 current_win_y = args.get("y", 0)
                 current_win_w = args.get("width", 0)
                 current_win_h = args.get("height", 0)
+                if (current_win_x == 0 and current_win_y == 0) and last_win_args and last_win_args.get("mapped_hwnd"):
+                    try:
+                        class RECT(ctypes.Structure):
+                            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                        r = RECT()
+                        if ctypes.windll.user32.GetWindowRect(last_win_args["mapped_hwnd"], ctypes.byref(r)):
+                            current_win_x, current_win_y = r.left, r.top
+                            current_win_w, current_win_h = r.right - r.left, r.bottom - r.top
+                            last_win_args["x"], last_win_args["y"] = current_win_x, current_win_y
+                            last_win_args["width"], last_win_args["height"] = current_win_w, current_win_h
+                    except Exception:
+                        pass
 
             # Why: スクロールや移動での照合待機を排除し主要入力時も最大1.5秒で高速評価
             if method in ["click", "type_text"] and raw_event_id:
