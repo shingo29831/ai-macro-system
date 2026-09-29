@@ -6,6 +6,7 @@ import time
 import platform
 import ctypes
 import subprocess
+import threading
 from pathlib import Path
 import numpy as np
 from pynput.mouse import Controller as MouseController, Button
