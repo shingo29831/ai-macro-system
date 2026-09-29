@@ -26,7 +26,7 @@ class TypingSessionAggregator:
                     return 0.0
             return 0.0
 
-        # Why: マウス移動先の要素を追従し別入力欄への直前クリックコンテキスト誤爆を防止
+        # Why: キー入力のフォーカス先は直前クリック要素のみから継承しホバー移動による汚染を根絶
         last_click_ctx = {}
         last_click_win = ""
         for ev in raw_events:
@@ -40,13 +40,9 @@ class TypingSessionAggregator:
                 if elem or sel or ctx.get("xpath"):
                     last_click_ctx = ctx.copy()
                     last_click_win = ev_win
-            elif ev_act in ["move", "mouse_move"]:
-                if elem and last_click_ctx.get("element_name") and elem != last_click_ctx.get("element_name"):
-                    last_click_ctx = ctx.copy()
-                    last_click_win = ev_win
             elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
                 # Why: タスクバーやポップアップ経由でWindowNameが空の場合もブラウザ操作なら安全にコンテキストを伝播
-                is_win_match = (ev_win == last_click_win) or not last_click_win or not ev_win
+                is_win_match = (ev_win == last_click_win) or not last_click_win or not ev_win or any(b in (ev_win + last_click_win).lower() for b in ["firefox", "chrome", "edge"])
                 if is_win_match:
                     e_ctx = ev.setdefault("app_context", {})
                     for k in ["element_name", "css_selector", "xpath", "control_type"]:
@@ -449,7 +445,14 @@ class TypingSessionAggregator:
             if current_ime_state:
                 try:
                     from core.recorder.romaji_converter import to_hiragana
-                    current_chunk = to_hiragana(current_chunk)
+                    # Why: アルファベット末尾を含む入力(kaisaA等)をひらがなと大文字英字に適切分離
+                    alpha_tail = re.search(r'[A-Za-z]+$', current_chunk)
+                    if alpha_tail:
+                        tail_idx = alpha_tail.start()
+                        lead_hira = to_hiragana(current_chunk[:tail_idx])
+                        current_chunk = lead_hira + current_chunk[tail_idx:]
+                    else:
+                        current_chunk = to_hiragana(current_chunk)
                 except ImportError:
                     pass
             fallback_text += current_chunk

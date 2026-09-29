@@ -237,10 +237,10 @@ class BrowserInspector(BaseInspector):
                             try:
                                 val = focused.GetLegacyIAccessiblePattern().CurrentValue
                             except Exception:
-                                val = focused.CurrentName
+                                val = getattr(focused, "Name", "") or getattr(focused, "CurrentName", "")
                         auto_id = getattr(focused, "AutomationId", "") or ""
-                        ctrl_type = auto.ControlTypeNamesMap.get(focused.ControlType, "Edit")
-                        elem_name = focused.CurrentName or ""
+                        ctrl_type = getattr(auto, "ControlTypeName", lambda ct: "Edit")(focused.ControlType)
+                        elem_name = getattr(focused, "Name", "") or getattr(focused, "CurrentName", "") or ""
                         if val or auto_id or elem_name:
                             result["text"] = str(val or "").strip()
                             result["value"] = result["text"]

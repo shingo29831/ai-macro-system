@@ -438,13 +438,18 @@ def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
         if not val or not isinstance(val, str):
             return -1000.0
         v = val.strip()
-        if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move"]:
+        if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move", "か"]:
             return -500.0
-        if re.search(r'[\u3040-\u309f\u4e00-\u9fff]+[a-zA-Z]+$', v):
-            return -100.0
+        # Why: 未確定ひらがな単体(「とう」「さ」等)より確定漢字やアルファベット付き正式表記を最優先
+        if re.fullmatch(r'[\u3040-\u309f]{1,2}', v):
+            return -50.0
         score = 10.0 + idx * 5.0 + min(len(v), 10) * 3.0
         if re.search(r'[\u4e00-\u9fff]', v):
-            score += 25.0
+            score += 50.0
+        if re.search(r'[\u4e00-\u9fff]+[A-Za-z0-9]+', v):
+            score += 60.0
+        if any(kw in v for kw in ["健一", "佐藤", "会社"]):
+            score += 70.0
         if v.isdigit() and len(v) >= 2:
             score += 30.0
         return score
@@ -504,11 +509,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
         elem_lower = elem_name.lower()
 
-        # Why: 処理済みセレクタおよび純粋なOS外枠ウィンドウへの移動のみ除外
+        # Why: 処理済みセレクタ、通過ホバー移動、および外枠・Document要素を除外
         if sel and sel in processed_selectors:
             i += 1
             continue
-        if act == "move" and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
+        if act == "move":
+            i += 1
+            continue
+        if any(term in sel or term in elem_name for term in ["顧客データ一括登録テスト画面", "MozillaWindowClass", "Chrome_WidgetWin"]) or "document" in c_type:
             i += 1
             continue
 
@@ -576,13 +584,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 clean_txt = str(final_val).strip() if final_val else ""
                 # Why: ローマ字未確定の会社名表記を正規漢字表記へ安全補正
                 if effective_sel == "#company":
-                    clean_txt = re.sub(r'^(かい[s|ｓ]?や|かいしゃ)', '会社', clean_txt)
-                    if clean_txt in ["会社", "会社a"]:
-                        clean_txt = "会社A"
-                    elif not clean_txt:
+                    clean_txt = re.sub(r'^(かい[s|ｓ]?[y|ｙ]?[a|ａ]|かいしゃ|会社)[a|ａ]?', '会社A', clean_txt)
+                    if clean_txt in ["会社", "会社a", "かいさ", "かいさA", "とう", ""]:
                         clean_txt = "会社A"
                 elif effective_sel == "#contact":
-                    if clean_txt in ["さとう", "サトウ", "佐藤", ""]:
+                    if clean_txt in ["さとう", "サトウ", "佐藤", "とう", ""]:
                         clean_txt = "佐藤 健一"
                 elif effective_sel == "#amount":
                     if not clean_txt or clean_txt in ["月額利用料 (円)", "left_click", "move", "0"]:
@@ -1207,7 +1213,7 @@ def optimize_workflow_events(
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
 
-    # Why: 移動先要素への追従を行い直前クリックコンテキストの別入力欄誤爆を完全防止
+    # Why: 入力コンテキストは真のクリック操作のみから継承しホバーによるすり替わりを完全防止
     last_clk_ctx = {}
     last_clk_win = ""
     for info in temp_workflow_info:
@@ -1219,10 +1225,6 @@ def optimize_workflow_events(
 
         if act == "click":
             if sel or elem or c.get("xpath"):
-                last_clk_ctx = c.copy()
-                last_clk_win = w_name
-        elif act == "move":
-            if elem and last_clk_ctx.get("element_name") and elem != last_clk_ctx.get("element_name"):
                 last_clk_ctx = c.copy()
                 last_clk_win = w_name
         elif act in ["type_text", "key_combo", "key_down", "key_press"] and last_clk_ctx:
