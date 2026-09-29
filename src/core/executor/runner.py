@@ -1522,11 +1522,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         time.sleep(0.35)
                         
                 elif method == "type_text":
-                    text = args.get("text", "")
+                    raw_text = args.get("text", "")
+                    from core.executor.os_env_controller import is_link_or_url, normalize_text_width
+                    text = normalize_text_width(raw_text)
                     excel_cell = args.get("excel_cell")
                     clear_before = args.get("clear_before_typing", False)
                     use_clip = args.get("use_clipboard")
                     ime_mode = args.get("ime_mode", "auto")
+                    if is_link_or_url(text) and ime_mode == "auto":
+                        ime_mode = "off"
                     selector = args.get("selector")
                     elem_name = args.get("element_name")
                     type_x = args.get("x")

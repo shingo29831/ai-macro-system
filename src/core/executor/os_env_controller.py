@@ -162,17 +162,55 @@ def is_running_as_admin() -> bool:
         return False
 
 
+def is_fullwidth(text: str) -> bool:
+    """文字列に全角文字が含まれているかを判定する"""
+    import unicodedata
+    return any(unicodedata.east_asian_width(c) in ('F', 'W', 'A') for c in text)
+
+
+def is_link_or_url(text: str) -> bool:
+    """テキストがリンク（URL・ドメイン）であるかを判定する（全角・半角両対応）"""
+    if not text:
+        return False
+    import unicodedata
+    import re
+    norm = unicodedata.normalize('NFKC', text).strip()
+    norm_lower = norm.lower()
+    if norm_lower.startswith(('http://', 'https://', 'ftp://', 'file://', 'www.')):
+        return True
+    domain_pattern = r'^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.]*(/[^\s]*)?$'
+    return bool(re.match(domain_pattern, norm_lower))
+
+
+def normalize_text_width(text: str) -> str:
+    """Why: リンクや英数記号の全角混入を検知し正規の半角形式へ自動変換"""
+    if not text:
+        return ""
+    import unicodedata
+    if is_link_or_url(text):
+        return unicodedata.normalize('NFKC', text).strip()
+    return text
+
+
 def set_ime_state(text: str = "", target_state: bool | None = None):
     """アクティブウィンドウのIME状態（全角/半角）を制御する"""
     if platform.system() != "Windows":
         return
     try:
-        # Why: 日本語を含む場合はIMEをON、ASCIIのみは強制OFFにして半角英数入力の破壊を防止
-        if target_state is None:
-            has_japanese = any(ord(c) > 0x7F for c in text)
-            open_status = 1 if has_japanese else 0
-        else:
+        if target_state is not None:
             open_status = 1 if target_state else 0
+        else:
+            # Why: リンク(URL)や半角英数字は全角混入時も強制OFFにし、半角入力を保証
+            if is_link_or_url(text):
+                open_status = 0
+            else:
+                has_japanese = any(
+                    '\u3040' <= c <= '\u309F' or  # ひらがな
+                    '\u30A0' <= c <= '\u30FF' or  # カタカナ
+                    '\u4E00' <= c <= '\u9FFF'     # 漢字
+                    for c in text
+                )
+                open_status = 1 if has_japanese else 0
 
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         if not hwnd:

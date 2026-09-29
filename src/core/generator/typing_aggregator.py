@@ -544,6 +544,13 @@ class TypingSessionAggregator:
             final_text = latest_uia_text if latest_uia_text else fallback_text
 
         if final_text:
+            # Why: リンクが全角で記録された場合に全角半角判定を行い半角URLへ正規化
+            import unicodedata
+            norm_candidate = unicodedata.normalize('NFKC', final_text).strip()
+            norm_lower = norm_candidate.lower()
+            if norm_lower.startswith(('http://', 'https://', 'www.', 'ftp://')) or re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.]*(/[^\s]*)?$', norm_lower):
+                final_text = norm_candidate
+
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
                 session.clear()
                 return
