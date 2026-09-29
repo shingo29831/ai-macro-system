@@ -1058,21 +1058,19 @@ def optimize_workflow_events(
                     info["selector"] = app_ctx.get("css_selector") or app_ctx.get("xpath")
                     info["text"] = role_text
             elif act == "click":
-                target_url = app_ctx.get("url") or app_ctx.get("text") or app_ctx.get("value")
-                has_http = target_url and str(target_url).startswith("http")
-                has_selector = bool(app_ctx.get("css_selector") or app_ctx.get("xpath") or app_ctx.get("element_name"))
-                if has_http or has_selector:
+                # Why: クリックは物理座標を主軸とする標準clickを維持しつつ、確実なアンカーリンクのみブラウザ昇格
+                target_url = app_ctx.get("url")
+                is_link = "hyperlink" in str(app_ctx.get("control_type", "")).lower()
+                has_http = is_link and target_url and str(target_url).startswith("http")
+                has_valid_selector = bool(app_ctx.get("css_selector") and not app_ctx.get("css_selector", "").startswith("div:has-text"))
+                if has_http and has_valid_selector:
                     info["raw_action"] = "browser_action"
                     info["raw_type"] = "browser_action"
                     info["action"] = "click_element"
-                    if has_http:
-                        info["url"] = str(target_url).strip()
-                    if app_ctx.get("css_selector"):
-                        info["selector"] = app_ctx.get("css_selector")
-                    elif app_ctx.get("xpath"):
-                        info["selector"] = app_ctx.get("xpath")
+                    info["url"] = str(target_url).strip()
+                    info["selector"] = app_ctx.get("css_selector")
                     elem_name = app_ctx.get("element_name") or info.get("semantic_role")
-                    if elem_name:
+                    if elem_name and elem_name != "left_click":
                         info["element_name"] = elem_name
 
         promoted_browser_info.append(info)

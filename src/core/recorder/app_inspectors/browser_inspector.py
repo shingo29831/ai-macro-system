@@ -253,6 +253,14 @@ class BrowserInspector(BaseInspector):
                 try:
                     children = elem.children()[:20]
                     for idx, child in enumerate(children):
+                        # Why: 座標指定時はクリック地点を含まない無関係な子要素テキストの誤取得を完全防止
+                        if x is not None and y is not None:
+                            try:
+                                r = child.rectangle()
+                                if not (r.left <= x <= r.right and r.top <= y <= r.bottom):
+                                    continue
+                            except Exception:
+                                continue
                         child_text = self._extract_value_from_elem(child)
                         if child_text:
                             extracted_text = child_text
@@ -325,8 +333,9 @@ class BrowserInspector(BaseInspector):
                     result["text"] = addr_info.get("address_bar_text", "")
                     result["value"] = result["text"]
             else:
-                # Webページ内操作時は要素独自のURLがある場合のみ設定しページURL混入を防止
-                if extracted_text and (extracted_text.startswith("http://") or extracted_text.startswith("https://")):
+                # Why: 画面内テキストにURLが含まれるだけの非リンク誤認を防ぎHyperlink時のみURL設定
+                is_link_control = "hyperlink" in str(result.get("control_type", "")).lower()
+                if is_link_control and extracted_text and (extracted_text.startswith("http://") or extracted_text.startswith("https://")):
                     result["url"] = extracted_text
                 else:
                     result["url"] = ""

@@ -552,20 +552,27 @@ def build_and_save_macro(
             })
         elif cmd_type == "BROWSER_ACTION":
             elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name")
+            b_args = {
+                "action": params.browser_action or "open_url",
+                "url": params.browser_url,
+                "selector": params.browser_selector,
+                "selector_type": params.browser_selector_type or "css",
+                "text": params.text,
+                "value": params.browser_value,
+                "element_name": elem_name_val,
+                "timeout_sec": 10.0,
+                "target_id": target_id_for_healer,
+                "raw_event_id": raw_event_id
+            }
+            # Why: セレクタ特定失敗時も記録時の物理座標へ安全にフォールバック可能にする
+            cx = cur_info.get("cursor_x")
+            cy = cur_info.get("cursor_y")
+            if cx is not None and cy is not None:
+                b_args["x"] = cx
+                b_args["y"] = cy
             raw_commands_data.append({
                 "method": "browser_action",
-                "args": {
-                    "action": params.browser_action or "open_url",
-                    "url": params.browser_url,
-                    "selector": params.browser_selector,
-                    "selector_type": params.browser_selector_type or "css",
-                    "text": params.text,
-                    "value": params.browser_value,
-                    "element_name": elem_name_val,
-                    "timeout_sec": 10.0,
-                    "target_id": target_id_for_healer,
-                    "raw_event_id": raw_event_id
-                }
+                "args": b_args
             })
         elif cmd_type == "EXCEL_ACTION":
             raw_commands_data.append({

@@ -105,10 +105,27 @@ class BrowserController:
 
         elif action == "click_element":
             clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout_sec, element_name=attr_name or args.get("element_name"), url=url)
-            # Why: DOM要素探索でクリックできない場合も記録されたURLへ直接ナビゲーションして遷移を完全保証
-            if not clicked and url and str(url).startswith("http"):
-                logger.info(f"[{workflow_id}] DOM element click fallback: navigating directly to '{url}'")
-                self.execute_action({"action": "open_url", "url": url}, variables, last_win_args, workflow_id)
+            # Why: クリック未成功時にURL直接遷移すると未開リンクの誤起動を招くため物理座標クリックへ安全フォールバック
+            if not clicked:
+                x = args.get("x")
+                y = args.get("y")
+                if x is not None and y is not None and (x != 0 or y != 0):
+                    logger.info(f"[{workflow_id}] Selector click not resolved. Falling back to physical click at ({x}, {y})")
+                    if platform.system() == "Windows":
+                        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+                        ctypes.windll.user32.mouse_event(1, 0, 0, 0, 0)
+                        time.sleep(0.04)
+                        set_system_cursor("run_click")
+                        time.sleep(0.03)
+                        ctypes.windll.user32.mouse_event(2, 0, 0, 0, 0)
+                        ctypes.windll.user32.mouse_event(4, 0, 0, 0, 0)
+                        time.sleep(0.06)
+                        set_system_cursor("run_idle")
+                    time.sleep(0.2)
+                    res_data["status"] = "fallback_click_succeeded"
+                else:
+                    logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no fallback coordinates available.")
+                    res_data["status"] = "click_failed"
 
         elif action == "type_text":
             self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout_sec)

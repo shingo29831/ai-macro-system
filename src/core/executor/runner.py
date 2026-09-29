@@ -1433,11 +1433,7 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url):
                                 logger.info(f"[{workflow_id}] High-precision browser click succeeded on '{elem_name or selector}'.")
                                 skip_physical = True
-                            elif target_url and str(target_url).startswith("http"):
-                                # Why: リンク先URLが存在し物理クリックのズレが懸念される場合はURL直接遷移を実行
-                                logger.info(f"[{workflow_id}] High-precision browser navigating to URL: {target_url}")
-                                bc.execute_action({"action": "open_url", "url": target_url}, variables, last_win_args, workflow_id)
-                                skip_physical = True
+                            # Why: セレクタ未検出時にURL直接遷移すると未開リンクの誤起動を招くため物理クリックへフォールバック
                         except Exception as b_err:
                             logger.info(f"[{workflow_id}] High-precision browser click bypassed: {b_err}")
 
