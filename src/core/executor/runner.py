@@ -1599,16 +1599,19 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                 keyboard.release(Key.backspace)
                                 time.sleep(0.04)
 
-                            if ime_mode == "off":
+                            if is_link_or_url(text):
+                                set_ime_state(target_state=False)
+                                use_clip = True
+                            elif ime_mode == "off":
                                 set_ime_state(text, target_state=False)
                             elif ime_mode == "on":
                                 set_ime_state(text, target_state=True)
                             else:
                                 set_ime_state(text)
 
-                            # Why: 日本語または改行を含むテキストはクリップボードペーストでIME非同期変換事故を完全根絶
+                            # Why: 日本語、リンク、改行を含むテキストはクリップボードペーストでIME非同期変換事故を完全根絶
                             if use_clip is None:
-                                use_clip = any(ord(c) > 0x7F for c in text) or "\n" in text or len(text) > 4
+                                use_clip = is_link_or_url(text) or any(ord(c) > 0x7F for c in text) or "\n" in text or len(text) > 4
 
                             if use_clip and _set_clipboard_text(text):
                                 time.sleep(0.03)

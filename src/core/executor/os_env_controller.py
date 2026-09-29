@@ -179,7 +179,13 @@ def is_link_or_url(text: str) -> bool:
     if norm_lower.startswith(('http://', 'https://', 'ftp://', 'file://', 'www.')):
         return True
     domain_pattern = r'^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.]*(/[^\s]*)?$'
-    return bool(re.match(domain_pattern, norm_lower))
+    if bool(re.match(domain_pattern, norm_lower)):
+        return True
+    # Why: パス付きURLやパラメータ、全角混じりのWebアドレスを包括検知
+    url_chars_pattern = r'^[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;%=]+$'
+    if ('.' in norm_lower or '/' in norm_lower) and bool(re.match(url_chars_pattern, norm_lower)):
+        return True
+    return False
 
 
 def normalize_text_width(text: str) -> str:
@@ -189,6 +195,9 @@ def normalize_text_width(text: str) -> str:
     import unicodedata
     if is_link_or_url(text):
         return unicodedata.normalize('NFKC', text).strip()
+    norm = unicodedata.normalize('NFKC', text)
+    if any(prefix in norm.lower() for prefix in ['http://', 'https://', 'www.', '.html', '.php', '.com', '.jp', '.ac.jp', '.co.jp', '.org']):
+        return norm.strip()
     return text
 
 

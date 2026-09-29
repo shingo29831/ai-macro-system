@@ -1023,6 +1023,31 @@ def optimize_workflow_events(
             if "excel_cell" not in info and not info.get("dynamic_excel_cell"):
                 info["excel_cell"] = last_excel_dest_cell
 
+    from core.executor.os_env_controller import is_link_or_url, normalize_text_width
+
+    # Why: アドレスバー入力やWebリンクへの遷移を専用ブラウザアクション(browser_action)へ昇格
+    promoted_browser_info = []
+    for info in temp_workflow_info:
+        act = info.get("raw_action", "")
+        app_ctx = info.get("app_context") or {}
+        is_browser = app_ctx.get("app") == "Browser" or any(b in info.get("window_name", "").lower() for b in ["firefox", "chrome", "edge", "brave", "opera"])
+
+        if is_browser and act == "type_text":
+            role_text = str(info.get("semantic_role", "")).strip()
+            is_addr = app_ctx.get("is_address_bar") or "検索" in str(app_ctx.get("element_name", "")) or "url" in str(app_ctx.get("element_name", "")).lower()
+            if is_link_or_url(role_text) or (is_addr and any(ext in role_text.lower() for ext in [".jp", ".com", ".net", ".org", "http"])):
+                norm_url = normalize_text_width(role_text)
+                if not norm_url.startswith(("http://", "https://")):
+                    norm_url = f"https://{norm_url}"
+                info["raw_action"] = "browser_action"
+                info["raw_type"] = "browser_action"
+                info["action"] = "open_url"
+                info["url"] = norm_url
+                info["semantic_role"] = norm_url
+
+        promoted_browser_info.append(info)
+    temp_workflow_info = promoted_browser_info
+
     variables = {}
     for info in temp_workflow_info:
         if should_cancel():
@@ -1036,8 +1061,10 @@ def optimize_workflow_events(
             role_lower = role_str.lower()
             
             if role_lower not in ["enter", "tab", "esc", "backspace", "delete"] and not role_lower.startswith("key."):
+                # Why: リンクや英数字コードの全角混入を正規化してから変数バインド
+                normalized_role = normalize_text_width(role_str)
                 var_name = f"search_query_{len(variables) + 1}"
-                variables[var_name] = role_str
+                variables[var_name] = normalized_role
                 info["semantic_role"] = f"{{{{{var_name}}}}}"
 
     return temp_workflow_info, variables

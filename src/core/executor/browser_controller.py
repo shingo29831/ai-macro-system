@@ -75,13 +75,27 @@ class BrowserController:
         
         if action == "open_url":
             if url:
+                from core.executor.os_env_controller import set_ime_state, normalize_text_width
+                norm_url = normalize_text_width(url)
+                set_ime_state(target_state=False)
+                time.sleep(0.05)
                 # Why: CDP未開放時も全ブラウザ共通でCtrl+Lからアドレスバーへ高精度ナビゲーション
                 self._keyboard.press(Key.ctrl)
                 self._keyboard.press('l')
                 self._keyboard.release('l')
                 self._keyboard.release(Key.ctrl)
                 time.sleep(0.1)
-                self._keyboard.type(url)
+                # Why: IMEオン状態でのキータイプによる全角化を防ぐためクリップボード貼付を優先
+                from core.executor.runner import _set_clipboard_text
+                if _set_clipboard_text(norm_url):
+                    time.sleep(0.04)
+                    self._keyboard.press(Key.ctrl)
+                    self._keyboard.press('v')
+                    self._keyboard.release('v')
+                    self._keyboard.release(Key.ctrl)
+                    time.sleep(0.04)
+                else:
+                    self._keyboard.type(norm_url)
                 time.sleep(0.05)
                 self._keyboard.press(Key.enter)
                 self._keyboard.release(Key.enter)
@@ -268,9 +282,23 @@ class BrowserController:
             self._keyboard.press(Key.backspace)
             self._keyboard.release(Key.backspace)
             time.sleep(0.05)
-        for char in text:
-            self._keyboard.type(char)
-            time.sleep(0.02)
+        from core.executor.os_env_controller import set_ime_state, is_link_or_url, normalize_text_width
+        from core.executor.runner import _set_clipboard_text
+        norm_text = normalize_text_width(text)
+        if is_link_or_url(norm_text):
+            set_ime_state(target_state=False)
+        else:
+            set_ime_state(norm_text)
+        time.sleep(0.03)
+        if _set_clipboard_text(norm_text):
+            self._keyboard.press(Key.ctrl)
+            self._keyboard.press('v')
+            self._keyboard.release('v')
+            self._keyboard.release(Key.ctrl)
+        else:
+            for char in norm_text:
+                self._keyboard.type(char)
+                time.sleep(0.02)
         time.sleep(0.2)
         return True
 

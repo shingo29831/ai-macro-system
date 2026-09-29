@@ -110,12 +110,14 @@ class MacroEditorScreen(QWidget):
         
         tools = [
             ("ループ (繰り返し)", "loop"),
+            ("ブラウザ操作", "browser_action"),
+            ("Excel操作", "excel_action"),
             ("クリック", "click"),
             ("マウス移動(ホバー)", "move"),
             ("スクロール", "scroll"),
             ("テキスト入力", "type_text"),
-            ("待機", "wait"),
-            ("キー入力", "press_key")
+            ("キー入力", "press_key"),
+            ("待機", "wait")
         ]
         for label, action_type in tools:
             tool_layout.addWidget(ToolItemWidget(label, action_type))
@@ -226,7 +228,8 @@ class MacroEditorScreen(QWidget):
         method_map = {
             "click": "クリック", "move": "マウス移動", "type_text": "テキスト入力",
             "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", 
-            "activate_window": "ウィンドウアクティブ化", "loop_start": "ループ開始", "loop_end": "ループ終了"
+            "activate_window": "ウィンドウアクティブ化", "loop_start": "ループ開始", "loop_end": "ループ終了",
+            "browser_action": "ブラウザ操作", "excel_action": "Excel操作"
         }
         
         for i, cmd in enumerate(self.commands):

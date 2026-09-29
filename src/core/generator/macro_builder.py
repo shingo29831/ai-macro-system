@@ -192,7 +192,21 @@ def build_and_save_macro(
                 "ui_type": info.get("ui_type", "unknown")
             }
         
-        if raw_action == "excel_action" or raw_type == "excel_action":
+        if raw_action == "browser_action" or raw_type == "browser_action":
+            cmd = "BROWSER_ACTION"
+            b_act = info.get("action", "open_url")
+            intent = f"BROWSER_{b_act.upper()}"
+            desc = f"Execute browser action: {b_act}"
+            app_ctx = info.get("app_context") or {}
+            params = ActionParameters(
+                browser_action=b_act,
+                browser_url=info.get("url") or app_ctx.get("url"),
+                browser_selector=info.get("selector") or app_ctx.get("css_selector") or app_ctx.get("xpath"),
+                browser_selector_type=info.get("selector_type", "css"),
+                text=info.get("text") or final_semantic_role,
+                value=info.get("value")
+            )
+        elif raw_action == "excel_action" or raw_type == "excel_action":
             cmd = "EXCEL_ACTION"
             intent = f"EXCEL_{info.get('action', 'ACTION').upper()}"
             desc = f"Execute Excel action: {info.get('action')}"
@@ -535,6 +549,21 @@ def build_and_save_macro(
             raw_commands_data.append({
                 "method": "loop_end",
                 "args": {}
+            })
+        elif cmd_type == "BROWSER_ACTION":
+            raw_commands_data.append({
+                "method": "browser_action",
+                "args": {
+                    "action": params.browser_action or "open_url",
+                    "url": params.browser_url,
+                    "selector": params.browser_selector,
+                    "selector_type": params.browser_selector_type or "css",
+                    "text": params.text,
+                    "value": params.browser_value,
+                    "timeout_sec": 10.0,
+                    "target_id": target_id_for_healer,
+                    "raw_event_id": raw_event_id
+                }
             })
         elif cmd_type == "EXCEL_ACTION":
             raw_commands_data.append({
