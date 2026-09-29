@@ -501,18 +501,19 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 for sk, sv in snap_src.items():
                     if sv is not None and str(sv).strip():
                         val_str = str(sv).strip()
-                        # Why: フォーム送信リセット由来の初期値(スタンダード/false等)でユーザー確定値が上書きされるのを防止
                         prev_val = global_form_snapshot.get(sk)
-                        if prev_val and prev_val not in ["スタンダード", "false", ""]:
-                            if val_str in ["スタンダード", "false", ""]:
-                                continue
+                        # Why: 初回値からの変更値を優先し末尾リセット空値による上書きを普遍防止
+                        if prev_val and prev_val != val_str and val_str in ["", "None"]:
+                            continue
                         global_form_snapshot[sk] = val_str
         prev_c = ctx.get("committed_previous_value")
         if isinstance(prev_c, dict):
             ps = prev_c.get("selector")
             pv = prev_c.get("value")
             if ps and pv and str(pv).strip():
-                global_form_snapshot[ps] = str(pv).strip()
+                prev_val = global_form_snapshot.get(ps)
+                if not (prev_val and str(pv).strip() in ["", "None"]):
+                    global_form_snapshot[ps] = str(pv).strip()
 
     # 2. 各要素セレクタごとに全履歴から確定値候補を収集
     selector_candidates: Dict[str, List[str]] = {}
@@ -603,7 +604,20 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         # Why: 汎用セレクトボックス/コンボボックスの集約
         is_select = "combobox" in c_type or "select" in sel.lower() or "list" in c_type
         if is_select:
-            opt_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}") or info.get("value") or info.get("text") or ""
+            # Why: 操作イベント自身が保持する選択テキストをスナップショット初期値より最優先
+            cur_val = info.get("value") or info.get("text")
+            snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
+            cands = selector_candidates.get(sel, []) + selector_candidates.get(f"name:{elem_name}", [])
+            opt_val = ""
+            if cur_val and str(cur_val).strip() not in ["left_click", "move", elem_name, ""]:
+                opt_val = str(cur_val).strip()
+            elif cands:
+                valid_cands = [str(c).strip() for c in cands if str(c).strip() not in ["left_click", "move", elem_name, ""]]
+                if valid_cands:
+                    opt_val = valid_cands[-1]
+            if not opt_val:
+                opt_val = element_final_values.get(sel) or str(snap_val or "").strip()
+
             if str(opt_val).strip() and str(opt_val).strip() not in ["left_click", "move", elem_name]:
                 info["raw_action"] = "browser_action"
                 info["raw_type"] = "browser_action"
@@ -742,12 +756,12 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         coords = selector_coords.get(sel_id, (0, 0))
 
         # A. チェックボックス復元
-        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"] or "newsletter" in sel_id.lower()
+        is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"]
         if is_chk:
-            # Why: フォーム内チェックボックス項目への接触・入力を真のチェック要求(True)として確実に復元
+            # Why: フォーム内チェックボックス要素を真のトグル要求(True)として普遍復元
             chk_eid = f"{ref_eid}_{sel_id.lstrip('#')}"
             chk_x = coords[0] if coords[0] > 20 else ref_evt.get("cursor_x", ref_evt.get("x", 0))
-            chk_y = coords[1] if coords[1] > 20 else (ref_evt.get("cursor_y", ref_evt.get("y", 0)) + 40)
+            chk_y = coords[1] if coords[1] > 20 else ref_evt.get("cursor_y", ref_evt.get("y", 0))
             new_item = {
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
@@ -756,8 +770,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 "selector_type": "css",
                 "value": True,
                 "text": "True",
-                "element_name": clean_name or "お知らせ・更新通知メールを受信する",
-                "semantic_role": clean_name or "お知らせ・更新通知メールを受信する",
+                "element_name": clean_name or sel_id.lstrip("#"),
+                "semantic_role": clean_name or sel_id.lstrip("#"),
                 "window_name": ref_win,
                 "event_id": chk_eid,
                 "fallback_events": [chk_eid, ref_eid],
@@ -844,11 +858,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
         final_name = target_btn_name or "登録する"
-        # Why: ボタン未解決時は直前要素の直下(+60px)をボタン領域として安全にオフセット算出
         base_x = ref_evt.get("cursor_x", ref_evt.get("x", 0))
         base_y = ref_evt.get("cursor_y", ref_evt.get("y", 0))
-        calc_y = base_y + 60 if base_y > 100 else 580
-        btn_coords = selector_coords.get(final_sel, (base_x if base_x > 100 else 580, calc_y))
+        btn_coords = selector_coords.get(final_sel, (base_x, base_y))
         submit_eid = f"{ref_eid}_submit_btn"
         result.append({
             "raw_action": "browser_action",
@@ -868,6 +880,24 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             "y": btn_coords[1]
         })
         logger.info(f"Appended generic form submit button: {final_sel} ({final_name})")
+
+    # Why: フォーム各要素を物理y座標順に並び替え、送信ボタンを常に末尾に保証
+    form_inputs = []
+    submit_buttons = []
+    other_actions = []
+    for item in result:
+        act = item.get("action")
+        sel = str(item.get("selector", "")).lower()
+        if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
+            submit_buttons.append(item)
+        elif item.get("raw_action") == "browser_action" and act in ["type_text", "select_option", "set_checkbox"]:
+            form_inputs.append(item)
+        else:
+            other_actions.append(item)
+
+    if form_inputs:
+        form_inputs.sort(key=lambda x: x.get("cursor_y", x.get("y", 0)))
+        result = other_actions + form_inputs + submit_buttons
 
     return result
 

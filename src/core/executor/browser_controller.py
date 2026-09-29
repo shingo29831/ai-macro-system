@@ -363,7 +363,7 @@ class BrowserController:
                     search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
-                # Why: uiautomationの高速ネイティブ直接検索と深層走査で要素を瞬時に検出
+                # Why: WebContentのDocumentControlを起点にして深層DOM要素を構文解析結果に基づき自律検出
                 try:
                     import uiautomation as auto
                     win_ctrl = auto.ControlFromHandle(int(target_hwnd)) if target_hwnd else None
@@ -373,23 +373,26 @@ class BrowserController:
 
                     if win_ctrl and win_ctrl.Exists(0, 0):
                         from pywinauto.controls.uiawrapper import UIAWrapper
+                        scope_ctrl = win_ctrl.DocumentControl()
+                        if not scope_ctrl or not scope_ctrl.Exists(0, 0):
+                            scope_ctrl = win_ctrl
+
+                        # 1. セレクタ構文から抽出されたAutomationIdを直接探索
                         for did in direct_auto_ids:
-                            found_ctrl = win_ctrl.Control(AutomationId=did)
-                            if found_ctrl and found_ctrl.Exists(0, 0):
-                                return UIAWrapper(found_ctrl.Element)
-                        # ボタン名直接探索(登録する/送信/Submit等)
-                        for term in search_terms:
-                            if any(k in term for k in ["登録", "送信", "submit", "btn"]):
-                                btn_c = win_ctrl.ButtonControl(SubName=term)
-                                if btn_c and btn_c.Exists(0, 0):
-                                    return UIAWrapper(btn_c.Element)
-                        for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=14):
+                            fc = scope_ctrl.Control(AutomationId=did)
+                            if fc and fc.Exists(0, 0):
+                                return UIAWrapper(fc.Element)
+
+                        # 2. 検索語との完全一致・部分一致によるコントロール種別走査
+                        valid_types = ["edit", "combo", "button", "check", "spinner", "list", "hyperlink"]
+                        for ctrl, depth in auto.WalkControl(scope_ctrl, maxDepth=16):
+                            ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
+                            if not any(k in ct_name for k in valid_types):
+                                continue
                             aid = str(getattr(ctrl, "AutomationId", "") or "").lower()
                             name = str(getattr(ctrl, "Name", "") or "").lower()
-                            ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
-
-                            if any(t in aid or t in name for t in search_terms if len(t) >= 2):
-                                if any(k in ct_name for k in ["edit", "combo", "button", "check", "spinner", "list"]):
+                            for term in search_terms:
+                                if len(term) >= 2 and (term in aid or term in name or aid in term or name in term):
                                     return UIAWrapper(ctrl.Element)
                 except Exception as ex_auto:
                     logger.debug(f"uiautomation deep walk error: {ex_auto}")
