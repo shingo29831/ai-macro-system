@@ -551,6 +551,7 @@ def build_and_save_macro(
                 "args": {}
             })
         elif cmd_type == "BROWSER_ACTION":
+            elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name")
             raw_commands_data.append({
                 "method": "browser_action",
                 "args": {
@@ -560,6 +561,7 @@ def build_and_save_macro(
                     "selector_type": params.browser_selector_type or "css",
                     "text": params.text,
                     "value": params.browser_value,
+                    "element_name": elem_name_val,
                     "timeout_sec": 10.0,
                     "target_id": target_id_for_healer,
                     "raw_event_id": raw_event_id

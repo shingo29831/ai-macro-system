@@ -656,7 +656,12 @@ def optimize_workflow_events(
                             if first_typed.get("event_id"):
                                 info["event_id"] = first_typed["event_id"]
 
-                        info["raw_action"] = "type_text"
+                        # Why: Excelセル書き込みを物理入力ではなく専用アクション(excel_action)として記録
+                        info["raw_action"] = "excel_action"
+                        info["raw_type"] = "excel_action"
+                        info["action"] = "write_cell"
+                        info["cell"] = cell
+                        info["value"] = val
                         info["semantic_role"] = val
                         info["excel_cell"] = cell
                         
@@ -1025,25 +1030,50 @@ def optimize_workflow_events(
 
     from core.executor.os_env_controller import is_link_or_url, normalize_text_width
 
-    # Why: アドレスバー入力やWebリンクへの遷移を専用ブラウザアクション(browser_action)へ昇格
+    # Why: ブラウザ内のリンククリック、要素操作、URL入力を専用ブラウザアクション(browser_action)へ網羅昇格
     promoted_browser_info = []
     for info in temp_workflow_info:
         act = info.get("raw_action", "")
         app_ctx = info.get("app_context") or {}
-        is_browser = app_ctx.get("app") == "Browser" or any(b in info.get("window_name", "").lower() for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        win_name = info.get("window_name", "").lower()
+        is_browser = app_ctx.get("app") == "Browser" or any(b in win_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
 
-        if is_browser and act == "type_text":
-            role_text = str(info.get("semantic_role", "")).strip()
-            is_addr = app_ctx.get("is_address_bar") or "検索" in str(app_ctx.get("element_name", "")) or "url" in str(app_ctx.get("element_name", "")).lower()
-            if is_link_or_url(role_text) or (is_addr and any(ext in role_text.lower() for ext in [".jp", ".com", ".net", ".org", "http"])):
-                norm_url = normalize_text_width(role_text)
-                if not norm_url.startswith(("http://", "https://")):
-                    norm_url = f"https://{norm_url}"
-                info["raw_action"] = "browser_action"
-                info["raw_type"] = "browser_action"
-                info["action"] = "open_url"
-                info["url"] = norm_url
-                info["semantic_role"] = norm_url
+        if is_browser:
+            if act == "type_text":
+                role_text = str(info.get("semantic_role", "")).strip()
+                is_addr = app_ctx.get("is_address_bar") or "検索" in str(app_ctx.get("element_name", "")) or "url" in str(app_ctx.get("element_name", "")).lower()
+                if is_link_or_url(role_text) or (is_addr and any(ext in role_text.lower() for ext in [".jp", ".com", ".net", ".org", "http"])):
+                    norm_url = normalize_text_width(role_text)
+                    if not norm_url.startswith(("http://", "https://")):
+                        norm_url = f"https://{norm_url}"
+                    info["raw_action"] = "browser_action"
+                    info["raw_type"] = "browser_action"
+                    info["action"] = "open_url"
+                    info["url"] = norm_url
+                    info["semantic_role"] = norm_url
+                elif app_ctx.get("css_selector") or app_ctx.get("xpath"):
+                    info["raw_action"] = "browser_action"
+                    info["raw_type"] = "browser_action"
+                    info["action"] = "type_text"
+                    info["selector"] = app_ctx.get("css_selector") or app_ctx.get("xpath")
+                    info["text"] = role_text
+            elif act == "click":
+                target_url = app_ctx.get("url") or app_ctx.get("text") or app_ctx.get("value")
+                has_http = target_url and str(target_url).startswith("http")
+                has_selector = bool(app_ctx.get("css_selector") or app_ctx.get("xpath") or app_ctx.get("element_name"))
+                if has_http or has_selector:
+                    info["raw_action"] = "browser_action"
+                    info["raw_type"] = "browser_action"
+                    info["action"] = "click_element"
+                    if has_http:
+                        info["url"] = str(target_url).strip()
+                    if app_ctx.get("css_selector"):
+                        info["selector"] = app_ctx.get("css_selector")
+                    elif app_ctx.get("xpath"):
+                        info["selector"] = app_ctx.get("xpath")
+                    elem_name = app_ctx.get("element_name") or info.get("semantic_role")
+                    if elem_name:
+                        info["element_name"] = elem_name
 
         promoted_browser_info.append(info)
     temp_workflow_info = promoted_browser_info

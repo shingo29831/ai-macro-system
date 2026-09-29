@@ -543,12 +543,17 @@ class ActionBlockWidget(QFrame):
             return f"対象: {self.args.get('window_title', '')}"
         elif self.method == "browser_action":
             b_act = self.args.get("action", "")
+            elem = self.args.get("element_name") or self.args.get("selector") or ""
+            target_url = self.args.get("url", "")
             if b_act == "open_url":
-                return f"URL: {self.args.get('url', '')}"
-            elif b_act in ["click_element", "type_text", "read_text"]:
-                sel = self.args.get("selector") or self.args.get("element_name") or ""
-                extra = f" | 入力: {self.args.get('text', '')}" if b_act == "type_text" else ""
-                return f"要素: {sel}{extra}"
+                return f"URL: {target_url}"
+            elif b_act == "click_element":
+                url_extra = f" ({target_url})" if target_url else ""
+                return f"対象: {elem}{url_extra}" if elem else f"URLクリック: {target_url}"
+            elif b_act == "type_text":
+                return f"対象: {elem} | 入力: {self.args.get('text', '')}"
+            elif b_act == "read_text":
+                return f"対象: {elem} | 変数: {self.args.get('variable_name', '')}"
             return f"操作: {b_act}"
         elif self.method == "excel_action":
             e_act = self.args.get("action", "")
