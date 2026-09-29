@@ -251,36 +251,37 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
     return temp_workflow_info
 
 def _reorder_displaced_clicks_before_scroll(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Why: クリック直後のスクロール割り込みによる時系列逆転(ホバー->スクロール->同位置クリック)を自動正規化
+    # Why: 非破壊ワンパス走査で無限ループを完全排除しクリック直後のスクロール逆転を自動正規化
     if len(temp_workflow_info) < 3:
         return temp_workflow_info
 
-    reordered = list(temp_workflow_info)
+    result = []
     i = 0
-    while i < len(reordered) - 2:
-        curr = reordered[i]
+    n = len(temp_workflow_info)
+    while i < n:
+        curr = temp_workflow_info[i]
         if curr.get("raw_action") == "move":
             mx, my = curr.get("cursor_x", curr.get("x", 0)), curr.get("cursor_y", curr.get("y", 0))
             m_win = curr.get("window_name", "")
             j = i + 1
-            scroll_count = 0
-            while j < len(reordered) and reordered[j].get("raw_action") == "scroll":
-                if reordered[j].get("window_name", "") == m_win:
-                    scroll_count += 1
+            scrolls = []
+            while j < n and temp_workflow_info[j].get("raw_action") == "scroll" and temp_workflow_info[j].get("window_name", "") == m_win:
+                scrolls.append(temp_workflow_info[j])
                 j += 1
-            if scroll_count > 0 and j < len(reordered):
-                after_scroll = reordered[j]
-                if after_scroll.get("raw_action") == "click" and after_scroll.get("window_name", "") == m_win:
-                    cx = after_scroll.get("cursor_x", after_scroll.get("x", 0))
-                    cy = after_scroll.get("cursor_y", after_scroll.get("y", 0))
-                    if ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5 <= 25:
-                        click_item = reordered.pop(j)
-                        reordered.insert(i + 1, click_item)
-                        logger.info(f"Reordered click (Event: {click_item.get('event_id')}) before scroll at ({cx}, {cy})")
-                        i = j
+            if scrolls and j < n:
+                after = temp_workflow_info[j]
+                if after.get("raw_action") == "click" and after.get("window_name", "") == m_win:
+                    cx, cy = after.get("cursor_x", after.get("x", 0)), after.get("cursor_y", after.get("y", 0))
+                    if ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5 <= 35:
+                        result.append(curr)
+                        result.append(after)
+                        result.extend(scrolls)
+                        logger.info(f"Reordered click (Event: {after.get('event_id')}) before scroll at ({cx}, {cy})")
+                        i = j + 1
                         continue
+        result.append(curr)
         i += 1
-    return reordered
+    return result
 
 def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: スクロール合間の無駄な移動を除去してスクロールを集約しつつ、メニュー出現用ホバーを確実に保持

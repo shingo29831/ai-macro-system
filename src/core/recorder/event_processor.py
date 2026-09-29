@@ -81,8 +81,8 @@ def enqueue_key_event(
     capture_now: bool = False,
     ime_active: bool = False,
 ):
-    # Why: キー入力開始時に保留中のクリックを即時確定し順序逆転を完全防止
-    process_pending_single_click(sync=True)
+    # Why: フックスレッドのブロックを防止しつつ保留クリックを非同期即時確定
+    process_pending_single_click(sync=False)
 
     window_info = window_inspector.get_foreground_window_info()
     if window_inspector.should_ignore_window(window_info.get("title")):
@@ -243,12 +243,9 @@ def start_key_event_worker():
 
 def stop_key_event_worker():
     state.key_worker_stop_event.set()
-    try:
-        state.key_event_queue.join()
-    except Exception:
-        pass
+    # Why: 無期限joinによる生成停止フリーズを防止しタイムアウト合流
     if state.key_worker_thread:
-        state.key_worker_thread.join(timeout=10)
+        state.key_worker_thread.join(timeout=3.0)
     state.key_worker_thread = None
 def mouse_event_worker():
     while True:
@@ -273,7 +270,7 @@ def start_mouse_event_worker():
 
 def stop_mouse_event_worker():
     state.mouse_worker_stop_event.set()
-    try: state.mouse_event_queue.join()
-    except Exception: pass
-    if state.mouse_worker_thread: state.mouse_worker_thread.join(timeout=10)
+    # Why: 無期限joinによる生成停止フリーズを防止しタイムアウト合流
+    if state.mouse_worker_thread:
+        state.mouse_worker_thread.join(timeout=3.0)
     state.mouse_worker_thread = None

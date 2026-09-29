@@ -72,11 +72,10 @@ def calculate_and_update_diff(current_img) -> str:
 def process_move_event(event: dict):
     try:
         x, y = int(event["x"]), int(event["y"])
-        # Why: クリック位置から20px以上移動時はダブルクリック判定を打ち切り即時確定
-        with state.pending_click_lock:
-            p_evt = state.pending_click_event
-            if p_evt and ((x - int(p_evt["x"])) ** 2 + (y - int(p_evt["y"])) ** 2) > 400:
-                process_pending_single_click(sync=True)
+        # Why: ロック外で判定しデッドロックを防止しつつ20px移動で即時確定
+        p_evt = state.pending_click_event
+        if p_evt and ((x - int(p_evt["x"])) ** 2 + (y - int(p_evt["y"])) ** 2) > 400:
+            process_pending_single_click(sync=False)
 
         window_info = window_inspector.get_foreground_window_info()
         if window_inspector.should_ignore_window(window_info.get("title")):
@@ -471,10 +470,7 @@ def start_mouse_event_worker():
 
 def stop_mouse_event_worker():
     state.mouse_worker_stop_event.set()
-    try:
-        state.mouse_event_queue.join()
-    except Exception:
-        pass
+    # Why: 無期限joinによる生成停止フリーズを防止しタイムアウト合流
     if state.mouse_worker_thread:
-        state.mouse_worker_thread.join(timeout=10)
+        state.mouse_worker_thread.join(timeout=3.0)
     state.mouse_worker_thread = None
