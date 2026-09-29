@@ -316,35 +316,99 @@ class BrowserController:
                 res_data["status"] = "failed"
 
         elif action == "set_checkbox":
-            desired = True if value is None else (value in [True, "True", "true", 1, "1"])
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text)
-            toggled = False
-            if elem:
-                try:
-                    is_checked = False
-                    if hasattr(elem, "is_toggle_pattern_available") and elem.is_toggle_pattern_available():
-                        is_checked = elem.get_toggle_state() == 1
-                    else:
-                        leg_state = elem.legacy_properties().get("State", 0)
-                        is_checked = bool(isinstance(leg_state, int) and (leg_state & 0x10))
-                    if is_checked != desired:
-                        rect = elem.rectangle()
-                        cx = (rect.left + rect.right) // 2
-                        cy = (rect.top + rect.bottom) // 2
-                        if cx > 20 and cy > 20 and self._click_physical_coords(cx, cy, last_win_args):
-                            toggled = True
-                    else:
-                        toggled = True
-                    res_data["checked"] = desired
-                except Exception as e:
-                    logger.warning(f"set_checkbox UIA evaluation failed: {e}")
-            if not toggled:
-                x = args.get("x")
-                y = args.get("y")
-                if self._click_physical_coords(x, y, last_win_args):
-                    res_data["checked"] = desired
+            # Why: エクセル由来の多様な表記(True/FALSE/あり/なし/1/0等)を普遍的に真偽値へ正規化
+            raw_v = value if value is not None else text
+            desired = False
+            if raw_v is not None:
+                if isinstance(raw_v, bool):
+                    desired = raw_v
+                elif isinstance(raw_v, (int, float)):
+                    desired = (raw_v != 0)
                 else:
-                    res_data["status"] = "element_not_found"
+                    s_v = str(raw_v).strip().lower()
+                    if s_v in ["true", "1", "yes", "y", "on", "あり", "有", "チェック", "○", "レ", "checked"]:
+                        desired = True
+
+            opt_x = args.get("x")
+            opt_y = args.get("y")
+            elem_name_arg = str(attr_name or args.get("element_name") or "").strip()
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name_arg, text=text, x=opt_x, y=opt_y)
+
+            import uiautomation as auto
+            ctrl = auto.ControlFromElement(elem.element_info._element) if elem else None
+
+            # 座標フォールバックからControlFromPointでctrlを取得
+            if not ctrl and opt_x is not None and opt_y is not None:
+                try:
+                    target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+                    rec_x = last_win_args.get("x", 0) if last_win_args else 0
+                    rec_y = last_win_args.get("y", 0) if last_win_args else 0
+                    from core.executor.runner import _get_window_offset
+                    off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+                    ctrl = auto.ControlFromPoint(int(opt_x + off_x), int(opt_y + off_y))
+                except Exception:
+                    pass
+
+            # 1. UIA TogglePattern / LegacyIAccessible から現在チェック状態を厳密取得
+            is_checked = None
+            if ctrl and ctrl.Exists(0, 0):
+                try:
+                    tog_pat = ctrl.GetTogglePattern()
+                    if tog_pat:
+                        is_checked = (tog_pat.ToggleState == 1)
+                except Exception:
+                    pass
+                if is_checked is None:
+                    try:
+                        leg_pat = ctrl.GetLegacyIAccessiblePattern()
+                        if leg_pat:
+                            is_checked = bool(leg_pat.CurrentState & 0x10)
+                    except Exception:
+                        pass
+
+            # 2. 状態比較とトグル実行 (既に希望状態なら不要な反転クリックを完全抑止)
+            if is_checked is not None and is_checked == desired:
+                logger.info(f"set_checkbox: '{selector}' is already {desired}.")
+                res_data["checked"] = desired
+                return res_data
+
+            # 状態変更が必要な場合のみToggleまたは物理クリックを実行
+            toggled = False
+            if ctrl and ctrl.Exists(0, 0):
+                try:
+                    tog_pat = ctrl.GetTogglePattern()
+                    if tog_pat:
+                        tog_pat.Toggle()
+                        time.sleep(0.08)
+                        toggled = (tog_pat.ToggleState == (1 if desired else 0))
+                except Exception:
+                    pass
+
+            if not toggled:
+                # 物理座標クリックによるトグル
+                cx, cy = None, None
+                if elem:
+                    rect = elem.rectangle()
+                    cx = (rect.left + rect.right) // 2
+                    cy = (rect.top + rect.bottom) // 2
+                elif opt_x is not None and opt_y is not None:
+                    cx, cy = opt_x, opt_y
+
+                if cx is not None and cy is not None and cx > 20 and cy > 20:
+                    if self._click_physical_coords(cx, cy, last_win_args):
+                        toggled = True
+
+            if not toggled and elem:
+                try:
+                    elem.click_input()
+                    toggled = True
+                except Exception:
+                    pass
+
+            time.sleep(0.06)
+            res_data["checked"] = desired
+            if not toggled and is_checked is None:
+                res_data["status"] = "element_not_found"
 
         elif action == "wait_element":
             found = self._wait_element_exist(selector, last_win_args, timeout_sec)
