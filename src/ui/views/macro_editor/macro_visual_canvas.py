@@ -135,7 +135,18 @@ class MacroVisualCanvas(QWidget):
     def _get_template_for_action(self, action_type: str) -> dict:
         templates = {
             "browser_action": {"method": "browser_action", "args": {"action": "open_url", "url": "https://", "timeout_sec": 10.0}},
+            "browser_open_url": {"method": "browser_action", "args": {"action": "open_url", "url": "https://", "timeout_sec": 10.0}},
+            "browser_click": {"method": "browser_action", "args": {"action": "click_element", "selector": "", "timeout_sec": 10.0}},
+            "browser_type": {"method": "browser_action", "args": {"action": "type_text", "selector": "", "text": "", "timeout_sec": 10.0}},
+            "browser_read": {"method": "browser_action", "args": {"action": "read_text", "selector": "", "variable_name": "extracted_val", "timeout_sec": 10.0}},
+            "browser_wait": {"method": "browser_action", "args": {"action": "wait_element", "selector": "", "timeout_sec": 10.0}},
+            "browser_close": {"method": "browser_action", "args": {"action": "close_tab", "timeout_sec": 5.0}},
             "excel_action": {"method": "excel_action", "args": {"action": "write_cell", "cell": "A1", "value": ""}},
+            "excel_write": {"method": "excel_action", "args": {"action": "write_cell", "cell": "A1", "value": ""}},
+            "excel_read": {"method": "excel_action", "args": {"action": "read_cell", "cell": "A1", "variable_name": "cell_val"}},
+            "excel_open": {"method": "excel_action", "args": {"action": "open_workbook", "file_path": ""}},
+            "excel_save": {"method": "excel_action", "args": {"action": "save_workbook"}},
+            "excel_sheet": {"method": "excel_action", "args": {"action": "select_sheet", "sheet_name": "Sheet1"}},
             "click": {"method": "click", "args": {"x": 0, "y": 0, "button": "left", "clicks": 1}},
             "move": {"method": "move", "args": {"x": 0, "y": 0}},
             "scroll": {"method": "scroll", "args": {"dx": 0.0, "dy": -5.0, "x": 0, "y": 0}},

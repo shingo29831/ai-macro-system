@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                               QScrollArea, QLabel, QStackedWidget, QFrame, QMessageBox)
+                               QScrollArea, QLabel, QStackedWidget, QFrame, QMessageBox, QTabWidget)
 from PySide6.QtCore import Signal, Qt
 from qfluentwidgets import TransparentToolButton, FluentIcon
 from ui.views.macro_editor.macro_visual_canvas import MacroVisualCanvas
@@ -27,27 +27,6 @@ class MacroEditorScreen(QWidget):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
-        # 1. 左端サイドバー（アイコンのみ）
-        sidebar = QFrame()
-        sidebar.setFixedWidth(48)
-        sidebar.setStyleSheet("background-color: #f3f2f1; border-right: 1px solid #e0e0e0;")
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(4, 20, 4, 20)
-        sidebar_layout.setSpacing(16)
-        
-        self.btn_tool = TransparentToolButton(FluentIcon.ADD)
-        self.btn_tool.setToolTip("ツール")
-        self.btn_tool.clicked.connect(self._toggle_tool_panel)
-        
-        self.btn_index = TransparentToolButton(FluentIcon.MENU)
-        self.btn_index.setToolTip("目次")
-        self.btn_index.clicked.connect(self._toggle_index_panel)
-        
-        sidebar_layout.addWidget(self.btn_tool)
-        sidebar_layout.addWidget(self.btn_index)
-        sidebar_layout.addStretch()
-        main_layout.addWidget(sidebar)
         
         # スクロールバーのモダンスタイル
         modern_scrollbar_style = """
@@ -97,21 +76,64 @@ class MacroEditorScreen(QWidget):
             }
         """
 
-        # 2. ツールパネル（左側）
+        # 1. ツールパネル（左側）
         self.tool_panel = QWidget()
-        self.tool_panel.setFixedWidth(240)
+        self.tool_panel.setFixedWidth(270)
         self.tool_panel.setStyleSheet("background-color: #ffffff; border-right: 1px solid #e0e0e0;")
         tool_layout = QVBoxLayout(self.tool_panel)
-        tool_layout.setContentsMargins(16, 20, 16, 20)
-        tool_layout.setSpacing(12)
+        tool_layout.setContentsMargins(12, 16, 12, 16)
+        tool_layout.setSpacing(10)
+
+        tool_header = QHBoxLayout()
         tool_title = QLabel("ツール")
-        tool_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
-        tool_layout.addWidget(tool_title)
-        
-        tools = [
+        tool_title.setStyleSheet("font-weight: bold; font-size: 15px; color: #333;")
+        tool_header.addWidget(tool_title)
+        tool_header.addStretch()
+        tool_close_btn = TransparentToolButton(FluentIcon.CLOSE)
+        tool_close_btn.setToolTip("閉じる")
+        tool_close_btn.clicked.connect(self._toggle_tool_panel)
+        tool_header.addWidget(tool_close_btn)
+        tool_layout.addLayout(tool_header)
+
+        self.tool_tabs = QTabWidget()
+        self.tool_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background-color: #ffffff;
+            }
+            QTabBar::tab {
+                background-color: transparent;
+                color: #555555;
+                padding: 6px 12px;
+                font-size: 13px;
+                font-weight: bold;
+                border-bottom: 2px solid transparent;
+            }
+            QTabBar::tab:selected {
+                color: #0078d4;
+                border-bottom: 2px solid #0078d4;
+            }
+            QTabBar::tab:hover {
+                color: #0078d4;
+            }
+        """)
+
+        def _create_tool_tab(items):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setStyleSheet(modern_scrollbar_style)
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(4, 10, 4, 10)
+            layout.setSpacing(8)
+            for label, act_type in items:
+                layout.addWidget(ToolItemWidget(label, act_type))
+            layout.addStretch()
+            scroll.setWidget(container)
+            return scroll
+
+        basic_tools = [
             ("ループ (繰り返し)", "loop"),
-            ("ブラウザ操作", "browser_action"),
-            ("Excel操作", "excel_action"),
             ("クリック", "click"),
             ("マウス移動(ホバー)", "move"),
             ("スクロール", "scroll"),
@@ -119,9 +141,27 @@ class MacroEditorScreen(QWidget):
             ("キー入力", "press_key"),
             ("待機", "wait")
         ]
-        for label, action_type in tools:
-            tool_layout.addWidget(ToolItemWidget(label, action_type))
-        tool_layout.addStretch()
+        browser_tools = [
+            ("URLを開く", "browser_open_url"),
+            ("要素クリック", "browser_click"),
+            ("テキスト入力", "browser_type"),
+            ("テキスト取得", "browser_read"),
+            ("要素待機", "browser_wait"),
+            ("タブを閉じる", "browser_close")
+        ]
+        excel_tools = [
+            ("セル書き込み", "excel_write"),
+            ("セル読み取り", "excel_read"),
+            ("ブックを開く", "excel_open"),
+            ("ブックを保存", "excel_save"),
+            ("シート選択", "excel_sheet")
+        ]
+
+        self.tool_tabs.addTab(_create_tool_tab(basic_tools), "基本")
+        self.tool_tabs.addTab(_create_tool_tab(browser_tools), "ブラウザ")
+        self.tool_tabs.addTab(_create_tool_tab(excel_tools), "Excel")
+        tool_layout.addWidget(self.tool_tabs)
+
         main_layout.addWidget(self.tool_panel)
         
         # 3. メインキャンバスエリア
@@ -130,12 +170,26 @@ class MacroEditorScreen(QWidget):
         canvas_layout.setContentsMargins(20, 20, 20, 20)
         
         header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.btn_tool = TransparentToolButton(FluentIcon.ADD)
+        self.btn_tool.setToolTip("ツールパネルの開閉")
+        self.btn_tool.clicked.connect(self._toggle_tool_panel)
+        header_layout.addWidget(self.btn_tool)
+
         self.title_label = QLabel("マクロ編集")
         font = self.title_label.font()
         font.setPointSize(18)
         font.setBold(True)
         self.title_label.setFont(font)
         header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+
+        self.btn_index = TransparentToolButton(FluentIcon.MENU)
+        self.btn_index.setToolTip("目次パネルの開閉")
+        self.btn_index.clicked.connect(self._toggle_index_panel)
+        header_layout.addWidget(self.btn_index)
+
         canvas_layout.addLayout(header_layout)
         
         self.scroll_area = QScrollArea()
@@ -172,10 +226,19 @@ class MacroEditorScreen(QWidget):
         self.index_panel.setFixedWidth(240)
         self.index_panel.setStyleSheet("background-color: #ffffff; border-left: 1px solid #e0e0e0;")
         index_layout = QVBoxLayout(self.index_panel)
-        index_layout.setContentsMargins(16, 20, 16, 20)
+        index_layout.setContentsMargins(12, 16, 12, 16)
+        index_layout.setSpacing(10)
+
+        index_header = QHBoxLayout()
         index_title = QLabel("目次")
-        index_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
-        index_layout.addWidget(index_title)
+        index_title.setStyleSheet("font-weight: bold; font-size: 15px; color: #333;")
+        index_header.addWidget(index_title)
+        index_header.addStretch()
+        index_close_btn = TransparentToolButton(FluentIcon.CLOSE)
+        index_close_btn.setToolTip("閉じる")
+        index_close_btn.clicked.connect(self._toggle_index_panel)
+        index_header.addWidget(index_close_btn)
+        index_layout.addLayout(index_header)
         
         self.index_scroll = QScrollArea()
         self.index_scroll.setWidgetResizable(True)
