@@ -931,11 +931,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             other_actions.append(item)
 
     if form_inputs:
-        # Why: 物理y座標が有効な要素のみ整流化し未特定座標要素(<=45px)は元の相対順を保持
-        def _get_sort_y(item, default_idx):
-            cy = item.get("cursor_y", item.get("y", 0))
-            return cy if cy > 45 else (10000 + default_idx)
-        form_inputs.sort(key=lambda x: _get_sort_y(x, form_inputs.index(x)))
+        # Why: 辞書検索index()を完全排除しタプルインデックスで安全かつ安定に整流化
+        indexed_inputs = list(enumerate(form_inputs))
+        indexed_inputs.sort(key=lambda pair: (
+            pair[1].get("cursor_y", pair[1].get("y", 0))
+            if pair[1].get("cursor_y", pair[1].get("y", 0)) > 45
+            else (10000 + pair[0])
+        ))
+        form_inputs = [item for _, item in indexed_inputs]
         result = other_actions + form_inputs + submit_buttons
 
     return result
