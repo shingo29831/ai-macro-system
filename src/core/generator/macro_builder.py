@@ -192,7 +192,7 @@ def build_and_save_macro(
                 "ui_type": info.get("ui_type", "unknown")
             }
         
-        elif raw_action == "browser_action" or raw_type == "browser_action":
+        if raw_action == "browser_action" or raw_type == "browser_action":
             cmd = "BROWSER_ACTION"
             b_act = info.get("action", "open_url")
             intent = f"BROWSER_{b_act.upper()}"
