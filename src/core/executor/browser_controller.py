@@ -170,17 +170,12 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
+            elem_name = attr_name or args.get("element_name") or text
             clicked = False
-            # Why: UIA要素探索で見つかった場合はコントロールの正規クリックを実行
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
-            if elem:
-                try:
-                    elem.click_input()
-                    time.sleep(0.1)
-                    clicked = True
-                    res_data["status"] = "uia_click_succeeded"
-                except Exception:
-                    pass
+            # Why: UIA要素探索で見つかった場合はOSレベルのマウスイベントを発火
+            if self._click_by_uia_or_selector(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name, text=text):
+                clicked = True
+                res_data["status"] = "uia_click_succeeded"
 
             if not clicked:
                 x = args.get("x")
@@ -188,6 +183,7 @@ class BrowserController:
                 if self._click_physical_coords(x, y, last_win_args):
                     logger.info(f"[{workflow_id}] Button click fell back to physical click at ({x}, {y})")
                     res_data["status"] = "fallback_click_succeeded"
+                    clicked = True
                 else:
                     logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no valid fallback coordinates.")
                     res_data["status"] = "click_failed"

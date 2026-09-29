@@ -442,7 +442,13 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 def _evaluate_form_value(candidates: List[str], elem_name: str, has_snapshot_val: Optional[str] = None) -> str:
     # Why: ブラウザ確定スナップショット値を絶対最優先し普遍判定で最適値を決定
     if has_snapshot_val and str(has_snapshot_val).strip():
-        return str(has_snapshot_val).strip()
+        s_val = str(has_snapshot_val).strip()
+        # Why: 候補に確定値の前方一致完全長文(例: 佐藤 -> 佐藤 健一)が存在する場合は完全版を採用
+        for c in reversed(candidates):
+            c_str = str(c).strip()
+            if len(c_str) > len(s_val) and (c_str.startswith(s_val) or s_val in c_str):
+                return c_str
+        return s_val
     if not candidates:
         return ""
     def score_val(val: str, idx: int) -> float:
@@ -485,6 +491,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     selector_coords: Dict[str, Tuple[int, int]] = {}
     selector_names: Dict[str, str] = {}
     scanned_elements_map: Dict[str, Dict[str, Any]] = {}
+    scanned_elements_values: Dict[str, str] = {}
     selector_candidates: Dict[str, List[str]] = {}
     post_submit_reset_detected = False
 
@@ -517,17 +524,22 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                         e_sel = el.get("selector") or (f"#{el.get('automation_id')}" if el.get("automation_id") else "")
                         e_name = el.get("element_name") or ""
                         e_x, e_y = el.get("x", 0), el.get("y", 0)
+                        e_val = str(el.get("value", "")).strip()
                         if e_sel:
                             if e_sel not in scanned_elements_map or not scanned_elements_map[e_sel].get("control_type"):
                                 scanned_elements_map[e_sel] = el
                             if e_x > 20 and e_y > 20:
                                 selector_coords[e_sel] = (e_x, e_y)
+                            if e_val and not post_submit_reset_detected:
+                                scanned_elements_values[e_sel] = e_val
                         if e_name:
                             if f"name:{e_name}" not in scanned_elements_map:
                                 scanned_elements_map[f"name:{e_name}"] = el
                             if e_x > 20 and e_y > 20:
                                 selector_coords[f"name:{e_name}"] = (e_x, e_y)
                                 selector_coords[e_name] = (e_x, e_y)
+                            if e_val and not post_submit_reset_detected:
+                                scanned_elements_values[f"name:{e_name}"] = e_val
 
                 for sk, sv in snap_src.items():
                     if sk == "__elements__":
@@ -544,6 +556,9 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                         # Why: フォーム送信後のリセットで初期値に戻った場合の上書きを完全防止
                         if prev_val and prev_val != initial_form_values.get(sk) and (val_str == initial_form_values.get(sk) or post_submit_reset_detected):
                             continue
+                        # Why: 確定済みの完全長文値を入力途中の短縮プレフィックス値で上書き巻き戻ししない
+                        if prev_val and val_str and len(val_str) < len(prev_val) and (prev_val.startswith(val_str) or val_str in prev_val):
+                            continue
                         global_form_snapshot[sk] = val_str
         prev_c = ctx.get("committed_previous_value")
         if isinstance(prev_c, dict):
@@ -554,7 +569,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 pv_str = str(pv).strip()
                 if not (prev_val and pv_str in ["", "None"]):
                     if not (prev_val and prev_val != initial_form_values.get(ps) and (pv_str == initial_form_values.get(ps) or post_submit_reset_detected)):
-                        global_form_snapshot[ps] = pv_str
+                        if not (prev_val and len(pv_str) < len(prev_val) and (prev_val.startswith(pv_str) or pv_str in prev_val)):
+                            global_form_snapshot[ps] = pv_str
 
     # 2. 各要素セレクタごとに全履歴から確定値候補を収集
     selector_candidates = {}
@@ -733,9 +749,17 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if is_input_field:
             # Why: 網羅的スキャン値および確定スナップショット値を最優先
             scanned_item = scanned_elements_map.get(sel) or scanned_elements_map.get(f"name:{elem_name}") or {}
-            scanned_val = scanned_item.get("value")
+            scanned_val = scanned_elements_values.get(sel) or scanned_elements_values.get(f"name:{elem_name}") or scanned_item.get("value")
             snap_val = global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}")
             final_val = scanned_val or snap_val or element_final_values.get(sel)
+            # Why: 確定値より長文の完全版候補(佐藤 -> 佐藤 健一)が存在する場合は完全版を採用
+            if final_val:
+                f_str = str(final_val).strip()
+                for cand in reversed(selector_candidates.get(sel, [])):
+                    c_str = str(cand).strip()
+                    if len(c_str) > len(f_str) and (c_str.startswith(f_str) or f_str in c_str):
+                        final_val = c_str
+                        break
             # Why: 不正なNaN値を排除しイベント履歴の有効数値を救出
             if final_val and str(final_val).strip().lower() in ["nan", "none"]:
                 final_val = ""
@@ -997,6 +1021,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 btn_x = s_data.get("x", 0)
                 btn_y = s_data.get("y", 0)
                 btn_name = s_data.get("element_name") or "登録する"
+                btn_eid = f"{ref_eid}_submit_btn"
                 submit_buttons.append({
                     "raw_action": "browser_action",
                     "raw_type": "browser_action",
@@ -1011,8 +1036,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     "win_y": ref_evt.get("win_y", 0),
                     "win_w": ref_evt.get("win_w", 0),
                     "win_h": ref_evt.get("win_h", 0),
-                    "event_id": f"{ref_eid}_submit_btn",
-                    "fallback_events": [ref_eid],
+                    "event_id": btn_eid,
+                    "fallback_events": [btn_eid, ref_eid],
                     "cursor_x": btn_x,
                     "cursor_y": btn_y,
                     "x": btn_x,

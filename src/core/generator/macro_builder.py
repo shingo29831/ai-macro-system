@@ -583,10 +583,10 @@ def build_and_save_macro(
                 "raw_event_id": raw_event_id
             }
             # Why: セレクタ特定失敗時も記録時の物理座標へ安全にフォールバック可能にする(枠外座標は除外)
-            cx = cur_info.get("cursor_x")
-            cy = cur_info.get("cursor_y")
+            cx = cur_info.get("cursor_x") if cur_info.get("cursor_x") is not None else cur_info.get("x")
+            cy = cur_info.get("cursor_y") if cur_info.get("cursor_y") is not None else cur_info.get("y")
             w_y = cur_info.get("win_y", 0)
-            if cx is not None and cy is not None and cy >= w_y and cy > -50:
+            if cx is not None and cy is not None and cy >= w_y and cy > -50 and cx > 20:
                 b_args["x"] = cx
                 b_args["y"] = cy
             raw_commands_data.append({

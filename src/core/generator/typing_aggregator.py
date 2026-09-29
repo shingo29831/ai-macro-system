@@ -566,6 +566,11 @@ class TypingSessionAggregator:
                     is_same_target = (target_elem and f_name == target_elem) or (target_sel and f_sel == target_sel)
                     if is_same_target:
                         future_elem_text = str(f_val).strip()
+                if not future_elem_text and target_sel:
+                    for snap_dict in [f_ctx.get("form_snapshot"), f_ctx.get("committed_values")]:
+                        if isinstance(snap_dict, dict) and snap_dict.get(target_sel):
+                            future_elem_text = str(snap_dict[target_sel]).strip()
+                            break
 
                 for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
                     if url_candidate and isinstance(url_candidate, str):
