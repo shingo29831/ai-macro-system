@@ -705,17 +705,21 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     ref_win = last_evt_ref.get("window_name", "")
 
     # 4. スナップショットに存在する確定値のうち、イベント列で脱落したフォーム要素を完全復元
-    ref_evt = temp_workflow_info[0] if temp_workflow_info else {}
+    # Why: フォーム末尾のイベントを参照して下部座標と正しい送信コンテキストを継承
+    ref_evt = temp_workflow_info[-1] if temp_workflow_info else {}
     ref_eid = ref_evt.get("event_id", "evt_auto")
     ref_win = ref_evt.get("window_name", "")
 
-    # スナップショットキーのうち、未処理のIDセレクタ (#id) を抽出
+    # スナップショットキーのうち、ブラウザ内部UIを除外した真の未処理IDセレクタを抽出
     snapshot_items = []
+    internal_ui_keywords = ["contentselectdropdown", "select-popup", "datalist", "popup", "moz-", "chrome://"]
     for k, v in global_form_snapshot.items():
         if not k.startswith("#") or k in processed_selectors:
             continue
+        if any(w in k.lower() for w in internal_ui_keywords):
+            continue
         v_str = str(v).strip()
-        if not v_str or v_str == "ContentSelectDropdown":
+        if not v_str:
             continue
         snapshot_items.append((k, v_str))
 
@@ -830,6 +834,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
         final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
         final_name = target_btn_name or "登録する"
+        btn_coords = selector_coords.get(final_sel, (ref_evt.get("cursor_x", ref_evt.get("x", 0)), ref_evt.get("cursor_y", ref_evt.get("y", 0))))
         result.append({
             "raw_action": "browser_action",
             "raw_type": "browser_action",
@@ -840,7 +845,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             "semantic_role": final_name,
             "window_name": ref_win,
             "event_id": f"{ref_eid}_submit_btn",
-            "fallback_events": [ref_eid]
+            "fallback_events": [ref_eid],
+            "cursor_x": btn_coords[0],
+            "cursor_y": btn_coords[1],
+            "x": btn_coords[0],
+            "y": btn_coords[1]
         })
         logger.info(f"Appended generic form submit button: {final_sel} ({final_name})")
 
