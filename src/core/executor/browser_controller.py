@@ -129,37 +129,66 @@ class BrowserController:
 
         return res_data
 
-    def _find_uia_element(self, selector: str, last_win_args: Optional[Dict[str, Any]]):
+    def _find_uia_element(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout_sec: float = 0.5):
         if not selector:
             return None
-        try:
-            import pywinauto
-            import pythoncom
-            pythoncom.CoInitialize()
-            desktop = pywinauto.Desktop(backend="uia")
-            clean_sel = selector.lstrip("#").lstrip(".").strip()
-            
-            # Why: CSS/XPath/Textのいずれの指定でもUIAアクセシビリティツリーから要素を特定
-            for window in desktop.windows():
-                title = window.window_text()
-                if last_win_args and last_win_args.get("window_title"):
-                    if last_win_args["window_title"].lower() not in title.lower():
-                        continue
-                try:
-                    for elem in window.descendants():
-                        auto_id = getattr(elem.element_info, "automation_id", "") or ""
-                        name = elem.window_text() or ""
-                        c_name = getattr(elem.element_info, "class_name", "") or ""
-                        if clean_sel in auto_id or clean_sel in name or clean_sel in c_name:
-                            return elem
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"UIA element discovery error: {e}")
-        return None
+        import concurrent.futures
 
-    def _click_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float) -> None:
-        elem = self._find_uia_element(selector, last_win_args)
+        def _search():
+            try:
+                import pywinauto
+                import pythoncom
+                pythoncom.CoInitialize()
+                desktop = pywinauto.Desktop(backend="uia")
+                clean_sel = selector.lstrip("#").lstrip(".").strip().lower()
+
+                target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+                windows = []
+                if target_hwnd:
+                    try:
+                        windows = [pywinauto.Application(backend="uia").connect(handle=target_hwnd).window(handle=target_hwnd)]
+                    except Exception:
+                        pass
+                if not windows:
+                    windows = desktop.windows()
+
+                for window in windows:
+                    title = window.window_text()
+                    if last_win_args and last_win_args.get("window_title"):
+                        if last_win_args["window_title"].lower() not in title.lower():
+                            continue
+                    try:
+                        # Why: descendants()の全走査はブラウザCOMを永久ハングさせるため直下2階層に限定
+                        for child in window.children():
+                            auto_id = str(getattr(child.element_info, "automation_id", "") or "").lower()
+                            name = str(child.window_text() or "").lower()
+                            c_name = str(getattr(child.element_info, "class_name", "") or "").lower()
+                            if clean_sel in auto_id or clean_sel in name or clean_sel in c_name:
+                                return child
+                            for sub in child.children():
+                                s_auto = str(getattr(sub.element_info, "automation_id", "") or "").lower()
+                                s_name = str(sub.window_text() or "").lower()
+                                if clean_sel in s_auto or clean_sel in s_name:
+                                    return sub
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning(f"UIA element discovery error: {e}")
+            return None
+
+        # Why: 0.5秒の厳格なタイムアウトでUIAハングを遮断しマクロ実行フリーズを完全防止
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_search)
+            try:
+                return future.result(timeout=timeout_sec)
+            except concurrent.futures.TimeoutError:
+                logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'. Using physical coords.")
+                return None
+            except Exception:
+                return None
+
+    def _click_by_uia_or_selector(self, selector: str, last_win_args: Optional[Dict[str, Any]], timeout: float = 0.5) -> None:
+        elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout, 0.5))
         if elem:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2
@@ -176,7 +205,7 @@ class BrowserController:
                 set_system_cursor("run_idle")
             time.sleep(0.2)
         else:
-            raise RuntimeError(f"Browser element not found for selector: {selector}")
+            logger.info(f"UIA element not resolved for selector: '{selector}'. Falling back to physical coordinates.")
 
     def _type_by_uia_or_selector(
         self, selector: str, text: str, clear_before: bool, last_win_args: Optional[Dict[str, Any]], timeout: float

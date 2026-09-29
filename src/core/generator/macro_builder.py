@@ -121,10 +121,11 @@ def build_and_save_macro(
                 continue
 
             win_ctx = next((e.window for e in integrated_events if e.id == event_id), None)
-            win_x = win_ctx.coordinates.x if win_ctx else info.get("win_x", 0)
-            win_y = win_ctx.coordinates.y if win_ctx else info.get("win_y", 0)
-            win_w = win_ctx.size.width if win_ctx else info.get("win_w", 0)
-            win_h = win_ctx.size.height if win_ctx else info.get("win_h", 0)
+            # Why: 最適化処理(workflow_optimizer)で決定された最終ウィンドウ配置を優先しマルチモニタ移動を正しく反映
+            win_x = info.get("win_x") if info.get("win_x") is not None else (win_ctx.coordinates.x if win_ctx else 0)
+            win_y = info.get("win_y") if info.get("win_y") is not None else (win_ctx.coordinates.y if win_ctx else 0)
+            win_w = info.get("win_w") if info.get("win_w") is not None else (win_ctx.size.width if win_ctx else 0)
+            win_h = info.get("win_h") if info.get("win_h") is not None else (win_ctx.size.height if win_ctx else 0)
             is_max = info.get("is_maximized")
             if is_max is None:
                 is_max = info.get("IsMaximized")
