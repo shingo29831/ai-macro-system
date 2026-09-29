@@ -50,6 +50,15 @@ class BrowserInspector(BaseInspector):
     @staticmethod
     def _extract_value_from_uia(ctrl) -> str:
         if not ctrl: return ""
+        c_type = getattr(ctrl, "ControlTypeName", "") or ""
+        if "CheckBox" in c_type:
+            try:
+                return "true" if ctrl.GetTogglePattern().ToggleState == 1 else "false"
+            except Exception:
+                try:
+                    return "true" if (ctrl.GetLegacyIAccessiblePattern().CurrentState & 0x10) else "false"
+                except Exception:
+                    pass
         val = ""
         try:
             val = ctrl.GetValuePattern().Value
@@ -80,11 +89,15 @@ class BrowserInspector(BaseInspector):
                         name = getattr(ctrl, "Name", "") or ""
                         val = cls._extract_value_from_uia(ctrl)
                         if c_type == "CheckBoxControl":
+                            is_chk = False
                             try:
-                                t_state = ctrl.GetTogglePattern().ToggleState
-                                val = "true" if t_state == 1 else "false"
+                                is_chk = ctrl.GetTogglePattern().ToggleState == 1
                             except Exception:
-                                pass
+                                try:
+                                    is_chk = bool(ctrl.GetLegacyIAccessiblePattern().CurrentState & 0x10)
+                                except Exception:
+                                    pass
+                            val = "true" if is_chk else "false"
                         if val and str(val).strip() and str(val).strip() != name:
                             v_str = str(val).strip()
                             if aid:
@@ -121,6 +134,19 @@ class BrowserInspector(BaseInspector):
                 r_val = elem.get_range_value()
                 if r_val is not None and str(r_val).strip():
                     return str(r_val).strip()
+        except Exception:
+            pass
+
+        try:
+            # Why: チェックボックスのON/OFFトグル状態を確実に抽出
+            ctrl_type = getattr(elem.element_info, "control_type", "") or ""
+            if "check" in ctrl_type.lower():
+                if hasattr(elem, "is_toggle_pattern_available") and elem.is_toggle_pattern_available():
+                    return "true" if elem.get_toggle_state() == 1 else "false"
+                leg_state = elem.legacy_properties().get("State", 0)
+                if isinstance(leg_state, int) and (leg_state & 0x10):
+                    return "true"
+                return "false"
         except Exception:
             pass
 

@@ -170,7 +170,7 @@ class BrowserController:
             res_data["url"] = url
 
         elif action == "click_element":
-            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"), url=url)
+            clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name") or text, url=url, text=text)
             if not clicked:
                 x = args.get("x")
                 y = args.get("y")
@@ -246,18 +246,26 @@ class BrowserController:
 
         elif action == "set_checkbox":
             desired = True if value is None else (value in [True, "True", "true", 1, "1"])
-            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name"))
+            elem = self._find_uia_element(selector, last_win_args, timeout_sec=min(timeout_sec, 0.6), element_name=attr_name or args.get("element_name") or text)
             if elem:
                 try:
-                    toggle_state = getattr(elem.element_info, "toggle_state", None)
-                    current_checked = toggle_state == 1 if toggle_state is not None else False
-                    if current_checked != desired:
+                    is_checked = False
+                    if hasattr(elem, "is_toggle_pattern_available") and elem.is_toggle_pattern_available():
+                        is_checked = elem.get_toggle_state() == 1
+                    else:
+                        leg_state = elem.legacy_properties().get("State", 0)
+                        is_checked = bool(isinstance(leg_state, int) and (leg_state & 0x10))
+                    if is_checked != desired:
                         elem.click_input()
                         time.sleep(0.1)
                     res_data["checked"] = desired
                 except Exception as e:
-                    logger.warning(f"set_checkbox failed: {e}")
-                    res_data["status"] = "failed"
+                    logger.warning(f"set_checkbox failed, trying click_input: {e}")
+                    try:
+                        elem.click_input()
+                        res_data["checked"] = desired
+                    except Exception:
+                        res_data["status"] = "failed"
             else:
                 x = args.get("x")
                 y = args.get("y")
@@ -310,21 +318,34 @@ class BrowserController:
                 desktop = pywinauto.Desktop(backend="uia")
                 
                 search_terms = []
+                direct_auto_ids = []
                 if selector:
-                    clean_sel = selector.lstrip("#").lstrip(".").strip().lower()
-                    has_text_match = re.search(r"has-text\(['\"]([^'\"]+)['\"]\)", selector)
-                    if has_text_match:
-                        ht_val = has_text_match.group(1).lower()
-                        # Why: URLドメイン等ではなく有為なテキストの場合のみ検索語へ追加
-                        if not ht_val.startswith("http"):
-                            search_terms.append(ht_val)
-                    href_match = re.search(r"href\*=['\"]([^'\"]+)['\"]", selector)
-                    if href_match:
-                        search_terms.append(href_match.group(1).lower())
-                    if not clean_sel.startswith("a:has-text") and not clean_sel.startswith("http"):
-                        search_terms.append(clean_sel)
+                    parts = [p.strip() for p in selector.split(",") if p.strip()]
+                    for part in parts:
+                        clean_part = part.lstrip("#").lstrip(".").strip().lower()
+                        if part.startswith("#"):
+                            aid_cand = part.lstrip("#").strip()
+                            if aid_cand: direct_auto_ids.append(aid_cand)
+                        has_text_match = re.search(r"has-text\(['\"]([^'\"]+)['\"]\)", part)
+                        if has_text_match:
+                            ht_val = has_text_match.group(1).lower()
+                            if not ht_val.startswith("http"):
+                                search_terms.append(ht_val)
+                        href_match = re.search(r"href\*=['\"]([^'\"]+)['\"]", part)
+                        if href_match:
+                            search_terms.append(href_match.group(1).lower())
+                        type_match = re.search(r"type=['\"]([^'\"]+)['\"]", part)
+                        if type_match:
+                            search_terms.append(type_match.group(1).lower())
+                        if not clean_part.startswith("a:has-text") and not clean_part.startswith("http"):
+                            for sub_word in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff\-]+", clean_part):
+                                if len(sub_word) >= 2 and sub_word not in search_terms:
+                                    search_terms.append(sub_word)
                 if element_name and not element_name.startswith("http"):
                     search_terms.append(element_name.strip().lower())
+                btn_text = kwargs.get("text")
+                if btn_text and str(btn_text).strip() and not str(btn_text).startswith("http"):
+                    search_terms.append(str(btn_text).strip().lower())
                 if url:
                     # Why: URL全体だけでなくパス識別子(comprehensive_information等)も抽出して検索
                     try:
@@ -337,7 +358,7 @@ class BrowserController:
                     search_terms.append(url.strip().lower())
 
                 target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
-                # Why: uiautomationの高速ネイティブC++深層走査でWebContent深層コントロールを瞬時に検出
+                # Why: uiautomationのダイレクトID探索および深層走査で目的要素を瞬時に検出
                 try:
                     import uiautomation as auto
                     win_ctrl = auto.ControlFromHandle(int(target_hwnd)) if target_hwnd else None
@@ -346,6 +367,11 @@ class BrowserController:
                         if top_hwnd: win_ctrl = auto.ControlFromHandle(top_hwnd)
 
                     if win_ctrl and win_ctrl.Exists(0, 0):
+                        from pywinauto.controls.uiawrapper import UIAWrapper
+                        for did in direct_auto_ids:
+                            found_ctrl = win_ctrl.Control(AutomationId=did)
+                            if found_ctrl and found_ctrl.Exists(0, 0):
+                                return UIAWrapper(found_ctrl.Element)
                         for ctrl, depth in auto.WalkControl(win_ctrl, maxDepth=14):
                             aid = str(getattr(ctrl, "AutomationId", "") or "").lower()
                             name = str(getattr(ctrl, "Name", "") or "").lower()
@@ -353,7 +379,6 @@ class BrowserController:
 
                             if any(t in aid or t in name for t in search_terms if len(t) >= 2):
                                 if any(k in ct_name for k in ["edit", "combo", "button", "check", "spinner", "list"]):
-                                    from pywinauto.controls.uiawrapper import UIAWrapper
                                     return UIAWrapper(ctrl.Element)
                 except Exception as ex_auto:
                     logger.debug(f"uiautomation deep walk error: {ex_auto}")

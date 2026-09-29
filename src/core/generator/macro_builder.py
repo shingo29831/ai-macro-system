@@ -406,7 +406,7 @@ def build_and_save_macro(
                     })
                 except Exception as e:
                     logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
-        cur_info = workflow_info_map.get(raw_event_id, {})
+        cur_info = next((workflow_info_map[eid] for eid in step.fallback_raw_events if eid in workflow_info_map), workflow_info_map.get(raw_event_id, {}))
         app_ctx = cur_info.get("app_context") or {}
         elem_name = app_ctx.get("element_name") or cur_info.get("semantic_role") or ""
         css_sel = app_ctx.get("css_selector")
@@ -563,7 +563,7 @@ def build_and_save_macro(
                 "args": {}
             })
         elif cmd_type == "BROWSER_ACTION":
-            elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name")
+            elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name") or params.text
             b_act = params.browser_action or "open_url"
             b_val = params.browser_value if params.browser_value is not None else cur_info.get("value")
             b_text = params.text or (str(b_val) if b_val is not None else "")

@@ -500,7 +500,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             if isinstance(snap_src, dict):
                 for sk, sv in snap_src.items():
                     if sv is not None and str(sv).strip():
-                        global_form_snapshot[sk] = str(sv).strip()
+                        val_str = str(sv).strip()
+                        # Why: フォーム送信リセット由来のfalseで過去のtrue確定値が上書きされるのを防止
+                        if global_form_snapshot.get(sk) == "true" and val_str == "false":
+                            continue
+                        global_form_snapshot[sk] = val_str
         prev_c = ctx.get("committed_previous_value")
         if isinstance(prev_c, dict):
             ps = prev_c.get("selector")
@@ -738,19 +742,23 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         is_chk = "check" in sel_id.lower() or val_str.lower() in ["true", "false"]
         if is_chk:
             b_val = val_str.lower() in ["true", "1", "checked"]
+            # Why: 未操作(初期値false)のチェックボックス誤復元を防止し、true確定値のみ確実に復元
+            if not b_val:
+                continue
+            chk_eid = f"{ref_eid}_{sel_id.lstrip('#')}"
             new_item = {
                 "raw_action": "browser_action",
                 "raw_type": "browser_action",
                 "action": "set_checkbox",
                 "selector": sel_id,
                 "selector_type": "css",
-                "value": b_val,
-                "text": str(b_val),
+                "value": True,
+                "text": "True",
                 "element_name": clean_name or "チェックボックス",
                 "semantic_role": clean_name or "チェックボックス",
                 "window_name": ref_win,
-                "event_id": f"{ref_eid}_{sel_id.lstrip('#')}",
-                "fallback_events": [ref_eid],
+                "event_id": chk_eid,
+                "fallback_events": [chk_eid, ref_eid],
                 "cursor_x": coords[0],
                 "cursor_y": coords[1],
                 "x": coords[0],
@@ -759,7 +767,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             result.insert(insert_pos, new_item)
             insert_pos += 1
             processed_selectors.add(sel_id)
-            logger.info(f"Restored missing checkbox from snapshot: {sel_id} = {b_val}")
+            logger.info(f"Restored missing checkbox from snapshot: {sel_id} = True")
             continue
 
         # B. セレクトボックス復元（#plan等）
@@ -835,6 +843,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         final_sel = target_btn_sel or "button[type='submit'], input[type='submit'], #submit-btn"
         final_name = target_btn_name or "登録する"
         btn_coords = selector_coords.get(final_sel, (ref_evt.get("cursor_x", ref_evt.get("x", 0)), ref_evt.get("cursor_y", ref_evt.get("y", 0))))
+        submit_eid = f"{ref_eid}_submit_btn"
         result.append({
             "raw_action": "browser_action",
             "raw_type": "browser_action",
@@ -843,9 +852,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             "selector_type": "css",
             "element_name": final_name,
             "semantic_role": final_name,
+            "text": final_name,
             "window_name": ref_win,
-            "event_id": f"{ref_eid}_submit_btn",
-            "fallback_events": [ref_eid],
+            "event_id": submit_eid,
+            "fallback_events": [submit_eid, ref_eid],
             "cursor_x": btn_coords[0],
             "cursor_y": btn_coords[1],
             "x": btn_coords[0],
