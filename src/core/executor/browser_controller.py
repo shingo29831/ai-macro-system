@@ -27,37 +27,11 @@ class BrowserController:
         return cls._instance
 
     def _resolve_template(self, text: Optional[str], variables: Dict[str, Any]) -> str:
+        # Why: runner側の包括的エイリアス・正規化解決エンジンへ完全統一
         if not text:
             return ""
-        import re
-        resolved = str(text)
-        for key, val in variables.items():
-            resolved = resolved.replace(f"{{{{{key}}}}}", str(val)).replace(f"${{{key}}}", str(val))
-        var_lower_map = {str(k).strip().lower(): v for k, v in variables.items()}
-        pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
-        def _get_nested_val(root_key: str, sub_path: list[str]):
-            cur = variables.get(root_key)
-            if cur is None and root_key.lower() in var_lower_map:
-                cur = var_lower_map[root_key.lower()]
-            for p in sub_path:
-                if isinstance(cur, dict):
-                    cur = cur.get(p, cur.get(p.lower()))
-                else:
-                    return None
-            return cur
-        def _repl(match):
-            raw_key = (match.group(1) or match.group(2)).strip()
-            if "." in raw_key:
-                parts = raw_key.split(".")
-                val = _get_nested_val(parts[0].strip(), [p.strip() for p in parts[1:]])
-                if val is not None:
-                    return str(val)
-            if raw_key in variables:
-                return str(variables[raw_key])
-            if raw_key.lower() in var_lower_map:
-                return str(var_lower_map[raw_key.lower()])
-            return match.group(0)
-        return pattern.sub(_repl, resolved)
+        from core.executor.runner import _resolve_variables
+        return str(_resolve_variables(text, variables))
 
     def _get_active_cdp_tab(self) -> Optional[Dict[str, Any]]:
         # Why: ChromiumのJSONエンドポイントからアクティブタブのCDP情報を検出
@@ -115,13 +89,11 @@ class BrowserController:
             self._keyboard.release(Key.backspace)
             time.sleep(0.04)
 
-        from core.executor.os_env_controller import ensure_ime_state, is_link_or_url, normalize_text_width, should_input_as_halfwidth, should_input_as_fullwidth
+        from core.executor.os_env_controller import ensure_ime_state, normalize_text_width
         from core.executor.runner import _set_clipboard_text
         norm_text = normalize_text_width(text)
-        if is_link_or_url(norm_text) or should_input_as_halfwidth(norm_text):
-            ensure_ime_state(target_state=False, timeout=0.6)
-        elif should_input_as_fullwidth(norm_text):
-            ensure_ime_state(target_state=True, timeout=0.6)
+        # Why: クリップボード貼付直前はIMEを半角OFFにしてローマ字誤変換(ろｗ等)を完全根絶
+        ensure_ime_state(target_state=False, timeout=0.4)
         time.sleep(0.04)
 
         if _set_clipboard_text(norm_text):

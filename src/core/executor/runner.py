@@ -42,12 +42,12 @@ def _set_clipboard_text(text: str) -> bool:
         user32.SetClipboardData.restype = wintypes.HANDLE
         user32.CloseClipboard.restype = wintypes.BOOL
 
-        for _ in range(5):
+        for _ in range(10):
             if user32.OpenClipboard(None):
                 break
-            time.sleep(0.05)
+            time.sleep(0.03)
         else:
-            return False
+            raise TimeoutError("OpenClipboard failed")
 
         user32.EmptyClipboard()
         buffer = ctypes.create_unicode_buffer(text)
@@ -55,13 +55,13 @@ def _set_clipboard_text(text: str) -> bool:
         h_mem = kernel32.GlobalAlloc(0x0002, size)
         if not h_mem:
             user32.CloseClipboard()
-            return False
+            raise MemoryError("GlobalAlloc failed")
 
         p_mem = kernel32.GlobalLock(h_mem)
         if not p_mem:
             kernel32.GlobalFree(h_mem)
             user32.CloseClipboard()
-            return False
+            raise MemoryError("GlobalLock failed")
 
         ctypes.memmove(p_mem, buffer, size)
         kernel32.GlobalUnlock(h_mem)
@@ -69,7 +69,16 @@ def _set_clipboard_text(text: str) -> bool:
         user32.CloseClipboard()
         return True
     except Exception as e:
-        logger.warning(f"Failed to set clipboard text: {e}")
+        logger.warning(f"WinAPI SetClipboardData failed ({e}), attempting QClipboard fallback...")
+        try:
+            from PySide6.QtGui import QGuiApplication
+            clip = QGuiApplication.clipboard()
+            if clip:
+                clip.setText(text)
+                time.sleep(0.05)
+                return True
+        except Exception as q_err:
+            logger.warning(f"QClipboard fallback also failed: {q_err}")
         return False
 
 
@@ -90,7 +99,20 @@ def _resolve_variables(data, variables: dict):
                 cur = var_lower_map[root_key.lower()]
             for p in sub_path:
                 if isinstance(cur, dict):
-                    cur = cur.get(p, cur.get(p.lower()))
+                    val = cur.get(p)
+                    if val is not None:
+                        return val
+                    val = cur.get(p.lower())
+                    if val is not None:
+                        return val
+                    # Why: 「列A」「A列」等のUI表示名を正規の列名「A」へ相互解決
+                    clean_col = re.sub(r"[列\s]", "", p).upper()
+                    if clean_col and clean_col in cur:
+                        return cur[clean_col]
+                    if f"列{p}" in cur:
+                        return cur[f"列{p}"]
+                    if f"{p}列" in cur:
+                        return cur[f"{p}列"]
                 else:
                     return None
             return cur
@@ -106,6 +128,16 @@ def _resolve_variables(data, variables: dict):
                 return str(variables[raw_key])
             if raw_key.lower() in var_lower_map:
                 return str(var_lower_map[raw_key.lower()])
+            # Why: ネストなし「{{列A}}」等も列文字「A」やrow辞書から包括解決
+            clean_k = re.sub(r"[列\s]", "", raw_key).upper()
+            if clean_k and clean_k in variables:
+                return str(variables[clean_k])
+            if "row" in variables and isinstance(variables["row"], dict):
+                r_dict = variables["row"]
+                if raw_key in r_dict:
+                    return str(r_dict[raw_key])
+                if clean_k and clean_k in r_dict:
+                    return str(r_dict[clean_k])
             return match.group(0)
         return pattern.sub(_repl, res)
     elif isinstance(data, dict):
@@ -194,6 +226,8 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                     v_str = str(raw_v).strip()
 
                 row_dict[col_letter] = v_str
+                row_dict[f"列{col_letter}"] = v_str
+                row_dict[f"{col_letter}列"] = v_str
                 if col_letter in header_map:
                     row_dict[header_map[col_letter]] = v_str
 
@@ -266,6 +300,8 @@ def _read_excel_records(file_path: str, sheet_name: str = None, start_row: int =
                             c_str = str(cell).strip()
 
                         row_dict[c_letter] = c_str
+                        row_dict[f"列{c_letter}"] = c_str
+                        row_dict[f"{c_letter}列"] = c_str
                         if c_letter in header_map:
                             row_dict[header_map[c_letter]] = c_str
                     if skip_completed and status_col:
