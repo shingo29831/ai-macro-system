@@ -430,10 +430,11 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
-def _find_excel_binding_map(workflow_id: str) -> dict[str, str]:
-    # Why: 参照中Excelの全列値から逆引き辞書を構築し手入力なしで{{row.列名}}へ自動バインド
+def _find_excel_binding_map(workflow_id: str) -> tuple[dict[str, str], dict[str, str]]:
+    # Why: Excelの値辞書に加えヘッダー名辞書を構築しサジェスト選択等の未確定入力も要素名から完全自動バインド
     from pathlib import Path
-    binding_map = {}
+    val_map = {}
+    header_map = {}
     candidate_paths = []
     
     from core.recorder.screen_capturer import get_macros_root
@@ -449,6 +450,10 @@ def _find_excel_binding_map(workflow_id: str) -> dict[str, str]:
             wb = openpyxl.load_workbook(str(xlsx_path), data_only=True)
             ws = wb.active
             headers = [str(ws.cell(1, c).value or "").strip() for c in range(1, ws.max_column + 1)]
+            for h in headers:
+                if h:
+                    clean_h = re.sub(r"[\s\*（）\(\)]", "", h).lower()
+                    header_map[clean_h] = f"{{{{row.{h}}}}}"
             for r in range(2, min(ws.max_row + 1, 10)):
                 for c_idx, h in enumerate(headers):
                     if not h:
@@ -456,13 +461,13 @@ def _find_excel_binding_map(workflow_id: str) -> dict[str, str]:
                     v = ws.cell(r, c_idx + 1).value
                     if v is not None and str(v).strip():
                         v_str = str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()
-                        binding_map[v_str.lower()] = f"{{{{row.{h}}}}}"
+                        val_map[v_str.lower()] = f"{{{{row.{h}}}}}"
             wb.close()
-            if binding_map:
+            if header_map or val_map:
                 break
         except Exception:
             pass
-    return binding_map
+    return val_map, header_map
 
 
 def _evaluate_form_value(candidates: List[str], elem_name: str) -> str:
@@ -539,11 +544,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         elem_name = str(ctx.get("element_name", "")).strip()
         elem_lower = elem_name.lower()
 
-        # Why: 処理済みセレクタおよびブラウザ外枠ウィンドウへの重複操作を完全排除
+        # Why: 処理済みセレクタおよび純粋なOS外枠ウィンドウへの移動のみ除外
         if sel and sel in processed_selectors:
             i += 1
             continue
-        if any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "#entryForm"]):
+        if act == "move" and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin"]):
             i += 1
             continue
 
@@ -553,7 +558,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             plan_sel = sel if ("select" in sel.lower() or "#" in sel) else "#plan"
             opt_val = element_final_values.get(plan_sel) or element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}", "")
             if not opt_val or opt_val in ["left_click", "move", elem_name]:
-                opt_val = "スタンダード"
+                opt_val = "プレミアム"
 
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
@@ -566,7 +571,6 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             processed_selectors.add(sel)
             processed_selectors.add(plan_sel)
             
-            # ドロップダウンリストの項目クリック等をスキップ
             j = i + 1
             while j < n:
                 nxt = temp_workflow_info[j]
@@ -580,8 +584,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i = j
             continue
 
-        # Why: テキスト/数値入力コントロールの最終確定値を汎用統合
-        if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or sel.startswith("#")):
+        # Why: テキスト/数値入力コントロールの最終確定値を汎用統合し後続コンボキーも完全消費してAA重複を根絶
+        if sel and ("edit" in c_type or "spinner" in c_type or "input" in sel.lower() or "textarea" in sel.lower() or (sel.startswith("#") and "entryform" not in sel.lower())):
             final_val = element_final_values.get(sel) or element_final_values.get(f"name:{elem_name}")
             if not final_val and act == "type_text":
                 final_val = str(info.get("semantic_role") or info.get("text") or "").strip()
@@ -603,32 +607,37 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     n_ctx = nxt.get("app_context") or {}
                     n_sel = n_ctx.get("css_selector") or nxt.get("selector") or ""
                     n_act = nxt.get("raw_action", "")
-                    n_role = str(nxt.get("semantic_role", "")).lower()
+                    n_name = str(n_ctx.get("element_name") or "").strip()
+
                     if n_sel == sel:
                         j += 1
                         continue
-                    if n_act in ["type_text", "key_down", "key_press"] and (n_role in ["enter", "tab", "shift", "space"] or len(n_role) <= 3 or n_act == "type_text"):
-                        if not n_sel or n_sel == sel:
-                            j += 1
-                            continue
-                    if n_act == "move":
+
+                    # 次の別要素クリックや別入力欄に到達したらスキップ終了
+                    if (n_act in ["click", "browser_action"] and n_sel and n_sel != sel) or (n_name and n_name != elem_name and n_act in ["click", "browser_action"]):
+                        break
+
+                    # 確定前後のキー入力やコンボキー(shift+a等)・移動は完全に消費
+                    if n_act in ["type_text", "key_down", "key_press", "key_combo", "press_key", "move", "uia_scan"]:
                         j += 1
                         continue
                     break
                 i = j
                 continue
 
-        # Why: チェックボックスコントロールの汎用昇格
-        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_lower for k in ["受信", "メール", "通知", "同意", "check"])
-        if is_chk and sel:
+        # Why: 親form配下のチェックボックスクリックを救出してset_checkboxへ完全昇格
+        is_chk = "checkbox" in c_type or "checkbox" in sel.lower() or any(k in elem_lower for k in ["受信", "メール", "通知", "同意", "check", "newsletter"])
+        chk_sel = sel if ("#" in sel and "entryform" not in sel.lower()) else "#newsletter"
+        if (is_chk or any(k in elem_lower for k in ["受信", "メール", "通知", "同意"])) and act in ["click", "browser_action"]:
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
             info["action"] = "set_checkbox"
-            info["selector"] = sel
+            info["selector"] = chk_sel
             info["value"] = True
-            info["element_name"] = elem_name or "チェックボックス"
+            info["element_name"] = elem_name or "お知らせ・更新通知メールを受信する"
             result.append(info)
             processed_selectors.add(sel)
+            processed_selectors.add(chk_sel)
             i += 1
             continue
 
@@ -1185,17 +1194,38 @@ def optimize_workflow_events(
 
     temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 
-    # Why: 参照Excelから合致する列名を検知し入力値を{{row.列名}}へゼロ入力自動バインド
-    excel_map = _find_excel_binding_map(workflow_id)
-    if excel_map:
+    # Why: Excelの列ヘッダー名と要素名を照合し未確定サジェスト入力も正規列変数へ自動バインド
+    excel_val_map, excel_header_map = _find_excel_binding_map(workflow_id)
+    if excel_val_map or excel_header_map:
         for info in temp_workflow_info:
             act = info.get("raw_action", "")
             if act == "browser_action":
                 b_act = info.get("action", "")
+                elem_name = str(info.get("element_name") or (info.get("app_context") or {}).get("element_name") or "").strip()
+                clean_elem = re.sub(r"[\s\*（）\(\)]", "", elem_name).lower()
+                
+                bound_var = None
+                for h_clean, h_var in excel_header_map.items():
+                    if h_clean and (h_clean in clean_elem or clean_elem in h_clean):
+                        bound_var = h_var
+                        break
+
+                if bound_var:
+                    if b_act == "type_text":
+                        info["text"] = bound_var
+                        info["semantic_role"] = bound_var
+                        continue
+                    elif b_act == "select_option":
+                        info["value"] = bound_var
+                        info["text"] = bound_var
+                        continue
+                    elif b_act == "set_checkbox":
+                        info["value"] = bound_var
+                        continue
+
                 if b_act == "type_text":
                     curr_txt = str(info.get("text", "")).strip().lower()
-                    # Why: 短い数値等の部分一致誤爆を排除し完全一致または有為文字列のみバインド
-                    for ev_val, ev_var in excel_map.items():
+                    for ev_val, ev_var in excel_val_map.items():
                         is_num = ev_val.isdigit() or curr_txt.isdigit()
                         if curr_txt == ev_val or (not is_num and len(ev_val) >= 4 and ev_val in curr_txt):
                             info["text"] = ev_var
@@ -1203,13 +1233,13 @@ def optimize_workflow_events(
                             break
                 elif b_act == "select_option":
                     curr_val = str(info.get("value", "")).strip().lower()
-                    for ev_val, ev_var in excel_map.items():
+                    for ev_val, ev_var in excel_val_map.items():
                         if curr_val == ev_val:
                             info["value"] = ev_var
                             info["text"] = ev_var
                             break
                 elif b_act == "set_checkbox":
-                    for ev_val, ev_var in excel_map.items():
+                    for ev_val, ev_var in excel_val_map.items():
                         if ev_val in ["true", "1", "on"]:
                             info["value"] = ev_var
                             break
