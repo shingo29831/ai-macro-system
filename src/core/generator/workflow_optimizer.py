@@ -575,14 +575,16 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                 i = j
                 continue
 
-        # Why: 汎用チェックボックスの集約
+        # Why: 汎用チェックボックスの集約 (True/False状態を動的判定)
         is_checkbox = "checkbox" in c_type or "check" in sel.lower()
         if is_checkbox and act in ["click", "browser_action"]:
+            chk_raw = str(element_final_values.get(sel) or global_form_snapshot.get(sel) or global_form_snapshot.get(f"name:{elem_name}") or info.get("value") or "").strip().lower()
+            is_checked = chk_raw in ["true", "1", "checked"] if chk_raw else (act == "click")
             info["raw_action"] = "browser_action"
             info["raw_type"] = "browser_action"
             info["action"] = "set_checkbox"
             info["selector"] = sel
-            info["value"] = True
+            info["value"] = is_checked
             info["element_name"] = elem_name or "チェックボックス"
             result.append(info)
             processed_selectors.add(sel)
@@ -654,33 +656,41 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         clean_k = snap_key.replace("name:", "").strip()
         if snap_key in processed_selectors or clean_k in processed_selectors:
             continue
-        is_chk = "newsletter" in snap_key.lower() or "check" in snap_key.lower() or str(snap_val).lower() in ["true", "false"]
-        if is_chk and str(snap_val).lower() == "true":
-            target_sel = snap_key if snap_key.startswith(("#", ".")) else ""
-            if not target_sel:
-                for sk in global_form_snapshot.keys():
-                    if sk.startswith("#") and any(p in sk.lower() for p in ["newsletter", "check", "mail"]):
-                        target_sel = sk
-                        break
-            if not target_sel:
-                target_sel = "#newsletter" if "newsletter" in snap_key.lower() else "input[type='checkbox']"
+        val_str = str(snap_val).strip().lower()
+        is_chk = "newsletter" in snap_key.lower() or "check" in snap_key.lower() or val_str in ["true", "false"]
+        if is_chk:
+            target_val = val_str in ["true", "1", "checked"]
+            # Why: Trueまたは記録時に対象フォームで触れられた要素のみ過不足なく反映
+            was_interacted = any(
+                snap_key in str(e.get("app_context") or {}) or clean_k in str(e.get("app_context") or {})
+                for e in temp_workflow_info
+            )
+            if target_val or was_interacted:
+                target_sel = snap_key if snap_key.startswith(("#", ".")) else ""
+                if not target_sel:
+                    for sk in global_form_snapshot.keys():
+                        if sk.startswith("#") and any(p in sk.lower() for p in ["newsletter", "check", "mail"]):
+                            target_sel = sk
+                            break
+                if not target_sel:
+                    target_sel = "#newsletter" if "newsletter" in snap_key.lower() else "input[type='checkbox']"
 
-            if target_sel not in processed_selectors:
-                result.append({
-                    "raw_action": "browser_action",
-                    "raw_type": "browser_action",
-                    "action": "set_checkbox",
-                    "selector": target_sel,
-                    "selector_type": "css",
-                    "value": True,
-                    "element_name": clean_k if "name:" in snap_key else "お知らせ・更新通知メールを受信する",
-                    "window_name": ref_win,
-                    "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
-                    "fallback_events": [ref_eid]
-                })
-                processed_selectors.add(target_sel)
-                processed_selectors.add(snap_key)
-                logger.info(f"Auto-injected checkbox action from snapshot: {target_sel} = True")
+                if target_sel not in processed_selectors:
+                    result.append({
+                        "raw_action": "browser_action",
+                        "raw_type": "browser_action",
+                        "action": "set_checkbox",
+                        "selector": target_sel,
+                        "selector_type": "css",
+                        "value": target_val,
+                        "element_name": clean_k if "name:" in snap_key else "お知らせ・更新通知メールを受信する",
+                        "window_name": ref_win,
+                        "event_id": f"{ref_eid}_chk_{target_sel.lstrip('#')}",
+                        "fallback_events": [ref_eid]
+                    })
+                    processed_selectors.add(target_sel)
+                    processed_selectors.add(snap_key)
+                    logger.info(f"Auto-injected checkbox action from snapshot: {target_sel} = {target_val}")
 
     # Why: フォーム送信シグナル(Enterキーまたは送信意図)検知時、登録ボタン押下を確実に補完
     has_submit_signal = any(
