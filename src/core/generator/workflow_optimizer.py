@@ -70,7 +70,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 遷移元ウィンドウ内でのクリックやEnter等の操作遷移があった場合のみホバー昇格を抑制
+        # Why: 直近クリックが遷移先URLやタイトルと合致しない別要素である場合はサイト訪問移動の昇格を許容
         has_recent_nav_action = False
         for idx in range(i - 1, max(-1, i - 4), -1):
             act_info = temp_workflow_info[idx]
@@ -79,14 +79,17 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
             act_role = str(act_info.get("semantic_role", "")).lower()
             act_act = str(act_info.get("raw_action", "")).lower()
             act_tp = str(act_info.get("raw_type", "")).lower()
-            if "click" in act_act or "click" in act_tp:
+            act_ctx = act_info.get("app_context") or {}
+            act_url = str(act_ctx.get("url") or act_ctx.get("text") or act_ctx.get("value") or "").strip()
+            if ("click" in act_act or "click" in act_tp) and target_url and act_url and (target_url in act_url or act_url in target_url):
                 has_recent_nav_action = True
                 break
             if act_act in ["type_text"] or (
                 act_act in ["key_down", "key_press", "press_key"] and act_role in ["enter", "return"]
             ):
-                has_recent_nav_action = True
-                break
+                if not (curr_url.startswith("http") and "google" not in curr_url.lower()):
+                    has_recent_nav_action = True
+                    break
 
         if has_recent_nav_action:
             i += 1
@@ -412,12 +415,14 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     next_info = temp_workflow_info[k]
                     break
 
-            # Why: スクロール合間の無駄な移動を除去しつつ、画面変化を伴うメニュー展開ホバーやUI要素ホバーは確実に保持
+            # Why: スクロール合間の無駄な移動を除去しつつ、サイト訪問・URL遷移やUI要素ホバーは確実に保持
             if next_act == "scroll":
                 prev_act = filtered[-1].get("raw_action", "") if filtered else ""
                 diff_val = curr.get("diff_val", 0.0)
-                has_ui_context = bool(curr.get("app_context", {}).get("element_name") or curr.get("app_context", {}).get("css_selector"))
-                is_meaningful = curr.get("is_nav_hover") or diff_val >= 0.005 or (has_ui_context and prev_act != "scroll")
+                ctx = curr.get("app_context") or {}
+                has_url = bool(str(ctx.get("url") or ctx.get("text") or ctx.get("value") or "").startswith("http"))
+                has_ui_context = bool(ctx.get("element_name") or ctx.get("css_selector") or has_url)
+                is_meaningful = curr.get("is_nav_hover") or has_url or diff_val >= 0.005 or (has_ui_context and prev_act != "scroll")
                 if not is_meaningful:
                     i += 1
                     continue
@@ -519,7 +524,12 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     if meaningful:
                         deduped.extend(meaningful)
             else:
-                deduped.append(move_group[-1])
+                # Why: URLやUI要素を持つサイト訪問移動は直後にクリックがなくても破棄せず保護
+                meaningful_navs = [m for m in move_group if str((m.get("app_context") or {}).get("url") or (m.get("app_context") or {}).get("text") or "").startswith("http") or m.get("is_nav_hover")]
+                if meaningful_navs:
+                    deduped.extend(meaningful_navs)
+                else:
+                    deduped.append(move_group[-1])
 
             i = j
             continue
@@ -1082,21 +1092,30 @@ def optimize_workflow_events(
                     info["action"] = "type_text"
                     info["selector"] = app_ctx.get("css_selector") or app_ctx.get("xpath")
                     info["text"] = role_text
-            elif act == "click":
-                # Why: クリックは物理座標を主軸とする標準clickを維持しつつ、確実なアンカーリンクのみブラウザ昇格
-                target_url = app_ctx.get("url")
-                is_link = "hyperlink" in str(app_ctx.get("control_type", "")).lower()
-                has_http = is_link and target_url and str(target_url).startswith("http")
-                has_valid_selector = bool(app_ctx.get("css_selector") and not app_ctx.get("css_selector", "").startswith("div:has-text"))
-                if has_http and has_valid_selector:
+            elif act in ["click", "move"]:
+                # Why: URL(text/value/url)を持つリンククリックやページ遷移移動を専用サイト訪問アクションへ昇格
+                target_url = app_ctx.get("url") or app_ctx.get("value") or app_ctx.get("text")
+                if target_url and isinstance(target_url, str):
+                    target_url = target_url.strip()
+                else:
+                    target_url = ""
+
+                has_http = target_url.startswith(("http://", "https://"))
+                has_selector = bool(app_ctx.get("css_selector") or app_ctx.get("xpath"))
+                elem_name = app_ctx.get("element_name") or info.get("semantic_role") or ""
+
+                if has_http:
                     info["raw_action"] = "browser_action"
                     info["raw_type"] = "browser_action"
-                    info["action"] = "click_element"
-                    info["url"] = str(target_url).strip()
-                    info["selector"] = app_ctx.get("css_selector")
-                    elem_name = app_ctx.get("element_name") or info.get("semantic_role")
+                    if has_selector and act == "click":
+                        info["action"] = "click_element"
+                        info["selector"] = app_ctx.get("css_selector") or app_ctx.get("xpath")
+                    else:
+                        info["action"] = "open_url"
+                    info["url"] = target_url
                     if elem_name and elem_name != "left_click":
                         info["element_name"] = elem_name
+                        info["semantic_role"] = elem_name
 
         promoted_browser_info.append(info)
     temp_workflow_info = promoted_browser_info

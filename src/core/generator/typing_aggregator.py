@@ -97,7 +97,7 @@ class TypingSessionAggregator:
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             ime_active = event.get("ime_active", False)
-            is_mouse_move = action in ["mouse_move", "mouse_hover"]
+            is_mouse_move = action in ["move", "mouse_move", "mouse_hover"]
             
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
@@ -111,6 +111,9 @@ class TypingSessionAggregator:
                 current_session.append(event)
                 continue
             elif is_mouse_move:
+                # Why: タイピング継続中の微小なマウス移動はセッションを分断させず破棄
+                if current_session:
+                    continue
                 aggregated_events.append(event)
                 continue
 
