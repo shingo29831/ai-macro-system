@@ -297,21 +297,47 @@ class MainViewModel(QObject):
                 self._internal_status_signal.emit(text, is_healing)
             
             def background_execution(cfg: AppConfig, cmds: list[dict] = None):
+                freeze_handled = threading.Event()
+
+                def on_freeze_detected(step_info: str, elapsed: float, stack_trace: str):
+                    if freeze_handled.is_set():
+                        return
+                    freeze_handled.set()
+                    
+                    err_msg = (
+                        f"マクロ実行の無応答（フリーズ）を検知したため強制終了しました ({elapsed:.1f}秒タイムアウト)。\n\n"
+                        f"【発生箇所】\n{step_info}\n\n"
+                        f"【フリーズ発生時のスタックトレース（原因箇所）】\n{stack_trace}"
+                    )
+                    status_cb("フリーズ検知により強制終了", True)
+                    self.execution_error.emit(err_msg)
+                    self.execution_finished.emit()
+
                 try:
-                    runner.run_workflow(workflow_id, cfg, status_callback=status_cb, temp_commands=cmds)
+                    runner.run_workflow(
+                        workflow_id,
+                        cfg,
+                        status_callback=status_cb,
+                        temp_commands=cmds,
+                        on_freeze_callback=on_freeze_detected
+                    )
                     logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
                 except runner.WorkflowStoppedException as stop_err:
                     logger.warning(f"Macro execution stopped by user: {stop_err}")
+                except runner.WorkflowFreezeException:
+                    pass
                 except Exception as exec_err:
-                    import traceback
-                    tb_str = traceback.format_exc()
-                    err_msg = f"{type(exec_err).__name__}: {exec_err}\n\n【詳細スタックトレース】\n{tb_str}"
-                    logger.error(f"Exception occurred during pipeline execution for {workflow_id}:\n{tb_str}")
-                    status_cb(f"エラー: {exec_err}", True)
-                    self.execution_error.emit(err_msg)
+                    if not freeze_handled.is_set():
+                        import traceback
+                        tb_str = traceback.format_exc()
+                        err_msg = f"{type(exec_err).__name__}: {exec_err}\n\n【詳細スタックトレース】\n{tb_str}"
+                        logger.error(f"Exception occurred during pipeline execution for {workflow_id}:\n{tb_str}")
+                        status_cb(f"エラー: {exec_err}", True)
+                        self.execution_error.emit(err_msg)
                 finally:
-                    self.load_macros()
-                    self.execution_finished.emit()
+                    if not freeze_handled.is_set():
+                        self.load_macros()
+                        self.execution_finished.emit()
             
             exec_thread = threading.Thread(target=background_execution, args=(app_config, temp_commands), daemon=True)
             exec_thread.start()

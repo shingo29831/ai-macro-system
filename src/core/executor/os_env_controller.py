@@ -218,18 +218,19 @@ def restore_system_cursor(force: bool = True):
     global _current_cursor_mode, _auto_revert_timer
     if platform.system() != "Windows":
         return
-    with _cursor_lock:
-        if _auto_revert_timer is not None:
-            _auto_revert_timer.cancel()
-            _auto_revert_timer = None
-        if not force and _current_cursor_mode == "default":
-            return
-        # Why: キューに残った古いカーソル変更要求を破棄して復元後の上書きを防止
+    # Why: カーソルワーカースレッド滞留時もメインスレッドのデッドロックを防ぐタイムアウト付き排他制御
+    acquired = _cursor_lock.acquire(timeout=1.0)
+    try:
         while not _cursor_queue.empty():
             try:
                 _cursor_queue.get_nowait()
             except Exception:
                 break
+        if _auto_revert_timer is not None:
+            _auto_revert_timer.cancel()
+            _auto_revert_timer = None
+        if not force and _current_cursor_mode == "default":
+            return
         try:
             user32 = ctypes.windll.user32
             # Why: SPIF_SENDCHANGEによる全窓ブロードキャスト同期ブロックをフラグ0で完全排除
@@ -238,6 +239,9 @@ def restore_system_cursor(force: bool = True):
             _current_cursor_mode = "default"
         except Exception as e:
             logger.warning(f"Failed to restore system cursor: {e}")
+    finally:
+        if acquired:
+            _cursor_lock.release()
 
 
 def _apply_system_cursor_internal(mode: str):
