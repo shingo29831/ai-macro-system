@@ -430,6 +430,107 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
+def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Why: IME未確定入力や過渡的クリックを排除し各フォーム要素の最終確定値でクリーンなアクションに完全統合
+    if not temp_workflow_info:
+        return temp_workflow_info
+
+    element_final_values = {}
+    for info in temp_workflow_info:
+        ctx = info.get("app_context") or {}
+        sel = ctx.get("css_selector") or info.get("selector")
+        val = ctx.get("value") or ctx.get("text")
+        if sel and val and str(val).strip():
+            clean_val = str(val).strip()
+            name = str(ctx.get("element_name") or "").strip()
+            if clean_val != name and clean_val not in ["検索", "Search", "クリア", "×"]:
+                element_final_values[sel] = clean_val
+
+    result = []
+    processed_selectors = set()
+    n = len(temp_workflow_info)
+    i = 0
+    while i < n:
+        info = temp_workflow_info[i]
+        act = info.get("raw_action", "")
+        ctx = info.get("app_context") or {}
+        sel = ctx.get("css_selector") or info.get("selector") or ""
+        c_type = str(ctx.get("control_type", "")).lower()
+        elem_name = str(ctx.get("element_name", "")).lower()
+
+        # Why: ブラウザ全体の背景ウィンドウへの無為な移動を除外
+        if act == "move" and any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "#entryForm"]):
+            i += 1
+            continue
+
+        # Why: ドロップダウン(ComboBox/Select)の選択操作をselect_optionへ自動昇格
+        if sel and ("combobox" in c_type or "select" in sel or "plan" in sel):
+            final_val = element_final_values.get(sel) or ctx.get("value") or ctx.get("text")
+            if final_val and str(final_val).strip() not in ["契約プラン", ""]:
+                info["raw_action"] = "browser_action"
+                info["raw_type"] = "browser_action"
+                info["action"] = "select_option"
+                info["selector"] = sel
+                info["value"] = str(final_val).strip()
+                info["element_name"] = ctx.get("element_name") or "契約プラン"
+                result.append(info)
+                j = i + 1
+                while j < n and (temp_workflow_info[j].get("app_context", {}).get("css_selector") == sel or temp_workflow_info[j].get("raw_action") == "move"):
+                    j += 1
+                i = j
+                continue
+
+        # Why: テキスト/数値入力要素のIME過渡キーを破棄し最終確定値で単一type_textに集約
+        if sel and ("edit" in c_type or "spinner" in c_type or any(k in sel for k in ["company", "contact", "amount"])):
+            final_val = element_final_values.get(sel)
+            if final_val and sel not in processed_selectors:
+                info["raw_action"] = "browser_action"
+                info["raw_type"] = "browser_action"
+                info["action"] = "type_text"
+                info["selector"] = sel
+                info["text"] = final_val
+                info["semantic_role"] = final_val
+                info["element_name"] = ctx.get("element_name") or "入力項目"
+                result.append(info)
+                processed_selectors.add(sel)
+                j = i + 1
+                while j < n:
+                    nxt = temp_workflow_info[j]
+                    n_ctx = nxt.get("app_context") or {}
+                    n_sel = n_ctx.get("css_selector") or nxt.get("selector") or ""
+                    n_act = nxt.get("raw_action", "")
+                    n_role = str(nxt.get("semantic_role", "")).lower()
+                    if n_sel == sel:
+                        j += 1
+                        continue
+                    if n_act in ["type_text", "key_down", "key_press"] and n_role in ["enter", "tab", "shift", "space"]:
+                        j += 1
+                        continue
+                    if n_act == "move" and not n_sel:
+                        j += 1
+                        continue
+                    break
+                i = j
+                continue
+
+        # Why: チェックボックスクリックをset_checkboxアクションへ自動昇格
+        if "checkbox" in c_type or "newsletter" in sel or "メール" in elem_name:
+            info["raw_action"] = "browser_action"
+            info["raw_type"] = "browser_action"
+            info["action"] = "set_checkbox"
+            info["selector"] = "#newsletter"
+            info["value"] = True
+            info["element_name"] = "お知らせ・更新通知メールを受信する"
+            result.append(info)
+            i += 1
+            continue
+
+        result.append(info)
+        i += 1
+
+    return result
+
+
 def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Why: スクロール合間の無駄な移動を除去してスクロールを集約しつつ、メニュー出現用ホバーを確実に保持
     if not temp_workflow_info:
@@ -950,6 +1051,7 @@ def optimize_workflow_events(
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
+    temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:
