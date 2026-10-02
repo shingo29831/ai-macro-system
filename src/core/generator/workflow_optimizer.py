@@ -634,7 +634,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if sel and sel in processed_selectors:
             i += 1
             continue
-        # Why: ドロップダウン展開用の真の親ホバーのみ保持しルート枠や無名・過渡移動を完全排除
+        # Why: UIA要素名欠落時も画面変化(Diff>=3%)を伴うメニュー展開ホバーを確実に保持
         if act == "move":
             m_ctx = info.get("app_context") or {}
             m_sel = str(m_ctx.get("css_selector") or "").lower()
@@ -643,7 +643,8 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             is_valid_menu_hover = (
                 info.get("is_nav_hover") or 
                 any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
-                (diff_val >= 0.15 and not is_container and bool(elem_name) and elem_name not in ["move", "left_click"])
+                (diff_val >= 0.03 and not is_container) or
+                (bool(elem_name) and elem_name not in ["move", "left_click"] and not is_container)
             )
             if is_valid_menu_hover:
                 result.append(info)
@@ -1213,11 +1214,12 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     m_sel = str(m_ctx.get("css_selector") or "").lower()
                     diff_val = mv.get("diff_val", 0.0)
 
+                    # Why: 要素名なしでも画面変化(Diff>=3%)を伴うメニュー展開ホバーを確実に保持
                     is_menu_parent = (
                         mv.get("is_nav_hover") or
                         any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
                         (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"]) or
-                        diff_val >= 0.15
+                        diff_val >= 0.03
                     )
                     if is_menu_parent:
                         best_hover = mv

@@ -107,9 +107,9 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 c_elem = str(c_ctx.get("element_name") or "").strip()
                 m_sel = str(m_ctx.get("css_selector") or "").lower()
 
-                # Why: UIAが要素取得失敗時も急激な画面変化(Diff>=15%)を伴う起点ホバーを確実に救出
+                # Why: UIA要素名欠落時も画面変化(Diff>=3%)を伴うメニュー展開ホバーを確実に救出
                 has_nav_markup = any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
-                has_visual_menu_popup = is_start_of_moves and diff_val >= 15.0
+                has_visual_menu_popup = is_start_of_moves and diff_val >= 3.0
 
                 if not is_start_of_moves or not (has_nav_markup or has_visual_menu_popup):
                     i += 1
