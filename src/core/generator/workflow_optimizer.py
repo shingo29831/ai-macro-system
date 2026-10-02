@@ -634,7 +634,11 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if sel and sel in processed_selectors:
             i += 1
             continue
+        # Why: ドロップダウン等の有為なホバーを保持しフォーム入力間の無駄な移動のみ除外
         if act == "move":
+            is_meaningful_hover = info.get("is_nav_hover") or bool(elem_name) or info.get("diff_val", 0.0) >= 0.02
+            if is_meaningful_hover:
+                result.append(info)
             i += 1
             continue
         if "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "CoreWindow"]):

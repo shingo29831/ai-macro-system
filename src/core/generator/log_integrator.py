@@ -66,17 +66,33 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 continue
 
             fut_type = str(next_non_move.get("Type", "")).lower()
-            if "click" in fut_type or "drag" in fut_type:
-                i += 1
-                continue
-
             diff_str = entry.get("Images", {}).get("Diff", "0.0%")
             diff_val = 0.0
             try:
                 diff_val = float(str(diff_str).replace("%", ""))
             except Exception:
                 pass
-            if diff_val < 5.0:
+
+            if "click" in fut_type or "drag" in fut_type:
+                # Why: クリック対象への手ブレ移動のみ除外し離れた位置でのメニュー展開ホバーは完全保護
+                m_coords = entry.get("Content", {}).get("screen_coordinates") or entry.get("CursorCoordinates") or {}
+                c_coords = next_non_move.get("Content", {}).get("screen_coordinates") or next_non_move.get("CursorCoordinates") or {}
+                mx, my = m_coords.get("x", 0), m_coords.get("y", 0)
+                cx, cy = c_coords.get("x", 0), c_coords.get("y", 0)
+                dist = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
+
+                m_ctx = entry.get("AppSpecificContext") or {}
+                c_ctx = next_non_move.get("AppSpecificContext") or {}
+                m_elem = str(m_ctx.get("element_name") or "").strip()
+                c_elem = str(c_ctx.get("element_name") or "").strip()
+
+                is_same_target = (dist <= 25) or (m_elem and c_elem and m_elem == c_elem)
+                is_menu_hover = dist > 30 and (diff_val >= 5.0 or (m_elem and m_elem != c_elem))
+
+                if is_same_target or not is_menu_hover:
+                    i += 1
+                    continue
+            elif diff_val < 5.0:
                 i += 1
                 continue
 
