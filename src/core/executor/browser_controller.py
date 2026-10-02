@@ -194,8 +194,23 @@ class BrowserController:
             y = args.get("y")
             typed = False
 
+            # Why: アドレスバー操作はUIA走査のタイムアウトを待たずにCtrl+Lで即時入力
+            is_address_bar = (
+                any(k in str(selector).lower() for k in ["urlbar", "address", "omnibox"]) or
+                any(k in str(elem_name).lower() for k in ["url", "アドレス", "検索、または url", "検索または url"])
+            )
+            if is_address_bar:
+                self._keyboard.press(Key.ctrl)
+                self._keyboard.press('l')
+                self._keyboard.release('l')
+                self._keyboard.release(Key.ctrl)
+                time.sleep(0.08)
+                self._perform_typing_input(text, clear_before)
+                typed = True
+                res_data["status"] = "address_bar_typing_succeeded"
+
             # 1. UIA探索による高精度タイピング
-            if selector or elem_name:
+            if not typed and (selector or elem_name):
                 typed = self._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name)
                 if typed:
                     res_data["status"] = "selector_typing_succeeded"
@@ -590,6 +605,11 @@ class BrowserController:
                             fc = scope_ctrl.Control(searchDepth=16, AutomationId=did)
                             if fc and fc.Exists(0, 0):
                                 return UIAWrapper(fc.Element)
+                            # Why: DocumentControl外に存在するブラウザUI(アドレスバー等)をウィンドウ直下から救出
+                            if scope_ctrl != win_ctrl:
+                                fc_win = win_ctrl.Control(searchDepth=16, AutomationId=did)
+                                if fc_win and fc_win.Exists(0, 0):
+                                    return UIAWrapper(fc_win.Element)
 
                         # 2. 検索語との完全一致・部分一致によるコントロール種別走査 (空文字・逆包含誤判定を根絶)
                         valid_types = ["edit", "combo", "button", "check", "spinner", "list", "hyperlink"]
@@ -714,6 +734,20 @@ class BrowserController:
         timeout_sec: Optional[float] = None,
         **kwargs
     ) -> bool:
+        # Why: アドレスバー・検索バーはCtrl+Lで確実にフォーカスを即時奪取し入力スキップを完全防止
+        is_address_bar = (
+            any(k in str(selector).lower() for k in ["urlbar", "address", "omnibox"]) or
+            any(k in str(element_name).lower() for k in ["url", "アドレス", "検索、または url", "検索または url"])
+        )
+        if is_address_bar:
+            self._keyboard.press(Key.ctrl)
+            self._keyboard.press('l')
+            self._keyboard.release('l')
+            self._keyboard.release(Key.ctrl)
+            time.sleep(0.08)
+            self._perform_typing_input(text, clear_before)
+            return True
+
         effective_timeout = timeout_sec if timeout_sec is not None else timeout
         clicked = self._click_by_uia_or_selector(selector, last_win_args, timeout=effective_timeout, element_name=element_name)
         if not clicked:
