@@ -1,0 +1,481 @@
+# Role: マウス移動・クリック・ダブルクリック判定・ドラッグ・スクロールイベントの非同期処理とワーカーを管理する。
+
+import threading
+import traceback
+import queue
+from pathlib import Path
+
+from core.recorder import screen_capturer, window_inspector
+from core.recorder.state import state
+from core.recorder.utils import (
+    now_datetime,
+    mouse_button_to_string,
+    calculate_distance,
+    serialize_ui_rect,
+)
+from core.recorder.log_builder import build_base_log, build_scroll_log
+from core.recorder.app_inspectors.inspector_factory import InspectorFactory
+
+DOUBLE_CLICK_INTERVAL_SEC = 0.35
+DOUBLE_CLICK_MAX_DISTANCE = 8
+DRAG_MIN_DISTANCE = 12
+
+
+def _get_app_context(window_info: dict, x: int | None = None, y: int | None = None) -> dict | None:
+    """該当アプリケーション専用のインスペクターがあれば、それを実行してコンテキストを取得する"""
+    context = None
+    inspector = InspectorFactory.get_inspector(window_info)
+    if inspector:
+        try:
+            context = inspector.inspect(window_info, x=x, y=y)
+        except Exception as e:
+            print(f"Inspector error: {e}")
+
+    # インスペクターが無い、またはテキストが取得できなかった場合のフォールバック
+    if not context or not context.get("text"):
+        try:
+            from core.recorder.uia_scanner import get_focused_element_info
+            focused_info = get_focused_element_info()
+            if focused_info:
+                if context is None:
+                    context = {
+                        "app": "GenericUIA",
+                        "element_name": focused_info.get("name", ""),
+                        "control_type": focused_info.get("control_type", ""),
+                        "text": focused_info.get("value", "") or focused_info.get("name", ""),
+                        "value": focused_info.get("value", ""),
+                    }
+                else:
+                    context["text"] = focused_info.get("value", "") or focused_info.get("name", "")
+                    context["value"] = focused_info.get("value", "")
+                    if not context.get("element_name"):
+                        context["element_name"] = focused_info.get("name", "")
+                    if not context.get("control_type"):
+                        context["control_type"] = focused_info.get("control_type", "")
+        except Exception as e:
+            print(f"UIA fallback error: {e}")
+
+    return context
+
+
+def calculate_and_update_diff(current_img) -> str:
+    """直前のスクリーンショットとの差分率を計算し、状態を更新する"""
+    with state.previous_screenshot_lock:
+        if state.previous_screenshot_img is None:
+            diff = "100%"
+        else:
+            diff = screen_capturer.calculate_diff_percent(state.previous_screenshot_img, current_img)
+        state.previous_screenshot_img = current_img.copy()
+    return diff
+
+
+def process_move_event(event: dict):
+    try:
+        x, y = int(event["x"]), int(event["y"])
+        # Why: ロック外で判定しデッドロックを防止しつつ20px移動で即時確定
+        p_evt = state.pending_click_event
+        if p_evt and ((x - int(p_evt["x"])) ** 2 + (y - int(p_evt["y"])) ** 2) > 400:
+            process_pending_single_click(sync=False)
+
+        window_info = window_inspector.get_foreground_window_info()
+        if window_inspector.should_ignore_window(window_info.get("title")):
+            return
+
+        event_no = state.get_next_event_no()
+        dt = now_datetime()
+        x, y = int(event["x"]), int(event["y"])
+
+        pre_full_img, pre_monitor = screen_capturer.take_screenshot()
+        pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
+
+        app_context = _get_app_context(window_info, x=x, y=y)
+        ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
+
+        diff_str = calculate_and_update_diff(pre_full_img)
+        diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
+
+        has_ui = bool(
+            (app_context and (app_context.get("element_name") or app_context.get("css_selector") or app_context.get("url") or app_context.get("text")))
+            or ui_rect is not None
+        )
+        # Why: UI要素情報を持つホバーは微小差分でも破棄せず保護
+        is_meaningless = (diff_val < 0.02) and not has_ui
+        macros_root = screen_capturer.get_macros_root()
+
+        if is_meaningless:
+            old_path = macros_root / pre_ref
+            if old_path.exists():
+                new_name = "delete_" + old_path.name
+                old_path.rename(old_path.with_name(new_name))
+                pre_ref = str(Path(pre_ref).parent / new_name).replace("\\", "/")
+
+        log = build_base_log(
+            event_no=event_no,
+            dt=dt,
+            input_type="mouse_move",
+            content={"screen_coordinates": {"x": x, "y": y}},
+            window_info=window_info,
+            cursor_x=x,
+            cursor_y=y,
+            app_specific_context=app_context,
+        )
+
+        if ui_rect is not None:
+            crop = screen_capturer.save_ui_crop_by_rect(
+                event_no=event_no, rect=ui_rect, full_img=pre_full_img, monitor=pre_monitor
+            )
+        else:
+            crop = screen_capturer.save_ui_crop(
+                event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor
+            )
+
+        crop_ref = crop.get("ui_image_ref")
+        if not crop_ref:
+            crop_ref = "切り抜き失敗"
+
+        if is_meaningless and crop_ref != "切り抜き失敗":
+            old_crop_path = macros_root / crop_ref
+            if old_crop_path.exists():
+                new_crop_name = "delete_" + old_crop_path.name
+                old_crop_path.rename(old_crop_path.with_name(new_crop_name))
+                crop_ref = str(Path(crop_ref).parent / new_crop_name).replace("\\", "/")
+
+        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff_str}
+        state.append_log(log)
+        print(f"マウス移動ログ追加: evt_{event_no}, diff={diff_str} {'(deleted)' if is_meaningless else ''}")
+    except Exception:
+        print("マウス移動処理中にエラーが発生しました")
+        traceback.print_exc()
+
+
+def process_click_event(event: dict, input_type: str, click_count: int):
+    try:
+        if window_inspector.should_ignore_window(event["window_info"].get("title")):
+            return
+
+        event_no, dt = event["event_no"], event["datetime"]
+        x, y, button = int(event["x"]), int(event["y"]), event["button"]
+        pre_img, pre_monitor, pre_ref = event["pre_full_img"], event["pre_monitor"], event["pre_ref"]
+
+        app_context = _get_app_context(event["window_info"], x=x, y=y)
+        content = {
+            "button": mouse_button_to_string(button),
+            "click_count": int(click_count),
+            "screen_coordinates": {"x": x, "y": y},
+        }
+        log = build_base_log(
+            event_no=event_no,
+            dt=dt,
+            input_type=input_type,
+            content=content,
+            window_info=event["window_info"],
+            cursor_x=x,
+            cursor_y=y,
+            app_specific_context=app_context,
+        )
+        diff = calculate_and_update_diff(pre_img)
+
+        ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
+        if ui_rect is not None:
+            crop = screen_capturer.save_ui_crop_by_rect(
+                event_no=event_no, rect=ui_rect, full_img=pre_img, monitor=pre_monitor
+            )
+        else:
+            crop = screen_capturer.save_ui_crop(
+                event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor
+            )
+
+        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
+
+        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
+        state.append_log(log)
+        print(f"クリックログ追加: evt_{event_no}, type={input_type}, diff={diff}")
+    except Exception:
+        print("クリック処理中にエラーが発生しました")
+        traceback.print_exc()
+    finally:
+        state.is_click_processing = False
+
+
+def run_click_process_thread(event: dict, input_type: str, click_count: int):
+    # Why: 前のクリック処理中であっても連続クリックを破棄せず確実に非同期記録
+    threading.Thread(
+        target=process_click_event, args=(event, input_type, click_count), daemon=True
+    ).start()
+
+
+def process_drag_event(event: dict):
+    try:
+        if window_inspector.should_ignore_window(event["window_info"].get("title")):
+            return
+
+        event_no = event["event_no"]
+        dt = event["datetime"]
+        start_x = int(event["x"])
+        start_y = int(event["y"])
+        end_x = int(event["drop_x"])
+        end_y = int(event["drop_y"])
+        button = event["button"]
+
+        pre_img = event["pre_full_img"]
+        pre_monitor = event["pre_monitor"]
+        pre_ref = event["pre_ref"]
+
+        source_window_name = event["window_info"].get("title", "")
+        drop_window = event.get("drop_window") or {}
+        target_window_name = drop_window.get("title", "")
+
+        source_ui_rect = window_inspector.get_ui_element_rect_at_point(start_x, start_y)
+
+        content = {
+            "button": mouse_button_to_string(button),
+            "start_screen_coordinates": {"x": start_x, "y": start_y},
+            "end_screen_coordinates": {"x": end_x, "y": end_y},
+            "drag_distance": round(float(event["drag_distance"]), 2),
+            "source_window_name": source_window_name,
+            "target_window_name": target_window_name,
+            "source_ui_rect": serialize_ui_rect(source_ui_rect),
+            "target_ui_rect": serialize_ui_rect(event.get("drop_ui_rect")),
+        }
+
+        app_context = _get_app_context(event["window_info"], x=start_x, y=start_y)
+        log = build_base_log(
+            event_no=event_no,
+            dt=dt,
+            input_type="mouse_drag",
+            content=content,
+            window_info=event["window_info"],
+            cursor_x=start_x,
+            cursor_y=start_y,
+            app_specific_context=app_context,
+        )
+
+        if source_ui_rect is not None:
+            crop = screen_capturer.save_ui_crop_by_rect(
+                event_no=event_no, rect=source_ui_rect, full_img=pre_img, monitor=pre_monitor
+            )
+        else:
+            crop = screen_capturer.save_ui_crop(
+                event_no=event_no, click_x=start_x, click_y=start_y, full_img=pre_img, monitor=pre_monitor
+            )
+
+        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
+        diff = calculate_and_update_diff(pre_img)
+
+        log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
+        state.append_log(log)
+        print(f"ドラッグログ追加: evt_{event_no}, start=({start_x}, {start_y}), end=({end_x}, {end_y}), distance={event['drag_distance']:.1f}")
+
+    except Exception:
+        print("ドラッグ処理中にエラーが発生しました")
+        traceback.print_exc()
+    finally:
+        state.is_click_processing = False
+
+
+def run_drag_process_thread(event: dict):
+    # Why: 前のクリック処理中であってもドラッグ操作を破棄せず確実に非同期記録
+    threading.Thread(target=process_drag_event, args=(event,), daemon=True).start()
+
+
+def is_same_click(first_event: dict | None, second_event: dict | None) -> bool:
+    if first_event is None or second_event is None:
+        return False
+    if str(first_event["button"]) != str(second_event["button"]):
+        return False
+    distance_sq = (int(first_event["x"]) - int(second_event["x"])) ** 2 + (
+        int(first_event["y"]) - int(second_event["y"])
+    ) ** 2
+    return distance_sq <= DOUBLE_CLICK_MAX_DISTANCE**2
+
+
+def process_pending_single_click(sync: bool = False):
+    with state.pending_click_lock:
+        event = state.pending_click_event
+        timer = state.pending_click_timer
+        if timer:
+            timer.cancel()
+        state.pending_click_event = None
+        state.pending_click_timer = None
+    if event is not None:
+        if sync:
+            process_click_event(event, input_type="mouse_click", click_count=1)
+        else:
+            run_click_process_thread(event, input_type="mouse_click", click_count=1)
+
+
+_last_scroll_time = 0.0
+_last_scroll_info = None
+_scroll_dedup_lock = threading.Lock()
+
+def process_scroll_event(event: dict):
+    global _last_scroll_time, _last_scroll_info
+    try:
+        # Why: スクロール操作直前に保留クリックを同期確定させ順序逆転を完全防止
+        process_pending_single_click(sync=True)
+        import time
+        now = time.time()
+        x = int(event["x"])
+        y = int(event["y"])
+        dx = float(event["dx"])
+        dy = float(event["dy"])
+        source = event.get("source", "unknown")
+
+        with _scroll_dedup_lock:
+            # Why: 異なるフックソースからの二重受信(15ms以内)のみ除外し正規の高速連続ノッチを保護
+            if _last_scroll_info is not None:
+                lx, ly, ldx, ldy, lsrc = _last_scroll_info
+                if (now - _last_scroll_time < 0.015) and (source != lsrc) and abs(x - lx) <= 5 and abs(y - ly) <= 5 and (dx == ldx) and (dy == ldy):
+                    return
+            _last_scroll_time = now
+            _last_scroll_info = (x, y, dx, dy, source)
+
+        point_window = window_inspector.get_window_title_at_point(x, y)
+        if window_inspector.should_ignore_window(point_window.get("title")):
+            return
+
+        event_no = state.get_next_event_no()
+        log = build_scroll_log(
+            event_no=event_no,
+            dt=now_datetime(),
+            x=int(x),
+            y=int(y),
+            dx=float(dx),
+            dy=float(dy),
+            point_window=point_window,
+        )
+        state.append_log(log)
+        print(f"スクロールログ追加: evt_{event_no}, dx={dx}, dy={dy} (source: {source})")
+    except Exception:
+        print("スクロール処理中にエラーが発生しました")
+        traceback.print_exc()
+
+
+def handle_mouse_event(evt: dict):
+    evt_type = evt.get("type")
+    if evt_type in ["hover", "move"]:
+        process_move_event(evt)
+        return
+    elif evt_type == "scroll":
+        process_scroll_event(evt)
+        return
+
+    x, y, button, pressed = evt["x"], evt["y"], evt["button"], evt["pressed"]
+
+    if pressed:
+        try:
+            window_info = window_inspector.get_foreground_window_info()
+            if window_inspector.should_ignore_window(window_info.get("title")):
+                return
+
+            event_no, dt = state.get_next_event_no(), now_datetime()
+            pre_full_img, pre_monitor = screen_capturer.take_screenshot()
+            pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
+
+            with state.latest_mouse_down_lock:
+                state.latest_mouse_down_event = {
+                    "event_no": event_no,
+                    "datetime": dt,
+                    "x": int(x),
+                    "y": int(y),
+                    "button": button,
+                    "window_info": window_info,
+                    "pre_full_img": pre_full_img,
+                    "pre_monitor": pre_monitor,
+                    "pre_ref": pre_ref,
+                }
+            print(f"mouse down取得・画像保存: evt_{event_no}, x={x}, y={y}, button={button}")
+        except Exception:
+            print("mouse down取得中にエラーが発生しました")
+            traceback.print_exc()
+        return
+
+    with state.latest_mouse_down_lock:
+        current_event = state.latest_mouse_down_event
+        state.latest_mouse_down_event = None
+
+    if current_event is None:
+        return
+
+    drag_distance = calculate_distance(current_event["x"], current_event["y"], x, y)
+
+    if drag_distance >= DRAG_MIN_DISTANCE:
+        with state.pending_click_lock:
+            previous_click = state.pending_click_event
+            if state.pending_click_timer:
+                state.pending_click_timer.cancel()
+            state.pending_click_event = None
+            state.pending_click_timer = None
+
+        if previous_click is not None:
+            run_click_process_thread(previous_click, input_type="mouse_click", click_count=1)
+
+        drop_window = window_inspector.get_window_title_at_point(x, y)
+        drop_ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
+
+        drag_event = {
+            **current_event,
+            "drop_x": x,
+            "drop_y": y,
+            "drag_distance": drag_distance,
+            "drop_window": drop_window,
+            "drop_ui_rect": drop_ui_rect,
+        }
+
+        run_drag_process_thread(drag_event)
+        return
+
+    previous_event_to_process = None
+
+    with state.pending_click_lock:
+        if state.pending_click_event is not None:
+            if is_same_click(state.pending_click_event, current_event):
+                first_event = state.pending_click_event
+                if state.pending_click_timer:
+                    state.pending_click_timer.cancel()
+                state.pending_click_event = None
+                state.pending_click_timer = None
+                run_click_process_thread(first_event, input_type="mouse_double_click", click_count=2)
+                return
+            previous_event_to_process = state.pending_click_event
+            if state.pending_click_timer:
+                state.pending_click_timer.cancel()
+
+        state.pending_click_event = current_event
+        state.pending_click_timer = threading.Timer(DOUBLE_CLICK_INTERVAL_SEC, process_pending_single_click)
+        state.pending_click_timer.daemon = True
+        state.pending_click_timer.start()
+
+    if previous_event_to_process is not None:
+        run_click_process_thread(previous_event_to_process, input_type="mouse_click", click_count=1)
+
+
+def mouse_event_worker():
+    while True:
+        try:
+            event = state.mouse_event_queue.get(timeout=0.1)
+        except queue.Empty:
+            if state.mouse_worker_stop_event.is_set():
+                break
+            continue
+
+        try:
+            handle_mouse_event(event)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            state.mouse_event_queue.task_done()
+
+
+def start_mouse_event_worker():
+    state.mouse_worker_stop_event.clear()
+    state.mouse_worker_thread = threading.Thread(target=mouse_event_worker, daemon=True)
+    state.mouse_worker_thread.start()
+
+
+def stop_mouse_event_worker():
+    state.mouse_worker_stop_event.set()
+    # Why: 無期限joinによる生成停止フリーズを防止しタイムアウト合流
+    if state.mouse_worker_thread:
+        state.mouse_worker_thread.join(timeout=3.0)
+    state.mouse_worker_thread = None

@@ -1,5 +1,8 @@
+"""Module: @role: 一連のキー入力・IME入力・UIAイベントを時系列解析し、単一のテキスト入力やキー操作セッションとして集約する。"""
+
 import difflib
 import logging
+import re
 import urllib.parse
 from typing import List, Dict, Any, Optional
 
@@ -22,6 +25,32 @@ class TypingSessionAggregator:
                 except ValueError:
                     return 0.0
             return 0.0
+
+        # Why: キー入力のフォーカス先は直前クリック要素のみから継承しホバー移動による汚染を根絶
+        last_click_ctx = {}
+        last_click_win = ""
+        for ev in raw_events:
+            ev_act = ev.get("raw_action", "")
+            ev_win = ev.get("window_name", "")
+            ctx = ev.get("app_context") or ev.get("AppSpecificContext") or ev.get("appSpecificContext") or {}
+            elem = ctx.get("element_name") or ""
+            sel = ctx.get("css_selector") or ""
+
+            if ev_act in ["click", "mouse_click"]:
+                if elem or sel or ctx.get("xpath"):
+                    last_click_ctx = ctx.copy()
+                    last_click_win = ev_win
+            elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
+                # Why: タスクバーやポップアップ経由でWindowNameが空の場合もブラウザ操作なら安全にコンテキストを伝播
+                is_win_match = (ev_win == last_click_win) or not last_click_win or not ev_win or any(b in (ev_win + last_click_win).lower() for b in ["firefox", "chrome", "edge"])
+                if is_win_match:
+                    e_ctx = ev.setdefault("app_context", {})
+                    e_sel = e_ctx.get("css_selector") or e_ctx.get("xpath")
+                    l_sel = last_click_ctx.get("css_selector") or last_click_ctx.get("xpath")
+                    if not e_sel or e_sel == l_sel:
+                        for k in ["element_name", "css_selector", "xpath", "control_type"]:
+                            if not e_ctx.get(k) and last_click_ctx.get(k):
+                                e_ctx[k] = last_click_ctx[k]
 
         global_uia_texts_map = {}
         for event in raw_events:
@@ -61,55 +90,78 @@ class TypingSessionAggregator:
                 diff_val = _parse_diff(event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff"))
                 time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
                 
+                # Why: サジェスト展開による画面差分や要素名変化で入力セッションが細切れになるのを防止
+                is_ongoing_typing = action in ["key_down", "key_press", "key_combo"] and time_diff < 1500
                 if current_window and last_window and current_window != last_window:
-                    self._flush_session(current_session, aggregated_events)
-                elif diff_val > 15.0:
-                    if time_diff > 500:
-                        self._flush_session(current_session, aggregated_events)
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                elif not is_ongoing_typing and diff_val > 15.0 and time_diff > 500:
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
                 elif time_diff > 3000:
-                    self._flush_session(current_session, aggregated_events)
-                elif last_element and curr_element and last_element != curr_element:
-                    # 要素名が変わっても、差分が小さい（文字入力程度）かつ時間が近ければ同じ入力セッションとして継続する
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                elif not is_ongoing_typing and last_element and curr_element and last_element != curr_element:
                     if diff_val > 5.0 or time_diff > 2000:
-                        self._flush_session(current_session, aggregated_events)
+                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
 
             role_lower = str(event.get("semantic_role", "")).lower()
             
-            is_shift_char = action == "key_combo" and "shift" in role_lower and len(role_lower.split("+")) == 2 and len(role_lower.split("+")[1]) == 1
+            combo_parts = [p for p in role_lower.split("+") if p]
+            combo_alphas = [p for p in combo_parts if len(p) == 1 and p.isalpha()]
+            # Why: 複合コンボ(shift+a+tab等)でも英字1字が含まれる場合は大文字入力として救出
+            is_shift_char = action == "key_combo" and "shift" in role_lower and len(combo_alphas) == 1
             
+            # Why: 修飾キーや機能キーが文字入力セッションへ誤混入するのを防止
+            special_key_names = {
+                "enter", "tab", "esc", "escape", "up", "down", "left", "right",
+                "left_click", "right_click", "middle_click",
+                "win", "cmd", "windows", "ctrl", "alt", "shift", "caps_lock",
+                "home", "end", "page_up", "page_down", "insert", "delete", "print_screen",
+                "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
+            }
             is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.") or 
-                role_lower in ["enter", "tab", "esc", "up", "down", "left", "right", "left_click", "right_click", "middle_click"] or
+                role_lower in special_key_names or
                 ("+" in role_lower and not is_shift_char)
             )
             is_text_input = action in ["type_text", "key_down", "key_press", "key_combo"] and not is_special_key
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             ime_active = event.get("ime_active", False)
-            is_mouse_move = action in ["mouse_move", "mouse_hover"]
+            is_mouse_move = action in ["move", "mouse_move", "mouse_hover"]
             
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
             is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
 
             if role_lower == "enter":
                 current_session.append(event)
-                self._flush_session(current_session, aggregated_events)
+                self._flush_session(current_session, aggregated_events, future_events=raw_events[i + 1:])
                 continue
 
             if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
                 current_session.append(event)
                 continue
             elif is_mouse_move:
+                # Why: 要素変更や一定以上のカーソル移動は入力終了と判定しセッションを確定
+                if current_session:
+                    last_ev = current_session[-1]
+                    lx, ly = last_ev.get("cursor_x", last_ev.get("x", 0)), last_ev.get("cursor_y", last_ev.get("y", 0))
+                    cx, cy = event.get("cursor_x", event.get("x", 0)), event.get("cursor_y", event.get("y", 0))
+                    dist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+                    curr_ctx = event.get("app_context") or event.get("AppSpecificContext") or {}
+                    has_new_target = bool(curr_ctx.get("element_name") or curr_ctx.get("css_selector"))
+                    if dist > 35 or has_new_target:
+                        self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                    else:
+                        continue
                 aggregated_events.append(event)
                 continue
 
             if current_session:
-                self._flush_session(current_session, aggregated_events)
+                self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
 
             aggregated_events.append(event)
 
         if current_session:
-            self._flush_session(current_session, aggregated_events)
+            self._flush_session(current_session, aggregated_events, future_events=None)
 
         final_events = []
         i = 0
@@ -136,10 +188,14 @@ class TypingSessionAggregator:
                         curr_elem = curr_ctx.get("element_name", "")
                         next_elem = next_ctx.get("element_name", "")
                         
-                        # 同じウィンドウ・同じ要素に対する連続した入力は、最後のテキストで上書きマージする
+                        # Why: 同一要素への分割入力は断片を結合し最終的な完成文字列へ復元
                         if curr_win == next_win and curr_elem == next_elem:
                             events_to_merge.append(next_event)
-                            last_valid_text = next_event.get("semantic_role", "")
+                            nxt_text = str(next_event.get("semantic_role", "")).strip()
+                            if last_valid_text and nxt_text and not nxt_text.startswith(last_valid_text):
+                                last_valid_text = last_valid_text + nxt_text
+                            else:
+                                last_valid_text = nxt_text or last_valid_text
                         else:
                             break
                     elif action in ["mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:
@@ -176,7 +232,12 @@ class TypingSessionAggregator:
 
         return final_events
 
-    def _flush_session(self, session: List[Dict[str, Any]], output_list: List[Dict[str, Any]]) -> None:
+    def _flush_session(
+        self, 
+        session: List[Dict[str, Any]], 
+        output_list: List[Dict[str, Any]], 
+        future_events: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
         if not session:
             return
 
@@ -230,7 +291,7 @@ class TypingSessionAggregator:
                     is_valid = True
                 elif has_screen_diff:
                     # 画面差分がある場合でも、修飾キーを含まない3キー以上のコンボはノイズとみなす
-                    if not is_shortcut and len(role_lower.split("+")) >= 3:
+                    if not is_shortcut and len(role_lower.split("+")) >= 3 and not any(p.isalpha() and len(p) == 1 for p in role_lower.split("+")):
                         is_valid = False
                     else:
                         is_valid = True
@@ -330,10 +391,12 @@ class TypingSessionAggregator:
             is_combo = action == "key_combo" or "+" in r_lower
             char = ""
             
+            # Why: 複合コンボキー(shift+a+enter+tab等)から本来のアルファベット文字を安全抽出
             if is_combo and "shift" in r_lower:
                 parts = r_lower.split("+")
-                if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
-                    char = parts[1].upper()
+                alpha_parts = [p for p in parts if len(p) == 1 and p.isalpha()]
+                if alpha_parts:
+                    char = alpha_parts[0].upper()
                     is_combo = False
                 
             if is_combo:
@@ -385,7 +448,14 @@ class TypingSessionAggregator:
             if current_ime_state:
                 try:
                     from core.recorder.romaji_converter import to_hiragana
-                    current_chunk = to_hiragana(current_chunk)
+                    # Why: アルファベット末尾を含む入力(kaisaA等)をひらがなと大文字英字に適切分離
+                    alpha_tail = re.search(r'[A-Za-z]+$', current_chunk)
+                    if alpha_tail:
+                        tail_idx = alpha_tail.start()
+                        lead_hira = to_hiragana(current_chunk[:tail_idx])
+                        current_chunk = lead_hira + current_chunk[tail_idx:]
+                    else:
+                        current_chunk = to_hiragana(current_chunk)
                 except ImportError:
                     pass
             fallback_text += current_chunk
@@ -396,33 +466,59 @@ class TypingSessionAggregator:
                     return None, False
                 return url_or_text, False
             try:
-                parsed = urllib.parse.urlparse(url_or_text)
+                parsed = urllib.parse.urlsplit(url_or_text)
                 qs = urllib.parse.parse_qs(parsed.query)
-                if 'q' in qs: return qs['q'][0], True
-                elif 'p' in qs: return qs['p'][0], True
-                elif 'text' in qs: return qs['text'][0], True
+                for key in ["q", "query", "p", "wd", "word", "search_query", "text"]:
+                    if key in qs and qs[key]:
+                        # Why: URLエンコードされた日本語クエリを安全に復元
+                        return urllib.parse.unquote_plus(qs[key][0]), True
             except Exception:
                 pass
             return None, False
 
-        uia_candidates = []
+        def _extract_query_from_title(title: str) -> Optional[str]:
+            if not title:
+                return None
+            patterns = [
+                r"^(.+?)\s*[-—–―]\s*(?:Google\s*検索|Google\s*Search|Yahoo!検索|Bing(?:\s*検索)?|DuckDuckGo)",
+                r"^「(.+?)」の検索結果",
+                r"^(.+?)\s*[-—–―]\s*(?:検索|Search)",
+            ]
+            for pat in patterns:
+                m = re.search(pat, title, re.IGNORECASE)
+                if m:
+                    q = m.group(1).strip()
+                    if q and q.lower() not in ["検索", "search"]:
+                        return q
+            return None
+
         confirmed_queries = []
+        latest_uia_text = ""
         
         all_events_in_session = session + trailing_events
         for item in reversed(all_events_in_session):
             if item.get("raw_action") == "uia_scan":
                 uia_info = item.get("content", {}).get("uia_info", {})
                 val = uia_info.get("value") or uia_info.get("name")
+                candidates = uia_info.get("candidates") or []
+                # Why: Tab補完時は展開された候補リストの先頭アイテムを優先採用
+                if candidates and has_suggest_selection and not val:
+                    val = candidates[0]
                 if val and len(str(val).strip()) > 0:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
                         if is_url_query and extracted not in confirmed_queries:
                             confirmed_queries.append(extracted)
-                        elif not is_url_query and extracted not in uia_candidates:
-                            uia_candidates.append(extracted)
+                        elif not is_url_query and not latest_uia_text:
+                            latest_uia_text = extracted
 
             app_ctx = item.get("app_context") or item.get("AppSpecificContext") or item.get("appSpecificContext")
             if isinstance(app_ctx, dict):
+                elem_name = str(app_ctx.get("element_name") or "")
+                title_q = _extract_query_from_title(elem_name)
+                if title_q and title_q not in confirmed_queries:
+                    confirmed_queries.append(title_q)
+
                 ctrl_type = str(app_ctx.get("control_type", "")).lower()
                 if "button" in ctrl_type or "window" in ctrl_type or "listitem" in ctrl_type:
                     continue
@@ -437,70 +533,105 @@ class TypingSessionAggregator:
                     extracted, is_url_query = _extract_search_query(str(val).strip())
                     if extracted:
                         if is_url_query and extracted not in confirmed_queries:
-                            confirmed_queries.append(extracted)
-                        elif not is_url_query and extracted not in uia_candidates:
-                            uia_candidates.append(extracted)
+                            confirmed_queries.insert(0, extracted)
+                        # Why: 一番最後に確定された最新のUIA要素文字列のみを採用し入力途中の巻き戻りを防止
+                        elif not is_url_query and not latest_uia_text:
+                            latest_uia_text = extracted
 
-        uia_rescued_text = ""
-        if confirmed_queries:
-            uia_rescued_text = confirmed_queries[0]
-        elif uia_candidates:
-            if fallback_text:
-                best_candidate = None
-                best_ratio = -1.0
-                fb_lower = fallback_text.lower()
-                
-                for cand in uia_candidates:
-                    cand_lower = cand.lower()
-                    
-                    if fb_lower == cand_lower:
-                        ratio = 1.2
-                    elif fb_lower in cand_lower:
-                        ratio = 1.0
-                    else:
-                        ratio = difflib.SequenceMatcher(None, fb_lower, cand_lower).ratio()
-                        if cand_lower and fb_lower.startswith(cand_lower[:3]):
-                            ratio += 0.2
-                        ratio = min(0.99, ratio)
-                        
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_candidate = cand
-                
-                if best_ratio >= 0.25:
-                    uia_rescued_text = best_candidate
-            else:
-                uia_rescued_text = uia_candidates[0]
+        confirmed_future_queries = []
+        future_elem_text = ""
+        if future_events:
+            first_ctx = session[0].get("app_context") or session[0].get("AppSpecificContext") or {}
+            target_elem = first_ctx.get("element_name", "")
+            target_sel = first_ctx.get("css_selector", "")
+            for f_evt in future_events[:15]:
+                f_win = f_evt.get("window_name") or f_evt.get("WindowName", "")
+                title_q = _extract_query_from_title(f_win)
+                if title_q and title_q not in confirmed_future_queries:
+                    confirmed_future_queries.append(title_q)
+
+                f_act = f_evt.get("raw_action", "")
+                f_ctx = f_evt.get("app_context") or f_evt.get("AppSpecificContext") or f_evt.get("appSpecificContext") or {}
+                f_name = f_ctx.get("element_name", "")
+                f_sel = f_ctx.get("css_selector", "")
+                f_val = f_ctx.get("value") or f_ctx.get("text")
+
+                # Why: 別要素クリックや別画面遷移時は未来走査を即座に中断
+                if f_act in ["click", "mouse_click"]:
+                    if (target_elem and f_name and f_name != target_elem) or (target_sel and f_sel and f_sel != target_sel):
+                        break
+
+                # Why: 同一要素であることが確実な場合のみ直後フレームの確定入力値を採用
+                if f_val and isinstance(f_val, str) and str(f_val).strip() and not future_elem_text:
+                    is_same_target = (target_elem and f_name == target_elem) or (target_sel and f_sel == target_sel)
+                    if is_same_target:
+                        future_elem_text = str(f_val).strip()
+                if not future_elem_text and target_sel:
+                    for snap_dict in [f_ctx.get("form_snapshot"), f_ctx.get("committed_values")]:
+                        if isinstance(snap_dict, dict) and snap_dict.get(target_sel):
+                            future_elem_text = str(snap_dict[target_sel]).strip()
+                            break
+
+                for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
+                    if url_candidate and isinstance(url_candidate, str):
+                        extracted, is_url_query = _extract_search_query(url_candidate)
+                        if is_url_query and extracted and extracted not in confirmed_future_queries:
+                            confirmed_future_queries.append(extracted)
+
+                if f_ctx.get("query") and f_ctx["query"] not in confirmed_future_queries:
+                    confirmed_future_queries.append(f_ctx["query"])
 
         has_suggest_selection = any(
             item.get("raw_action") in ["key_down", "key_press"] and 
             str(item.get("semantic_role", "")).lower() in ["tab", "down", "up"]
             for item in session + trailing_events
         )
-
         any_ime_active = any(item.get("ime_active", False) for item in session)
 
-        similarity = 0.0
-        if fallback_text and uia_rescued_text:
-            fb_lower = fallback_text.lower()
-            uia_lower = uia_rescued_text.lower()
-            if fb_lower in uia_lower or uia_lower in fb_lower:
-                similarity = 1.0
-            else:
-                similarity = difflib.SequenceMatcher(None, fb_lower, uia_lower).ratio()
+        # Why: 物理的な文字入力が一切ないセッション（Winキー等の単体連打）でのテキスト捏造を阻止
+        has_actual_chars = any(
+            str(item.get("semantic_role", "")).lower() not in ignore_exact_keys and 
+            not str(item.get("semantic_role", "")).lower().startswith("key.") and
+            len(str(item.get("semantic_role", ""))) == 1
+            for item in session
+        )
+
+        matched_future_query = None
+        current_input = (latest_uia_text or fallback_text or "").strip().lower()
+        if confirmed_future_queries and (has_actual_chars or any_ime_active):
+            for fq in confirmed_future_queries:
+                fq_lower = fq.lower()
+                matches_text = bool(current_input and (current_input in fq_lower or fq_lower.startswith(current_input)))
+                # Why: Tab補完やIME変換で入力仮名と確定漢字が一致しないケースを検索遷移から救済
+                matches_suggest_or_ime = (has_suggest_selection or any_ime_active) and (has_actual_chars or len(current_input) > 0)
+                if not current_input or matches_text or matches_suggest_or_ime:
+                    matched_future_query = fq
+                    break
 
         if confirmed_queries:
+            # Why: Tab補完やサジェストで選択された確定クエリを未確定ローマ字バッファより最優先
             final_text = confirmed_queries[0]
+        elif matched_future_query:
+            final_text = matched_future_query
+        elif (has_suggest_selection or any_ime_active) and latest_uia_text:
+            final_text = latest_uia_text
+        elif latest_uia_text and fallback_text and (fallback_text in latest_uia_text or latest_uia_text in fallback_text):
+            final_text = latest_uia_text
+        elif future_elem_text:
+            final_text = future_elem_text
         elif not any_ime_active and fallback_text and not has_suggest_selection:
             final_text = fallback_text
         else:
-            # UIAのテキストが実際のキー入力と全く異なる（類似度が低い）場合は、UIAの誤取得とみなしてキー入力を優先する
-            if fallback_text and uia_rescued_text and similarity < 0.2:
-                final_text = fallback_text
-            else:
-                final_text = uia_rescued_text if uia_rescued_text else fallback_text
+            final_text = latest_uia_text if latest_uia_text else fallback_text
 
         if final_text:
+            # Why: リンクが全角で記録された場合に全角半角判定を行い半角URLへ正規化
+            import unicodedata
+            norm_candidate = unicodedata.normalize('NFKC', final_text).strip()
+            norm_lower = norm_candidate.lower()
+            if norm_lower.startswith(('http://', 'https://', 'www.', 'ftp://')) or re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9][-a-zA-Z0-9.]*(/[^\s]*)?$', norm_lower):
+                final_text = norm_candidate
+
             if output_list and output_list[-1].get("raw_action") == "type_text" and output_list[-1].get("semantic_role") == final_text:
                 session.clear()
                 return
@@ -515,10 +646,20 @@ class TypingSessionAggregator:
                     if prev_text_lower.endswith(final_text_lower) or final_text_lower in prev_text_lower:
                         is_suffix_or_sub = True
                 
-                if not is_suffix_or_sub and any_ime_active:
-                    if len(final_text_lower) <= 3 and final_text_lower.isascii() and final_text_lower.isalpha():
-                        is_suffix_or_sub = True
-                        
+                # Why: 同一要素への連続入力断片は切り捨てず安全に連結してユーザー入力を完全再現
+                prev_ctx = output_list[-1].get("app_context") or {}
+                curr_ctx = session[0].get("app_context") or {}
+                same_target = (
+                    (prev_ctx.get("css_selector") and prev_ctx.get("css_selector") == curr_ctx.get("css_selector")) or
+                    (prev_ctx.get("element_name") and prev_ctx.get("element_name") == curr_ctx.get("element_name"))
+                )
+                if same_target and prev_text and final_text and not is_suffix_or_sub:
+                    if not prev_text.endswith(final_text) and final_text not in prev_text:
+                        output_list[-1]["semantic_role"] = prev_text + final_text
+                        output_list[-1]["fallback_events"].extend([item.get("event_id") for item in session if item.get("event_id")])
+                        session.clear()
+                        return
+
                 if is_suffix_or_sub:
                     session.clear()
                     return
@@ -544,6 +685,9 @@ class TypingSessionAggregator:
             
             if final_text:
                 if role_lower == "tab":
+                    continue
+                # Why: IME確定時のEnter/Tabや複合コンボキー残骸を完全除外
+                if (role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "tab"])) and (any_ime_active or e.get("ime_active")):
                     continue
 
             trailing_special_keys.append(e)

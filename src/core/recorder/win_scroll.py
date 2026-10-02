@@ -5,7 +5,6 @@ from ctypes import wintypes
 import threading
 import traceback
 from core.recorder.state import state
-from core.recorder.event_processor import process_scroll_event
 
 WH_MOUSE_LL = 14
 WM_MOUSEWHEEL = 0x020A
@@ -53,8 +52,9 @@ def native_scroll_hook_callback(n_code, w_param, l_param):
                 delta = ctypes.c_short((mouse_info.mouseData >> 16) & 0xFFFF).value / WHEEL_DELTA
                 dx, dy = (0.0, delta) if w_param == WM_MOUSEWHEEL else (delta, 0.0)
                 
-                # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
-                process_scroll_event({
+                # Why: マウスイベントキューに完全統合しクリックや移動との時系列順序を完全保証
+                state.mouse_event_queue.put({
+                    "type": "scroll",
                     "x": int(mouse_info.pt.x),
                     "y": int(mouse_info.pt.y),
                     "dx": dx,

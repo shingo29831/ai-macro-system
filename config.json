@@ -1,0 +1,13 @@
+{
+    "ai_mode": "local",
+    "custom_server_host": "",
+    "custom_server_port": "8843",
+    "llm_host": "127.0.0.1",
+    "llm_port": "8844",
+    "cv_host": "127.0.0.1",
+    "cv_port": "8843",
+    "vllm_host": "127.0.0.1",
+    "vllm_port": "8000",
+    "generator_api_key": null,
+    "judge_api_key": null
+}

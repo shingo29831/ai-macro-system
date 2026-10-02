@@ -13,10 +13,19 @@ from core.recorder.log_builder import create_end_log, save_input_logs
 
 from core.recorder.key_hook import KeyHookManager
 from core.recorder.office_monitor import OfficeMonitorManager
+from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
 
 _mouse_listener = None
 _keyboard_listener = None
 _key_hook_manager = None
+
+from . import macro_path_manager
+
+_mouse_listener = None
+_keyboard_listener = None
+_key_hook_manager = None
+_office_monitor_manager = None
+
 
 def set_shortcut_stop_callback(callback):
     state.shortcut_stop_callback = callback
@@ -34,7 +43,7 @@ def start_recording():
         return
 
     try:
-        state.recording_dirs = screen_capturer.make_directory()
+        state.recording_dirs = macro_path_manager.make_directory()
         state.input_logs = []
         state.event_index = 0
         state.previous_screenshot_img = None
@@ -63,28 +72,40 @@ def start_recording():
         _keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         _mouse_listener.start()
         _keyboard_listener.start()
+        set_system_cursor("record_idle")
 
         print("記録を開始しました")
         print(f"macro: {state.recording_dirs['macro_name']}")
         print(f"native_scroll_hook: {state.native_scroll_hook_active}")
 
-    except Exception:
+    except Exception as e:
         state.is_recording = False
         state.is_stopping = False
         if _key_hook_manager:
-            _key_hook_manager.stop()
+            try:
+                _key_hook_manager.stop()
+            except Exception:
+                pass
+            _key_hook_manager = None
         if _office_monitor_manager:
-            _office_monitor_manager.stop()
+            try:
+                _office_monitor_manager.stop()
+            except Exception:
+                pass
+            _office_monitor_manager = None
         stop_native_scroll_hook()
         stop_mouse_event_worker()
         stop_key_event_worker()
         process_monitor.stop_process_monitors()
-        print("記録開始に失敗しました")
+        restore_system_cursor(force=True)
+        import logging
+        logging.getLogger(__name__).error(f"Failed to start recording: {e}", exc_info=True)
+        print(f"記録開始に失敗しました: {e}")
         traceback.print_exc()
         raise
 
 def stop_recording():
-    global _mouse_listener, _keyboard_listener
+    global _mouse_listener, _keyboard_listener, _key_hook_manager, _office_monitor_manager
 
     if not state.is_recording:
         return
@@ -92,6 +113,7 @@ def stop_recording():
     try:
         state.is_recording = False
         state.cancel_hover()
+        restore_system_cursor(force=True)
 
         with state.pending_click_lock:
             if state.pending_click_timer:
@@ -100,8 +122,10 @@ def stop_recording():
             state.pending_click_timer = None
             state.pending_click_event = None
 
+        # Why: 録画停止直前のクリックを非同期ではなく同期実行しログ保存前の脱落を完全防止
         if pending_event is not None:
-            run_click_process_thread(pending_event, input_type="mouse_click", click_count=1)
+            from core.recorder.mouse_event_handler import process_click_event
+            process_click_event(pending_event, input_type="mouse_click", click_count=1)
 
         # 背景: pynputの停止時にエラーが発生しても処理が止まらないようにtry-exceptで保護
         try:
@@ -111,6 +135,12 @@ def stop_recording():
             if _keyboard_listener:
                 _keyboard_listener.stop()
                 _keyboard_listener = None
+            if _key_hook_manager:
+                _key_hook_manager.stop()
+                _key_hook_manager = None
+            if _office_monitor_manager:
+                _office_monitor_manager.stop()
+                _office_monitor_manager = None
         except Exception as e:
             print(f"リスナー停止中にエラー（無視して続行します）: {e}")
 
@@ -139,12 +169,16 @@ def stop_recording():
         state.append_log(create_end_log(diff_str, end_ref))
         process_monitor.stop_process_monitors()
         save_input_logs()
+        restore_system_cursor()
 
         print("記録を停止しました")
         print("recording_end: evt_End_pre.png")
 
-    except Exception:
-        print("記録停止中にエラーが発生しました")
+    except Exception as e:
+        restore_system_cursor()
+        import logging
+        logging.getLogger(__name__).error(f"Failed to stop recording: {e}", exc_info=True)
+        print(f"記録停止中にエラーが発生しました: {e}")
         traceback.print_exc()
         raise
 

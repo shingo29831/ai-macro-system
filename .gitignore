@@ -53,3 +53,6 @@ best.pt
 *.gguf
 
 logs/
+
+# aiskel output directory
+ai_meta/

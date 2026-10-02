@@ -1,4 +1,4 @@
-# @role: Windowsのアクティブウィンドウ情報・カーソル地点ウィンドウ情報・UI要素矩形取得・ETW/psutilによるプロセス起動監視を担当する。
+# Role: ETWおよびpsutilを用いた新規プロセスのバックグラウンド起動監視と管理者権限の管理を担当する。
 
 from pathlib import Path
 from datetime import datetime
@@ -7,8 +7,17 @@ import threading
 import time
 import traceback
 import ctypes
-from ctypes import wintypes
 import sys
+
+# 既存モジュールからの直接呼出しを100%後方互換で維持するため、window_inspector の全シンボルを re-export
+from core.recorder.window_inspector import (
+    IGNORED_WINDOW_TITLES,
+    should_ignore_window,
+    get_foreground_window_info,
+    build_recording_window_fields,
+    get_window_title_at_point,
+    get_ui_element_rect_at_point,
+)
 
 try:
     import etw
@@ -22,7 +31,7 @@ except ImportError:
 
 
 # =========================
-# 設定
+# 設定定数
 # =========================
 
 ENABLE_ADMIN_RELAUNCH = False
@@ -50,363 +59,6 @@ IGNORED_LAUNCH_PROCESS_NAMES = {
     "wslhost.exe",
     "vmmem.exe",
 }
-
-IGNORED_WINDOW_TITLES = [
-    "記録中",
-    "停止中",
-    "AI Macro System",
-    "設定",
-    "AIマクロ生成中..."
-]
-
-def should_ignore_window(title: str | None) -> bool:
-    """
-    システム自身のウィンドウ（記録中、AI Macro Systemなど）かどうかを判定する。
-    """
-    if not title:
-        return False
-    for ignored in IGNORED_WINDOW_TITLES:
-        if ignored in title:
-            return True
-    return False
-
-
-# =========================
-# 状態
-# =========================
-
-_latest_process_events = deque(maxlen=200)
-_latest_process_events_lock = threading.Lock()
-
-_etw_job = None
-_etw_stop_event = threading.Event()
-_psutil_stop_event = threading.Event()
-
-_monitor_threads: list[threading.Thread] = []
-
-
-# =========================
-# 管理者権限
-# =========================
-
-def is_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
-def relaunch_as_admin():
-    if is_admin():
-        return
-
-    script_path = str(Path(__file__).resolve())
-    params = " ".join(
-        [f'"{script_path}"'] + [f'"{arg}"' for arg in sys.argv[1:]]
-    )
-
-    result = ctypes.windll.shell32.ShellExecuteW(
-        None,
-        "runas",
-        sys.executable,
-        params,
-        None,
-        1
-    )
-
-    if result <= 32:
-        raise RuntimeError(f"管理者権限での再起動に失敗しました: ShellExecuteW={result}")
-
-    sys.exit(0)
-
-
-# =========================
-# Window情報
-# =========================
-
-def _empty_window_info(error: str) -> dict:
-    return {
-        "success": False,
-        "hwnd": 0,
-        "title": "",
-        "class_name": "",
-        "process_id": None,
-        "process_name": "",
-        "exe_path": "",
-        "rect": {
-            "left": 0,
-            "top": 0,
-            "right": 0,
-            "bottom": 0,
-        },
-        "size": {
-            "width": 0,
-            "height": 0,
-        },
-        "coordinates": {
-            "x": 0,
-            "y": 0,
-        },
-        "error": error,
-    }
-
-
-def get_foreground_window_info() -> dict:
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-
-        if not hwnd:
-            return _empty_window_info("GetForegroundWindow returned 0")
-
-        title_buffer = ctypes.create_unicode_buffer(512)
-        class_buffer = ctypes.create_unicode_buffer(256)
-
-        user32.GetWindowTextW(hwnd, title_buffer, 512)
-        user32.GetClassNameW(hwnd, class_buffer, 256)
-
-        rect = wintypes.RECT()
-        rect_ok = user32.GetWindowRect(hwnd, ctypes.byref(rect))
-
-        if rect_ok:
-            left = int(rect.left)
-            top = int(rect.top)
-            right = int(rect.right)
-            bottom = int(rect.bottom)
-            width = max(0, right - left)
-            height = max(0, bottom - top)
-        else:
-            left = top = right = bottom = width = height = 0
-
-        pid = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        process_id = int(pid.value) if pid.value else None
-
-        process_name = ""
-        exe_path = ""
-
-        if process_id and psutil is not None:
-            try:
-                proc = psutil.Process(process_id)
-                process_name = proc.name() or ""
-                exe_path = proc.exe() or ""
-            except Exception:
-                pass
-
-        return {
-            "success": True,
-            "hwnd": int(hwnd),
-            "title": title_buffer.value or "",
-            "class_name": class_buffer.value or "",
-            "process_id": process_id,
-            "process_name": process_name,
-            "exe_path": exe_path,
-            "rect": {
-                "left": left,
-                "top": top,
-                "right": right,
-                "bottom": bottom,
-            },
-            "size": {
-                "width": width,
-                "height": height,
-            },
-            "coordinates": {
-                "x": left,
-                "y": top,
-            },
-            "error": None,
-        }
-
-    except Exception as e:
-        return _empty_window_info(str(e))
-
-
-def build_recording_window_fields(
-    window_info: dict,
-    cursor_x: int | None = None,
-    cursor_y: int | None = None
-) -> dict:
-    left = int(window_info.get("rect", {}).get("left", 0))
-    top = int(window_info.get("rect", {}).get("top", 0))
-
-    if cursor_x is None or cursor_y is None:
-        cursor_coordinates = None
-    else:
-        cursor_coordinates = {
-            "x": int(cursor_x - left),
-            "y": int(cursor_y - top),
-        }
-
-    return {
-        "WindowName": window_info.get("title", ""),
-        "WindowSize": {
-            "width": int(window_info.get("size", {}).get("width", 0)),
-            "height": int(window_info.get("size", {}).get("height", 0)),
-        },
-        "WindowCoordinates": {
-            "x": left,
-            "y": top,
-        },
-        "CursorCoordinates": cursor_coordinates,
-    }
-
-
-def get_window_title_at_point(x: int, y: int) -> dict:
-    """
-    カーソル地点にあるウィンドウ名を取得する。
-    mouse_scroll 用。
-    """
-    try:
-        user32 = ctypes.windll.user32
-
-        point = wintypes.POINT(int(x), int(y))
-        hwnd = user32.WindowFromPoint(point)
-
-        if not hwnd:
-            return {
-                "success": False,
-                "title": "",
-                "hwnd": 0,
-                "class_name": "",
-                "root_hwnd": 0,
-                "root_title": "",
-                "root_class_name": "",
-                "error": "WindowFromPoint returned 0",
-            }
-
-        title_buffer = ctypes.create_unicode_buffer(512)
-        class_buffer = ctypes.create_unicode_buffer(256)
-
-        user32.GetWindowTextW(hwnd, title_buffer, 512)
-        user32.GetClassNameW(hwnd, class_buffer, 256)
-
-        GA_ROOT = 2
-        root_hwnd = user32.GetAncestor(hwnd, GA_ROOT)
-
-        root_title_buffer = ctypes.create_unicode_buffer(512)
-        root_class_buffer = ctypes.create_unicode_buffer(256)
-
-        if root_hwnd:
-            user32.GetWindowTextW(root_hwnd, root_title_buffer, 512)
-            user32.GetClassNameW(root_hwnd, root_class_buffer, 256)
-
-        title = title_buffer.value or ""
-        root_title = root_title_buffer.value or ""
-
-        display_title = root_title or title
-
-        return {
-            "success": True,
-            "title": display_title,
-            "hwnd": int(hwnd),
-            "class_name": class_buffer.value or "",
-            "root_hwnd": int(root_hwnd) if root_hwnd else 0,
-            "root_title": root_title,
-            "root_class_name": root_class_buffer.value or "",
-            "error": None,
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "title": "",
-            "hwnd": 0,
-            "class_name": "",
-            "root_hwnd": 0,
-            "root_title": "",
-            "root_class_name": "",
-            "error": str(e),
-        }
-
-
-def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
-    """
-    カーソル地点のUI要素矩形と内部テキストをUI Automationで取得し、
-    診断情報をログに付与して返す。取れない場合は None。
-    """
-    try:
-        from pywinauto import Desktop
-        import pythoncom
-        
-        # 別スレッドからの呼び出しを考慮し、COM環境を安全に初期化
-        pythoncom.CoInitialize()
-
-        desktop = Desktop(backend="uia")
-        element = desktop.from_point(int(x), int(y))
-
-        rect = element.rectangle()
-
-        left = int(rect.left)
-        top = int(rect.top)
-        right = int(rect.right)
-        bottom = int(rect.bottom)
-
-        width = right - left
-        height = bottom - top
-
-        if width <= 0 or height <= 0:
-            return None
-
-        # 画面全体に近すぎる巨大要素は「UIのみ切り抜き」として不適切なため除外
-        if width > 2000 or height > 1500:
-            return None
-
-        name = ""
-        control_type = ""
-        value_text = ""
-        debug_info = []
-
-        try:
-            name = element.window_text() or ""
-            debug_info.append(f"Name: {name}")
-        except Exception as e:
-            debug_info.append(f"Name Error: {e}")
-
-        try:
-            control_type = getattr(element.element_info, "control_type", "") or ""
-            debug_info.append(f"Type: {control_type}")
-        except Exception as e:
-            debug_info.append(f"Type Error: {e}")
-
-        # テキスト値の積極的な抽出
-        try:
-            if element.is_value_pattern_available():
-                value_text = element.get_value() or ""
-                debug_info.append(f"ValuePattern: {value_text}")
-        except Exception as e:
-            debug_info.append(f"ValuePattern Error: {e}")
-
-        if not value_text:
-            try:
-                value_text = element.legacy_properties().get("Value", "") or ""
-                debug_info.append(f"LegacyValue: {value_text}")
-            except Exception:
-                pass
-
-        return {
-            "left": left,
-            "top": top,
-            "right": right,
-            "bottom": bottom,
-            "width": width,
-            "height": height,
-            "name": name,
-            "control_type": control_type,
-            "value": value_text,
-            "source": "uia",
-            "uia_debug": " | ".join(debug_info)
-        }
-
-    except Exception as e:
-        print(f"[process_monitor] UIA rect取得エラー ({x}, {y}): {e}")
-        return None
-    finally:
-        try:
-            import pythoncom
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
 
 
 # =========================
@@ -492,10 +144,8 @@ def extract_etw_process_data(event) -> dict | None:
 
 def on_etw_process_start(event):
     process_data = extract_etw_process_data(event)
-
     if process_data is None:
         return
-
     add_process_event(process_data)
 
 
@@ -521,7 +171,6 @@ def psutil_process_monitor_worker():
             for pid in new_pids:
                 try:
                     proc = psutil.Process(pid)
-
                     app_name = proc.name() or ""
                     if not app_name:
                         continue
@@ -549,7 +198,6 @@ def psutil_process_monitor_worker():
                         "source": "psutil_process_polling",
                         "raw": None,
                     }
-
                     add_process_event(process_data)
 
                 except Exception:
@@ -572,21 +220,20 @@ def etw_process_monitor_worker():
 
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
-
         return
 
     try:
         providers = [
             etw.ProviderInfo(
                 "Microsoft-Windows-Kernel-Process",
-                etw.GUID("{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}")
+                etw.GUID("{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"),
             )
         ]
 
         _etw_job = etw.ETW(
             providers=providers,
             event_callback=on_etw_process_start,
-            task_name_filters="PROCESSSTART"
+            task_name_filters="PROCESSSTART",
         )
 
         _etw_job.start()
@@ -598,14 +245,12 @@ def etw_process_monitor_worker():
     except PermissionError:
         print("ETWが権限不足で開始できませんでした。psutil監視に切り替えます。")
         traceback.print_exc()
-
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
 
     except Exception:
         print("ETW監視中にエラーが発生しました。psutil監視に切り替えます。")
         traceback.print_exc()
-
         if ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
             psutil_process_monitor_worker()
 
@@ -616,6 +261,12 @@ def etw_process_monitor_worker():
                 print("ETWプロセス起動監視を停止しました")
         except Exception:
             pass
+
+
+_etw_stop_event = threading.Event()
+_psutil_stop_event = threading.Event()
+_monitor_threads = []
+_etw_job = None
 
 
 def start_process_monitors():
@@ -629,18 +280,11 @@ def start_process_monitors():
         relaunch_as_admin()
 
     if ENABLE_ETW_PROCESS_MONITOR:
-        thread = threading.Thread(
-            target=etw_process_monitor_worker,
-            daemon=True
-        )
+        thread = threading.Thread(target=etw_process_monitor_worker, daemon=True)
         thread.start()
         _monitor_threads.append(thread)
-
     elif ENABLE_PSUTIL_PROCESS_MONITOR_FALLBACK:
-        thread = threading.Thread(
-            target=psutil_process_monitor_worker,
-            daemon=True
-        )
+        thread = threading.Thread(target=psutil_process_monitor_worker, daemon=True)
         thread.start()
         _monitor_threads.append(thread)
 

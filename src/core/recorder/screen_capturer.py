@@ -1,133 +1,56 @@
-# src/core/recorder/screen_capturer.py
-# @role: スクリーンショット取得・UI切り抜き・画像保存・スクリーンショット差分率計算を担当する。
-#
-# Crop:
-#   - クリック後に再スクリーンショットを撮らない。
-#   - os_hook.py から渡されたPre画像を元にUI切り抜きを作成する。
-#   - UIAでExplorerの行全体などが取れた場合でも、見えている内容だけに再トリミングする。
-#
-# Path:
-#   - JSONに書く画像パスは macrosフォルダ基準の相対パスで返す。
-#   - 例: wf_1/images/evt_001_pre.png
-#
-# Diff:
-#   - 前回スクリーンショットと今回スクリーンショットで、
-#     一定以上変化したピクセルの割合を%表記で返す。
+# Role: 全画面スクリーンショットの撮影、前回画面との差分率・変動率計算、および画像保存を担当する。
 
 from pathlib import Path
-
 import mss
 from PIL import Image
 import cv2
 import numpy as np
 
+# 既存モジュールからの直接呼出し互換性維持のため、分割先から公開シンボルを re-export
+from core.recorder.macro_path_manager import (
+    get_macros_root,
+    make_directory,
+    get_current_macro_dir,
+    get_temp_dir,
+    get_images_dir,
+    to_macro_relative_path,
+)
+from core.recorder.ui_cropper import (
+    AROUND_WIDTH,
+    AROUND_HEIGHT,
+    MIN_UI_WIDTH,
+    MIN_UI_HEIGHT,
+    MAX_UI_WIDTH,
+    MAX_UI_HEIGHT,
+    PADDING,
+    ENABLE_VISIBLE_CONTENT_TRIM,
+    VISIBLE_TRIM_PADDING,
+    VISIBLE_TRIM_THRESHOLD,
+    MIN_TRIMMED_WIDTH,
+    MIN_TRIMMED_HEIGHT,
+    save_diff_crop,
+    trim_crop_to_visible_content,
+    is_trimmed_image_valid,
+    save_ui_crop_by_rect,
+    crop_around_click,
+    detect_ui_contours,
+    contains_point,
+    select_clicked_ui,
+    crop_ui_element,
+    save_ui_crop,
+)
 
 # =========================
-# 設定
+# 設定定数
 # =========================
-
-AROUND_WIDTH = 240
-AROUND_HEIGHT = 240
-
-MIN_UI_WIDTH = 20
-MIN_UI_HEIGHT = 15
-
-MAX_UI_WIDTH = 400
-MAX_UI_HEIGHT = 300
-
-PADDING = 8
 
 DIFF_PIXEL_THRESHOLD = 25
 
-# UIAで行全体が取れた時、見えているアイコン・文字部分だけに詰める設定
-ENABLE_VISIBLE_CONTENT_TRIM = True
-VISIBLE_TRIM_PADDING = 6
-VISIBLE_TRIM_THRESHOLD = 18
-
-# トリミング後がこれ未満なら失敗扱い
-MIN_TRIMMED_WIDTH = 8
-MIN_TRIMMED_HEIGHT = 8
-
-
 # =========================
-# 状態
+# 状態管理
 # =========================
 
-_current_macro_dir: Path | None = None
-_temp_dir: Path | None = None
-_images_dir: Path | None = None
 _last_screenshot_gray: np.ndarray | None = None
-
-
-# =========================
-# ディレクトリ管理
-# =========================
-
-def get_macros_root() -> Path:
-    return (Path(__file__).resolve().parent / "../../../macros").resolve()
-
-
-def make_directory() -> dict:
-    global _current_macro_dir
-    global _temp_dir
-    global _images_dir
-    global _last_screenshot_gray
-
-    macros_root = get_macros_root()
-    macros_root.mkdir(parents=True, exist_ok=True)
-
-    index = 1
-
-    while True:
-        macro_dir = macros_root / f"wf_{index}"
-        if not macro_dir.exists():
-            break
-        index += 1
-
-    temp_dir = macro_dir / "temp"
-    images_dir = macro_dir / "images"
-
-    temp_dir.mkdir(parents=True, exist_ok=False)
-    images_dir.mkdir(parents=True, exist_ok=False)
-
-    _current_macro_dir = macro_dir
-    _temp_dir = temp_dir
-    _images_dir = images_dir
-    _last_screenshot_gray = None
-
-    return {
-        "macro_name": macro_dir.name,
-        "macro_dir": str(macro_dir),
-        "temp_dir": str(temp_dir),
-        "images_dir": str(images_dir),
-    }
-
-
-def get_current_macro_dir() -> Path:
-    if _current_macro_dir is None:
-        raise RuntimeError("macro_dir が未作成です。start_recording() を先に呼んでください。")
-    return _current_macro_dir
-
-
-def get_temp_dir() -> Path:
-    if _temp_dir is None:
-        raise RuntimeError("temp_dir が未作成です。start_recording() を先に呼んでください。")
-    return _temp_dir
-
-
-def get_images_dir() -> Path:
-    if _images_dir is None:
-        raise RuntimeError("images_dir が未作成です。start_recording() を先に呼んでください。")
-    return _images_dir
-
-
-def to_macro_relative_path(path: Path) -> str:
-    macros_root = get_macros_root()
-    try:
-        relative = path.resolve().relative_to(macros_root.resolve())
-        return relative.as_posix()
-    except Exception:
-        return path.name
 
 
 # =========================
@@ -135,6 +58,7 @@ def to_macro_relative_path(path: Path) -> str:
 # =========================
 
 def calculate_diff_ratio(current_img: Image.Image) -> float:
+    """連続する画面キャプチャ間のピクセル変動比率 (0.0〜1.0) を計算する"""
     global _last_screenshot_gray
 
     current_gray = cv2.cvtColor(np.array(current_img), cv2.COLOR_RGB2GRAY)
@@ -162,6 +86,7 @@ def calculate_diff_ratio(current_img: Image.Image) -> float:
 # =========================
 
 def take_screenshot() -> tuple[Image.Image, dict]:
+    """mss を使用して主画面全体のスクリーンショットとモニタ情報を取得する"""
     with mss.MSS() as sct:
         monitor = sct.monitors[0]
         screenshot = sct.grab(monitor)
@@ -169,21 +94,83 @@ def take_screenshot() -> tuple[Image.Image, dict]:
         return img, monitor
 
 
-def save_event_pre_image(event_no: str) -> str:
+def crop_image_to_window(img: Image.Image, monitor: dict, window_rect: dict) -> Image.Image:
+    """全画面画像から操作中ウィンドウ領域を切り抜く"""
+    screen_left = int(monitor.get("left", 0))
+    screen_top = int(monitor.get("top", 0))
+
+    left = int(window_rect.get("left", 0) - screen_left)
+    top = int(window_rect.get("top", 0) - screen_top)
+    right = int(window_rect.get("right", 0) - screen_left)
+    bottom = int(window_rect.get("bottom", 0) - screen_top)
+
+    left = max(0, min(img.width, left))
+    top = max(0, min(img.height, top))
+    right = max(0, min(img.width, right))
+    bottom = max(0, min(img.height, bottom))
+
+    if right - left < 10 or bottom - top < 10:
+        return img
+
+    return img.crop((left, top, right, bottom))
+
+
+def take_window_screenshot(window_info: dict | None = None) -> tuple[Image.Image, dict]:
+    """主画面から操作中ウィンドウのみを切り抜いたスクリーンショットとモニタ情報を取得する"""
+    full_img, monitor = take_screenshot()
+    if window_info is None:
+        try:
+            from core.recorder import window_inspector
+            window_info = window_inspector.get_foreground_window_info()
+        except Exception:
+            window_info = None
+
+    if window_info and "rect" in window_info:
+        win_img = crop_image_to_window(full_img, monitor, window_info["rect"])
+        return win_img, monitor
+
+    return full_img, monitor
+
+
+def save_event_pre_image(event_no: str, window_info: dict | None = None) -> str:
+    """現在の操作中ウィンドウをキャプチャし、evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
-    img, _ = take_screenshot()
+    img, _ = take_window_screenshot(window_info)
     path = images_dir / f"evt_{event_no}_pre.png"
     img.save(path)
     return to_macro_relative_path(path)
 
 
-def save_pre_image_from_pil(event_no: str, img: Image.Image) -> str:
+def save_pre_image_from_pil(
+    event_no: str,
+    img: Image.Image,
+    window_info: dict | None = None,
+    monitor: dict | None = None,
+) -> str:
+    """渡されたPIL画像から操作中ウィンドウ領域を evt_{event_no}_pre.png として保存する"""
     images_dir = get_images_dir()
     path = images_dir / f"evt_{event_no}_pre.png"
-    img.save(path)
+
+    if window_info is None:
+        try:
+            from core.recorder import window_inspector
+            window_info = window_inspector.get_foreground_window_info()
+        except Exception:
+            window_info = None
+
+    target_img = img
+    if window_info and "rect" in window_info:
+        if monitor is None:
+            with mss.MSS() as sct:
+                monitor = sct.monitors[0]
+        win_w = max(0, int(window_info["rect"].get("right", 0) - window_info["rect"].get("left", 0)))
+        win_h = max(0, int(window_info["rect"].get("bottom", 0) - window_info["rect"].get("top", 0)))
+        # Why: 渡された画像が全画面の場合のみウィンドウ領域で切り抜いて保存
+        if abs(img.width - win_w) > 20 or abs(img.height - win_h) > 20:
+            target_img = crop_image_to_window(img, monitor, window_info["rect"])
+
+    target_img.save(path)
     return to_macro_relative_path(path)
-
-
 def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -> dict | None:
     """
     キー入力前後の画像(pre_img, post_img)から変化した領域（文字が増減した箇所）を抽出し、
@@ -254,6 +241,7 @@ def save_diff_crop(event_no: str, pre_img: Image.Image, post_img: Image.Image) -
 # =========================
 
 def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.Image) -> str:
+    """2枚の画像間の平均ピクセル変化率をパーセント表記文字列（例: '12.34%'）で計算する"""
     if previous_img is None:
         return "100%"
 
@@ -273,7 +261,6 @@ def calculate_diff_percent(previous_img: Image.Image | None, current_img: Image.
     total_pixels = pixel_diff.size
 
     percent = float(changed_pixels / total_pixels * 100.0)
-
     return f"{percent:.2f}%"
 
 

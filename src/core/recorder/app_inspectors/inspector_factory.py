@@ -11,6 +11,6 @@ class InspectorFactory:
         process_name = str(window_info.get("process_name", "")).lower()
         if "excel.exe" in process_name:
             return ExcelInspector()
-        elif "chrome.exe" in process_name or "msedge.exe" in process_name:
+        elif any(b in process_name for b in ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"]):
             return BrowserInspector()
         return None

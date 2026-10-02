@@ -117,8 +117,26 @@ class UniversalSelector(BaseModel):
     text_contains: Optional[str] = Field(None, description="含むべきテキスト")
     image_template: Optional[str] = Field(None, description="画像テンプレートのパス")
     absolute_coordinates: Optional[Coordinates] = Field(None, description="絶対座標")
+    css_selector: Optional[str] = Field(None, description="Web用CSSセレクタ")
+    xpath: Optional[str] = Field(None, description="Web用XPath")
+    dom_attributes: Optional[dict] = Field(default_factory=dict, description="HTML属性値一覧")
+    url_pattern: Optional[str] = Field(None, description="対象ページのURLパターン")
 
 class ActionParameters(BaseModel):
+    excel_action: Optional[str] = None
+    excel_file_path: Optional[str] = None
+    excel_sheet: Optional[str] = None
+    excel_range: Optional[str] = None
+    excel_value: Optional[object] = None
+    excel_variable_name: Optional[str] = None
+    excel_macro_name: Optional[str] = None
+    browser_action: Optional[str] = Field(None, description="ブラウザアクション種別")
+    browser_url: Optional[str] = Field(None, description="移動先URL")
+    browser_selector: Optional[str] = Field(None, description="要素セレクタ (CSS/XPath)")
+    browser_selector_type: Optional[str] = Field(None, description="セレクタ種別 (css, xpath, text, auto)")
+    browser_value: Optional[object] = Field(None, description="設定値や入力文字")
+    browser_attribute: Optional[str] = Field(None, description="取得対象の属性名")
+    browser_script: Optional[str] = Field(None, description="実行JavaScript")
     target: Optional[UniversalSelector] = None
     destination: Optional[UniversalSelector] = None
     button: Optional[str] = None
@@ -127,6 +145,11 @@ class ActionParameters(BaseModel):
     text: Optional[str] = None
     condition: Optional[str] = None
     timeout_ms: Optional[int] = None
+    loop_count: Optional[int] = Field(None, description='ループの実行回数')
+    loop_variables: Optional[dict] = Field(None, description='ループごとの差分変数（例: {"y_offset": 30, "x_offset": 0}）')
+    sequence_value: Optional[dict] = Field(None, description='連続する値の入力設定（例: {"start": 1, "step": 1}）')
+    excel_cell: Optional[str] = Field(None, description='対象となるExcelのセル番地（例: A1）')
+    excel_dest_cell: Optional[str] = Field(None, description='移動先や範囲指定の対象となるExcelのセル番地')
 
 class WorkflowCommandAction(BaseModel):
     command: str = Field(..., description="システムのルートコマンド (例: MOUSE_CLICK, TYPE_TEXT)")
@@ -182,15 +205,37 @@ class MacroSummary(BaseModel):
     heals: str = Field(..., description="自己修復の発動回数などのテキスト表現")
     heal_level: str = Field(..., description="自己修復のレベル（none, low, mid, high 等）")
     last_run: str = Field(..., description="最終実行日時のフォーマット済み文字列")
+    created_at: str = Field("-", description="作成日時のフォーマット済み文字列")
+    updated_at: str = Field("-", description="最終更新日時のフォーマット済み文字列")
+    created_timestamp: float = Field(0.0, description="作成日時のUnixタイムスタンプ")
+    updated_timestamp: float = Field(0.0, description="最終更新日時のUnixタイムスタンプ")
 
 
 # ====================================================================
 # 6.8. アプリケーション設定用データ構造 (config.json)
 # ====================================================================
 
+DEFAULT_LOCAL_HOST: str = "127.0.0.1"
+DEFAULT_LOCAL_LLM_PORT: str = "8844"
+DEFAULT_LOCAL_CV_PORT: str = "8843"
+DEFAULT_CLOUD_HOST: str = "cloud.aimacro-system.internal"
+DEFAULT_CLOUD_PORT: str = "8843"
+
+
 class AppConfig(BaseModel):
-    ai_mode: str = Field(default='local', description='AIの動作モード（local または cloud）')
-    
+    ai_mode: str = Field(
+        default='local',
+        description='AIの動作モード（local: このパソコン, custom: 社内・自前サーバー, cloud: 公式クラウド）'
+    )
+    custom_server_host: str = Field(
+        default='',
+        description='ユーザーが用意したサーバーのIPアドレスまたはドメイン名'
+    )
+    custom_server_port: str = Field(
+        default='8843',
+        description='ユーザーが用意したサーバーのポート番号'
+    )
+
     llm_host: str = Field(default='127.0.0.1', description='マクロ生成用AI（LLM）の接続先（IPまたはホスト名）')
     llm_port: str = Field(default='8844', description='LLM APIのポート番号')
     
@@ -206,20 +251,24 @@ class AppConfig(BaseModel):
     @field_validator('ai_mode')
     @classmethod
     def validate_ai_mode(cls, v: str) -> str:
-        if v not in ('local', 'cloud'):
-            raise ValueError(f'Invalid ai_mode: {v}')
+        if v not in ('local', 'custom', 'cloud'):
+            raise ValueError(f'無効な接続モードです: {v} (local, custom, cloud のいずれか)')
         return v
 
-    @field_validator('llm_host', 'cv_host', 'vllm_host')
+    @field_validator('llm_host', 'cv_host', 'vllm_host', 'custom_server_host')
     @classmethod
     def sanitize_host(cls, v: str) -> str:
+        if not v:
+            return v
         if not re.match(r'^[a-zA-Z0-9.-]+$', v):
-            raise ValueError(f'Invalid host format: {v}')
+            raise ValueError(f'ホストの形式が正しくありません（英数字、ドット、ハイフンのみ）: {v}')
         return v
 
-    @field_validator('llm_port', 'cv_port', 'vllm_port')
+    @field_validator('llm_port', 'cv_port', 'vllm_port', 'custom_server_port')
     @classmethod
     def validate_port(cls, v: str) -> str:
+        if not v:
+            return v
         if not v.isdigit() or not (1 <= int(v) <= 65535):
-            raise ValueError(f'Invalid port number: {v}')
+            raise ValueError(f'ポート番号は 1 〜 65535 の整数で入力してください: {v}')
         return v

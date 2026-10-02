@@ -1,0 +1,671 @@
+"""Module: @role: ワークフロー内の単一アクションの視認用ブロック表示およびインライン編集フォームのUI制御を担当する。"""
+
+import json
+from pathlib import Path
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QFrame, 
+                               QPushButton, QFormLayout, QSpinBox, QLineEdit, QDoubleSpinBox,
+                               QComboBox, QCheckBox, QFileDialog)
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QDrag, QMouseEvent
+from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
+
+from .image_preview_dialog import ImagePreviewDialog
+
+
+class ActionBlockWidget(QFrame):
+    delete_requested = Signal(int)
+    content_changed = Signal()
+
+    def __init__(self, command: dict, cmd_index: int, workflow_dir: Path, is_in_loop: bool = False, parent=None):
+        super().__init__(parent)
+        self.command = command
+        self.cmd_index = cmd_index
+        self.workflow_dir = workflow_dir
+        self.is_in_loop = is_in_loop
+        
+        self.method = command.get("method", "")
+        self.args = command.get("args", {})
+        
+        self.is_expanded = False
+        self.drag_start_pos = None
+        self.available_vars = {}
+        
+        self.setObjectName("ActionBlock")
+        # Why: ループ内ブロックの左端にアクセントカラーを付与し実行範囲を明瞭化
+        self.setStyleSheet("""
+            #ActionBlock {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+            #ActionBlock:hover {
+                border: 1px solid #0078d4;
+            }
+        """)
+        self.setFixedWidth(480)
+        
+        self._build_ui()
+        
+    def _build_ui(self):
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(16, 16, 16, 16)
+        self.main_layout.setSpacing(12)
+        
+        # 1. ヘッダー（アクション名のみ、削除ボタンは詳細へ移動）
+        header_layout = QHBoxLayout()
+        title_label = QLabel(self._get_title())
+        font = title_label.font()
+        font.setBold(True)
+        font.setPointSize(14)
+        title_label.setFont(font)
+        title_label.setStyleSheet("color: #333333;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        self.main_layout.addLayout(header_layout)
+        
+        # 2. スクリーンショット画像とカーソル合成
+        raw_event_id = self.args.get("raw_event_id")
+        if raw_event_id:
+            img_path = self.workflow_dir / "images" / f"{raw_event_id}_pre.png"
+            if img_path.exists():
+                self.img_label = QLabel()
+                self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+                
+                pixmap = QPixmap(str(img_path))
+                
+                if self.method in ["click", "move"] and "x" in self.args and "y" in self.args:
+                    pixmap = self._draw_cursor_on_pixmap(pixmap, self.args["x"], self.args["y"])
+                
+                self._original_pixmap = pixmap
+                
+                scaled_pixmap = pixmap.scaled(448, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.img_label.setPixmap(scaled_pixmap)
+                self.img_label.setStyleSheet("border: 1px solid #e0e0e0; border-radius: 4px;")
+                self.main_layout.addWidget(self.img_label)
+                
+        # 3. フッター（サマリー情報）
+        self.info_label = QLabel(self._get_info_text())
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet("color: #555555; background-color: #f3f2f1; padding: 8px; border-radius: 4px; font-size: 13px;")
+        if not self.info_label.text():
+            self.info_label.hide()
+        self.main_layout.addWidget(self.info_label)
+        
+        # 4. インライン編集フォーム（初期状態は非表示）
+        self.edit_container = QWidget()
+        # Why: アクションブロック内の入力・メニュー項目の文字色とコントラストを明示固定
+        self.edit_container.setStyleSheet("""
+            QLabel {
+                color: #2b2b2b;
+                font-size: 13px;
+            }
+            QSpinBox, QDoubleSpinBox, QLineEdit {
+                color: #1f2937;
+                background-color: #ffffff;
+                border: 1px solid #c7c7c7;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 13px;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {
+                border: 1px solid #0078d4;
+            }
+            QComboBox {
+                color: #1f2937;
+                background-color: #ffffff;
+                border: 1px solid #c7c7c7;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                border: 1px solid #0078d4;
+            }
+            QComboBox QAbstractItemView {
+                color: #1f2937;
+                background-color: #ffffff;
+                selection-background-color: #0078d4;
+                selection-color: #ffffff;
+                border: 1px solid #c7c7c7;
+            }
+            QCheckBox {
+                color: #2b2b2b;
+                font-size: 13px;
+            }
+        """)
+        self.edit_layout = QFormLayout(self.edit_container)
+        self.edit_layout.setContentsMargins(0, 10, 0, 0)
+        self._build_edit_form()
+        self.edit_container.hide()
+        self.main_layout.addWidget(self.edit_container)
+        
+    def _build_edit_form(self):
+        if "seq_vars" not in self.args:
+            self.args["seq_vars"] = {}
+
+        if self.method in ["click", "move"]:
+            self.x_spin = QSpinBox()
+            self.x_spin.setRange(-9999, 9999)
+            self.x_spin.setValue(self.args.get("x", 0))
+            self.x_spin.valueChanged.connect(lambda v: self._update_arg("x", v))
+            self.edit_layout.addRow("X座標(初期値):", self.x_spin)
+            
+            self.y_spin = QSpinBox()
+            self.y_spin.setRange(-9999, 9999)
+            self.y_spin.setValue(self.args.get("y", 0))
+            self.y_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
+            self.edit_layout.addRow("Y座標(初期値):", self.y_spin)
+            
+            if self.is_in_loop:
+                x_seq = self.args["seq_vars"].setdefault("x", {"step": 0})
+                self.dx_spin = QSpinBox()
+                self.dx_spin.setRange(-999, 999)
+                self.dx_spin.setValue(x_seq.get("step", 0))
+                self.dx_spin.valueChanged.connect(lambda v: self._update_seq_var("x", "step", v))
+                self.edit_layout.addRow("X差分(ループ毎):", self.dx_spin)
+                
+                y_seq = self.args["seq_vars"].setdefault("y", {"step": 0})
+                self.dy_spin = QSpinBox()
+                self.dy_spin.setRange(-999, 999)
+                self.dy_spin.setValue(y_seq.get("step", 0))
+                self.dy_spin.valueChanged.connect(lambda v: self._update_seq_var("y", "step", v))
+                self.edit_layout.addRow("Y差分(ループ毎):", self.dy_spin)
+                
+        elif self.method == "type_text":
+            self.text_edit = QLineEdit(self.args.get("text", ""))
+            self.text_edit.setPlaceholderText("入力テキスト または {{row.列名}}")
+            self.text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
+            text_row = self._create_var_input_row(self.text_edit, "var_combo")
+            self.edit_layout.addRow("テキスト(初期値):", text_row)
+
+            self.clear_check = QCheckBox("入力前に既存テキストを全消去する")
+            self.clear_check.setChecked(bool(self.args.get("clear_before_typing", False)))
+            self.clear_check.toggled.connect(lambda v: self._update_arg("clear_before_typing", v))
+            self.edit_layout.addRow("", self.clear_check)
+
+            self.clip_check = QCheckBox("クリップボード経由で貼り付ける (IME誤作動防止)")
+            self.clip_check.setChecked(bool(self.args.get("use_clipboard", False)))
+            self.clip_check.toggled.connect(lambda v: self._update_arg("use_clipboard", v))
+            self.edit_layout.addRow("", self.clip_check)
+            
+            if self.is_in_loop:
+                text_seq = self.args["seq_vars"].setdefault("text", {"step": 1})
+                self.seq_step_spin = QSpinBox()
+                self.seq_step_spin.setRange(-99999, 99999)
+                self.seq_step_spin.setValue(text_seq.get("step", 1))
+                self.seq_step_spin.valueChanged.connect(lambda v: self._update_seq_var("text", "step", v))
+                self.edit_layout.addRow("テキスト加算(ループ毎):", self.seq_step_spin)
+
+        elif self.method == "loop_start":
+            self.mode_combo = QComboBox()
+            self.mode_combo.addItem("固定回数ループ", "static")
+            self.mode_combo.addItem("Excelデータ連携ループ", "excel")
+            cur_mode = self.args.get("data_source", "static")
+            self.mode_combo.setCurrentIndex(1 if cur_mode == "excel" else 0)
+            self.edit_layout.addRow("ループ種別:", self.mode_combo)
+
+            self.static_widget = QWidget()
+            s_layout = QFormLayout(self.static_widget)
+            s_layout.setContentsMargins(0, 0, 0, 0)
+            self.count_spin = QSpinBox()
+            self.count_spin.setRange(1, 99999)
+            self.count_spin.setValue(self.args.get("loop_count", 1))
+            self.count_spin.valueChanged.connect(lambda v: self._update_arg("loop_count", v))
+            s_layout.addRow("リピート回数:", self.count_spin)
+            self.edit_layout.addRow(self.static_widget)
+
+            self.excel_widget = QWidget()
+            e_layout = QFormLayout(self.excel_widget)
+            e_layout.setContentsMargins(0, 0, 0, 0)
+
+            file_box = QHBoxLayout()
+            self.file_edit = QLineEdit(self.args.get("file_path", ""))
+            self.file_edit.setPlaceholderText("Excelファイルパス...")
+            self.file_edit.textChanged.connect(lambda v: self._update_arg("file_path", v))
+            file_box.addWidget(self.file_edit)
+
+            browse_btn = QPushButton("参照...")
+            browse_btn.setFixedWidth(60)
+            browse_btn.clicked.connect(self._browse_excel_file)
+            file_box.addWidget(browse_btn)
+            e_layout.addRow("Excelファイル:", file_box)
+
+            self.sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
+            self.sheet_edit.setPlaceholderText("空欄でアクティブシート")
+            self.sheet_edit.textChanged.connect(lambda v: self._update_arg("sheet_name", v))
+            e_layout.addRow("シート名:", self.sheet_edit)
+
+            row_box = QHBoxLayout()
+            self.start_row_spin = QSpinBox()
+            self.start_row_spin.setRange(1, 99999)
+            self.start_row_spin.setValue(self.args.get("start_row", 2))
+            self.start_row_spin.valueChanged.connect(lambda v: self._update_arg("start_row", v))
+            row_box.addWidget(QLabel("開始:"))
+            row_box.addWidget(self.start_row_spin)
+
+            self.end_row_spin = QSpinBox()
+            self.end_row_spin.setRange(0, 99999)
+            self.end_row_spin.setValue(self.args.get("end_row") or 0)
+            self.end_row_spin.setSpecialValueText("末尾まで")
+            self.end_row_spin.valueChanged.connect(lambda v: self._update_arg("end_row", v if v > 0 else None))
+            row_box.addWidget(QLabel("終了:"))
+            row_box.addWidget(self.end_row_spin)
+            e_layout.addRow("対象行範囲:", row_box)
+
+            self.status_col_edit = QLineEdit(self.args.get("status_column", "E"))
+            self.status_col_edit.setPlaceholderText("例: E")
+            self.status_col_edit.textChanged.connect(lambda v: self._update_arg("status_column", v.upper()))
+            e_layout.addRow("ステータス記録列:", self.status_col_edit)
+
+            self.skip_check = QCheckBox("完了ステータス済みの行をスキップ")
+            self.skip_check.setChecked(bool(self.args.get("skip_completed", True)))
+            self.skip_check.toggled.connect(lambda v: self._update_arg("skip_completed", v))
+            e_layout.addRow("", self.skip_check)
+
+            self.cont_check = QCheckBox("エラー発生時に中断せず次の行へ継続")
+            self.cont_check.setChecked(bool(self.args.get("continue_on_error", False)))
+            self.cont_check.toggled.connect(lambda v: self._update_arg("continue_on_error", v))
+            e_layout.addRow("", self.cont_check)
+
+            self.edit_layout.addRow(self.excel_widget)
+
+            def _toggle_mode(idx):
+                is_excel = idx == 1
+                self.static_widget.setVisible(not is_excel)
+                self.excel_widget.setVisible(is_excel)
+                self._update_arg("data_source", "excel" if is_excel else "static")
+
+            self.mode_combo.currentIndexChanged.connect(_toggle_mode)
+            _toggle_mode(self.mode_combo.currentIndex())
+                
+        elif self.method == "wait":
+            self.duration_spin = QDoubleSpinBox()
+            self.duration_spin.setRange(0.1, 3600.0)
+            self.duration_spin.setValue(self.args.get("duration", 1.0))
+            self.duration_spin.valueChanged.connect(lambda v: self._update_arg("duration", v))
+            self.edit_layout.addRow("待機(秒):", self.duration_spin)
+            
+        elif self.method == "scroll":
+            self.dy_spin = QDoubleSpinBox()
+            self.dy_spin.setRange(-100.0, 100.0)
+            self.dy_spin.setValue(self.args.get("dy", -5.0))
+            self.dy_spin.valueChanged.connect(lambda v: self._update_arg("dy", v))
+            self.edit_layout.addRow("垂直スクロール量(dy):", self.dy_spin)
+            
+            self.sx_spin = QSpinBox()
+            self.sx_spin.setRange(-9999, 9999)
+            self.sx_spin.setValue(self.args.get("x", 0))
+            self.sx_spin.valueChanged.connect(lambda v: self._update_arg("x", v))
+            self.edit_layout.addRow("X座標:", self.sx_spin)
+            
+            self.sy_spin = QSpinBox()
+            self.sy_spin.setRange(-9999, 9999)
+            self.sy_spin.setValue(self.args.get("y", 0))
+            self.sy_spin.valueChanged.connect(lambda v: self._update_arg("y", v))
+            self.edit_layout.addRow("Y座標:", self.sy_spin)
+
+        elif self.method == "press_key":
+            self.key_edit = QLineEdit(self.args.get("key", ""))
+            self.key_edit.textChanged.connect(lambda v: self._update_arg("key", v))
+            self.edit_layout.addRow("キー名:", self.key_edit)
+
+        elif self.method == "activate_window":
+            self.win_edit = QLineEdit(self.args.get("window_title", ""))
+            self.win_edit.textChanged.connect(lambda v: self._update_arg("window_title", v))
+            self.edit_layout.addRow("ウィンドウ名:", self.win_edit)
+
+        elif self.method == "browser_action":
+            cur_act = self.args.get("action", "open_url")
+            if cur_act == "open_url":
+                self.b_url_edit = QLineEdit(self.args.get("url", ""))
+                self.b_url_edit.setPlaceholderText("https://example.com")
+                self.b_url_edit.textChanged.connect(lambda v: self._update_arg("url", v))
+                self.edit_layout.addRow("URL:", self.b_url_edit)
+            elif cur_act in ["click_element", "wait_element"]:
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+            elif cur_act == "type_text":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                self.b_text_edit = QLineEdit(self.args.get("text", ""))
+                self.b_text_edit.setPlaceholderText("入力テキスト または {{row.列名}}")
+                self.b_text_edit.textChanged.connect(lambda v: self._update_arg("text", v))
+                b_text_row = self._create_var_input_row(self.b_text_edit, "b_var_combo")
+                self.edit_layout.addRow("入力テキスト:", b_text_row)
+
+            elif cur_act == "select_option":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ (例: #plan)")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                self.b_opt_edit = QLineEdit(str(self.args.get("value") or self.args.get("text", "")))
+                self.b_opt_edit.setPlaceholderText("選択項目名 または {{row.列名}}")
+                self.b_opt_edit.textChanged.connect(lambda v: (self._update_arg("value", v), self._update_arg("text", v)))
+                b_opt_row = self._create_var_input_row(self.b_opt_edit, "b_opt_var_combo")
+                self.edit_layout.addRow("選択する値:", b_opt_row)
+
+            elif cur_act == "set_checkbox":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ (例: #newsletter)")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                self.b_chk_edit = QLineEdit(str(self.args.get("value", True)))
+                self.b_chk_edit.setPlaceholderText("True / False または {{row.列名}}")
+                self.b_chk_edit.textChanged.connect(lambda v: self._update_arg("value", v))
+                b_chk_row = self._create_var_input_row(self.b_chk_edit, "b_chk_var_combo")
+                self.edit_layout.addRow("チェック状態:", b_chk_row)
+            elif cur_act == "read_text":
+                self.b_sel_edit = QLineEdit(self.args.get("selector", ""))
+                self.b_sel_edit.setPlaceholderText("CSSセレクタ または XPath")
+                self.b_sel_edit.textChanged.connect(lambda v: self._update_arg("selector", v))
+                self.edit_layout.addRow("対象セレクタ:", self.b_sel_edit)
+
+                self.b_var_edit = QLineEdit(self.args.get("variable_name", "extracted_val"))
+                self.b_var_edit.setPlaceholderText("格納変数名")
+                self.b_var_edit.textChanged.connect(lambda v: self._update_arg("variable_name", v))
+                self.edit_layout.addRow("格納変数名:", self.b_var_edit)
+
+        elif self.method == "excel_action":
+            cur_act = self.args.get("action", "write_cell")
+            if cur_act in ["open_workbook", "write_cell", "read_cell"]:
+                e_file_box = QHBoxLayout()
+                self.e_file_edit = QLineEdit(self.args.get("file_path", ""))
+                self.e_file_edit.setPlaceholderText("Excelファイルパス（空欄で現在のアクティブブック）")
+                self.e_file_edit.textChanged.connect(lambda v: self._update_arg("file_path", v))
+                e_file_box.addWidget(self.e_file_edit)
+
+                e_browse_btn = QPushButton("参照...")
+                e_browse_btn.setFixedWidth(60)
+                e_browse_btn.clicked.connect(self._browse_excel_file_for_action)
+                e_file_box.addWidget(e_browse_btn)
+                self.edit_layout.addRow("Excelファイル:", e_file_box)
+
+            if cur_act in ["write_cell", "read_cell", "select_sheet"]:
+                self.e_sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
+                self.e_sheet_edit.setPlaceholderText("空欄でアクティブシート")
+                self.e_sheet_edit.textChanged.connect(lambda v: self._update_arg("sheet_name", v))
+                self.edit_layout.addRow("シート名:", self.e_sheet_edit)
+
+            if cur_act in ["write_cell", "read_cell"]:
+                self.e_cell_edit = QLineEdit(self.args.get("cell", ""))
+                self.e_cell_edit.setPlaceholderText("例: A1")
+                self.e_cell_edit.textChanged.connect(lambda v: self._update_arg("cell", v))
+                self.edit_layout.addRow("セル番地:", self.e_cell_edit)
+
+            if cur_act == "write_cell":
+                self.e_val_edit = QLineEdit(str(self.args.get("value", "")))
+                self.e_val_edit.setPlaceholderText("書き込む値 または {{row.列名}}")
+                self.e_val_edit.textChanged.connect(lambda v: self._update_arg("value", v))
+                e_val_row = self._create_var_input_row(self.e_val_edit, "e_val_var_combo")
+                self.edit_layout.addRow("書き込み値:", e_val_row)
+            elif cur_act == "read_cell":
+                self.e_var_edit = QLineEdit(self.args.get("variable_name", "cell_val"))
+                self.e_var_edit.setPlaceholderText("格納変数名")
+                self.e_var_edit.textChanged.connect(lambda v: self._update_arg("variable_name", v))
+                self.edit_layout.addRow("格納変数名:", self.e_var_edit)
+
+        # 詳細フォーム内に削除ボタンを配置
+        delete_btn = QPushButton("このアクションを削除")
+        delete_btn.setStyleSheet("QPushButton { color: #d13438; font-weight: bold; padding: 4px; }")
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(self.cmd_index))
+        self.edit_layout.addRow("", delete_btn)
+
+    def _update_arg(self, key, value):
+        self.args[key] = value
+        self.info_label.setText(self._get_info_text())
+        self.content_changed.emit()
+        
+    def _create_var_input_row(self, line_edit: QLineEdit, combo_attr_name: str) -> QHBoxLayout:
+        # Why: 入力欄・変数選択コンボ・参照ボタンを水平統合し統一的UIを提供
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        row.addWidget(line_edit)
+
+        combo = QComboBox()
+        combo.setFixedWidth(140)
+        combo.view().setMinimumWidth(280)
+        setattr(self, combo_attr_name, combo)
+        self._populate_var_combo_widget(combo)
+        combo.currentIndexChanged.connect(lambda idx: self._on_var_selected_for_edit(combo, line_edit, idx))
+        row.addWidget(combo)
+
+        pick_btn = QPushButton("📂")
+        pick_btn.setFixedWidth(28)
+        pick_btn.setToolTip("Excelファイルを開いて列変数を読み込む")
+        pick_btn.clicked.connect(self._open_excel_column_picker)
+        row.addWidget(pick_btn)
+        return row
+
+    def set_available_variables(self, var_map: dict):
+        # Why: キャンバスまたはExcelファイルから渡された実際の列ヘッダー情報を全コンボボックスへ反映
+        self.available_vars = var_map or {}
+        for combo_name in ['var_combo', 'b_var_combo', 'b_opt_var_combo', 'b_chk_var_combo', 'e_val_var_combo']:
+            if hasattr(self, combo_name):
+                self._populate_var_combo_widget(getattr(self, combo_name))
+
+    def _populate_var_combo_widget(self, combo: QComboBox):
+        # Why: ヘッダー名優先セクションと列記号優先セクションを明瞭に分離し選択性を最大化
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("+ 変数を挿入...", "")
+        vars_dict = getattr(self, 'available_vars', {})
+        if vars_dict:
+            combo.addItem("── 【ヘッダー名で選択】 ──", "")
+            for col_key, col_name in vars_dict.items():
+                clean_name = str(col_name).strip()
+                combo.addItem(f"🏷️ {clean_name}  ({col_key}列)", f"{{{{row.{clean_name}}}}}")
+
+            combo.addItem("── 【列記号で選択】 ──", "")
+            for col_key, col_name in vars_dict.items():
+                clean_name = str(col_name).strip()
+                combo.addItem(f"🔤 {col_key}列  ({clean_name})", f"{{{{row.{col_key}}}}}")
+        else:
+            combo.addItem("(Excel未読込: 📂から選択)", "")
+        combo.blockSignals(False)
+
+    def _open_excel_column_picker(self):
+        # Why: ユーザーが任意のExcelファイルを選択して即座に列ヘッダーを読み込み変数へ反映
+        from .loop_widgets import get_excel_columns_map
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "列を読み込むExcelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if fp:
+            cols_map = get_excel_columns_map(fp, base_dir=self.workflow_dir)
+            if cols_map:
+                self.set_available_variables(cols_map)
+                self.content_changed.emit()
+
+    def _populate_var_combo(self):
+        if hasattr(self, 'var_combo'):
+            self._populate_var_combo_widget(self.var_combo)
+
+    def _on_var_selected_for_edit(self, combo: QComboBox, target_edit: QLineEdit, idx: int):
+        if idx <= 0:
+            return
+        var_text = combo.itemData(idx)
+        if not var_text:
+            combo.setCurrentIndex(0)
+            return
+        if target_edit:
+            # Why: カーソル位置への挿入により固定文言と変数の自由な組み合わせを可能化
+            if target_edit.text():
+                target_edit.insert(var_text)
+            else:
+                target_edit.setText(var_text)
+            target_edit.setFocus()
+        combo.setCurrentIndex(0)
+
+    def _on_var_selected(self, idx):
+        if hasattr(self, 'var_combo') and hasattr(self, 'text_edit'):
+            self._on_var_selected_for_edit(self.var_combo, self.text_edit, idx)
+
+    def _browse_excel_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Excelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if file_path:
+            self.file_edit.setText(file_path)
+            self._update_arg("file_path", file_path)
+
+    def _browse_excel_file_for_action(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Excelファイルを選択", str(self.workflow_dir), "Excel Files (*.xlsx *.xls *.xlsm);;All Files (*.*)"
+        )
+        if file_path:
+            self.e_file_edit.setText(file_path)
+            self._update_arg("file_path", file_path)
+
+    def _update_seq_var(self, target_key, param_key, value):
+        if "seq_vars" not in self.args:
+            self.args["seq_vars"] = {}
+        if target_key not in self.args["seq_vars"]:
+            self.args["seq_vars"][target_key] = {}
+        self.args["seq_vars"][target_key][param_key] = value
+        self.content_changed.emit()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self.drag_start_pos:
+            return
+        if (event.pos() - self.drag_start_pos).manhattanLength() > 10:
+            drag = QDrag(self)
+            mime_data = QMimeData()
+            mime_data.setText(f"action_block:{self.cmd_index}")
+            drag.setMimeData(mime_data)
+            drag.exec_(Qt.DropAction.MoveAction)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and self.drag_start_pos:
+            if (event.pos() - self.drag_start_pos).manhattanLength() <= 10:
+                if hasattr(self, 'img_label') and self.img_label.geometry().contains(event.pos()):
+                    self._show_image_preview()
+                else:
+                    self.is_expanded = not self.is_expanded
+                    self.edit_container.setVisible(self.is_expanded)
+        self.drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _show_image_preview(self):
+        if hasattr(self, '_original_pixmap'):
+            dialog = ImagePreviewDialog(self._original_pixmap, self)
+            dialog.exec()
+
+    def _get_title(self) -> str:
+        if self.method == "loop_start" and self.args.get("data_source") == "excel":
+            return "Excelデータ連携ループ"
+        if self.method == "browser_action":
+            b_act = self.args.get("action", "")
+            b_map = {
+                "open_url": "ブラウザ: URLを開く", "click_element": "ブラウザ: 要素クリック",
+                "type_text": "ブラウザ: テキスト入力", "select_option": "ブラウザ: リスト選択",
+                "set_checkbox": "ブラウザ: チェックボックス", "read_text": "ブラウザ: テキスト取得",
+                "wait_element": "ブラウザ: 要素待機", "close_tab": "ブラウザ: タブを閉じる",
+                "switch_tab": "ブラウザ: タブ切り替え"
+            }
+            return b_map.get(b_act, "ブラウザ操作")
+        if self.method == "excel_action":
+            e_act = self.args.get("action", "")
+            e_map = {
+                "open_workbook": "Excel: ブックを開く", "save_workbook": "Excel: ブックを保存",
+                "close_workbook": "Excel: ブックを閉じる", "write_cell": "Excel: セル書き込み",
+                "read_cell": "Excel: セル読み取り", "select_sheet": "Excel: シート選択"
+            }
+            return e_map.get(e_act, "Excel操作")
+        method_map = {
+            "click": "クリック", "move": "マウス移動", "type_text": "テキスト入力",
+            "press_key": "キー入力", "wait": "待機", "scroll": "スクロール", 
+            "activate_window": "ウィンドウアクティブ化", "loop_start": "ループ開始", "loop_end": "ループ終了"
+        }
+        return method_map.get(self.method, self.method)
+        
+    def _get_info_text(self) -> str:
+        if self.method == "click":
+            name = self.args.get("element_name", "")
+            btn = "左" if self.args.get("button") == "left" else "右"
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"対象: {name} | {btn}クリック {coords}" if name else f"{btn}クリック {coords}"
+        elif self.method == "move":
+            name = self.args.get("element_name", "")
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"ホバー対象: {name} {coords}" if name else f"カーソル移動 {coords}"
+        elif self.method == "scroll":
+            dy = self.args.get("dy", 0.0)
+            direction = "下スクロール" if dy < 0 else "上スクロール"
+            coords = f"({self.args.get('x', 0)}, {self.args.get('y', 0)})"
+            return f"{direction}: {abs(dy)} {coords}"
+        elif self.method == "type_text":
+            info = f"入力内容: {self.args.get('text', '')}"
+            flags = []
+            if self.args.get("clear_before_typing"):
+                flags.append("クリア有")
+            if self.args.get("use_clipboard"):
+                flags.append("貼付")
+            return f"{info} ({', '.join(flags)})" if flags else info
+        elif self.method == "press_key":
+            return f"キー: {self.args.get('key', '')}"
+        elif self.method == "wait":
+            return f"待機時間: {self.args.get('duration', 0)} 秒"
+        elif self.method == "activate_window":
+            return f"対象: {self.args.get('window_title', '')}"
+        elif self.method == "browser_action":
+            b_act = self.args.get("action", "")
+            elem = self.args.get("element_name") or self.args.get("selector") or ""
+            target_url = self.args.get("url", "")
+            if b_act == "open_url":
+                return f"URL: {target_url}"
+            elif b_act == "click_element":
+                url_extra = f" ({target_url})" if target_url else ""
+                return f"対象: {elem}{url_extra}" if elem else f"URLクリック: {target_url}"
+            elif b_act == "type_text":
+                return f"対象: {elem} | 入力: {self.args.get('text', '')}"
+            elif b_act == "select_option":
+                return f"対象: {elem} | 選択値: {self.args.get('value') or self.args.get('text', '')}"
+            elif b_act == "set_checkbox":
+                val = self.args.get("value", True)
+                return f"対象: {elem} | 状態: {'ON' if val in [True, 'True', 'true'] else 'OFF'}"
+            elif b_act == "read_text":
+                return f"対象: {elem} | 変数: {self.args.get('variable_name', '')}"
+            return f"操作: {b_act}"
+        elif self.method == "excel_action":
+            e_act = self.args.get("action", "")
+            cell = self.args.get("cell", "")
+            val = self.args.get("value", "")
+            if e_act == "write_cell":
+                return f"セル: {cell} | 書込値: {val}"
+            elif e_act == "read_cell":
+                return f"セル: {cell} | 変数名: {self.args.get('variable_name', '')}"
+            f_name = Path(self.args.get("file_path", "")).name if self.args.get("file_path") else "-"
+            return f"操作: {e_act} | ファイル: {f_name}"
+        elif self.method == "loop_start":
+            if self.args.get("data_source") == "excel":
+                f_name = Path(self.args.get("file_path", "")).name if self.args.get("file_path") else "未選択"
+                st_col = self.args.get("status_column") or "-"
+                return f"Excel: {f_name} | ステータス列: {st_col}"
+            return f"回数: {self.args.get('loop_count', 1)} 回"
+        return ""
+        
+    def _draw_cursor_on_pixmap(self, pixmap: QPixmap, x: int, y: int) -> QPixmap:
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(255, 0, 0, 200), 4)
+        painter.setPen(pen)
+        painter.setBrush(QColor(255, 0, 0, 80))
+        radius = 24
+        painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
+        painter.drawLine(x - radius - 10, y, x + radius + 10, y)
+        painter.drawLine(x, y - radius - 10, x, y + radius + 10)
+        painter.end()
+        return pixmap

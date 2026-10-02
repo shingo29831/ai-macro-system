@@ -6,14 +6,32 @@ import threading
 import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
-from core.recorder.event_processor import enqueue_key_event, process_scroll_event
+from core.recorder.event_processor import enqueue_key_event
 from core.recorder.ime_detector import is_ime_active
 from core.recorder.romaji_converter import to_hiragana
+from core.executor.os_env_controller import set_system_cursor
 
 logger = logging.getLogger(__name__)
 
 MIN_DISTANCE_FOR_VECTOR = 40
 CORNER_ANGLE_THRESHOLD = 20
+
+_hover_timer = None
+_hover_timer_lock = threading.Lock()
+
+def _cancel_hover_timer():
+    global _hover_timer
+    with _hover_timer_lock:
+        if _hover_timer is not None:
+            _hover_timer.cancel()
+            _hover_timer = None
+
+def _on_hover_timeout(hx: int, hy: int):
+    if not state.is_recording or state.is_stopping:
+        return
+    # Why: マウス静止によるドロップダウンメニュー等の展開をホバーとして記録
+    state.mouse_event_queue.put({"type": "hover", "x": hx, "y": hy})
+    logger.debug("Hover event emitted at (%d, %d)", hx, hy)
 
 def _trigger_field_search(trigger_reason: str):
     buffer = getattr(state, "typing_buffer", "")
@@ -41,6 +59,15 @@ def on_move(x, y):
     if not state.is_recording or state.is_stopping: return
     current_time = time.time()
     
+    global _hover_timer
+    with _hover_timer_lock:
+        if _hover_timer is not None:
+            _hover_timer.cancel()
+        # Why: ドロップダウン等の素早いホバー通過(120ms)を逃さず確実に捕捉
+        _hover_timer = threading.Timer(0.12, _on_hover_timeout, args=(int(x), int(y)))
+        _hover_timer.daemon = True
+        _hover_timer.start()
+
     if not state.mouse_path:
         state.mouse_path.append((x, y, current_time))
     else:
@@ -59,21 +86,27 @@ def on_move(x, y):
                 state.mouse_path.pop(0)
 
 def on_click(x, y, button, pressed):
+    _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: return
-    
-    # 追加: マウスクリック時（別のUI要素にフォーカスが移ったとみなす）にタイピング状態を確定する
+
+    # Why: フックコールバック内の同期処理をゼロにし、マウスアップ消失による照準固定を根絶
     if pressed:
         _flush_typing_buffer("mouse_clicked")
-        
+
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
 def on_scroll(x, y, dx, dy):
+    _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
+    # Why: Windowsネイティブスクロールフック有効時の二重記録を完全排除
+    if getattr(state, "native_scroll_hook_active", False):
+        return
     try: 
-        # 引数を辞書型(dict)にまとめて process_scroll_event を呼び出すように修正
-        process_scroll_event({
+        # Why: マウスイベントキューに完全統合しクリックや移動との時系列順序を完全保証
+        state.mouse_event_queue.put({
+            "type": "scroll",
             "x": int(x),
             "y": int(y),
             "dx": float(dx),
@@ -84,6 +117,7 @@ def on_scroll(x, y, dx, dy):
         logger.exception("スクロールイベントの記録に失敗しました")
 
 def on_press(key):
+    _cancel_hover_timer()
     state.cancel_hover()
     if not state.is_recording or state.is_stopping: 
         return False
@@ -128,6 +162,10 @@ def on_press(key):
 
     try:
         with state.pressed_keys_lock:
+            # Why: フォーカス遷移等で消失した古い機能キーの残骸を除去し誤コンボを防止
+            if key_text not in MODIFIER_KEYS:
+                for stale_k in ["tab", "enter", "space", "esc"]:
+                    state.pressed_keys.discard(stale_k)
             state.pressed_keys.add(key_text)
             current_keys = set(state.pressed_keys)
 

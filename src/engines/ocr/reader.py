@@ -15,10 +15,11 @@ def read_text_from_image(image_path: str, max_retries: int = 3) -> List[TextAnal
     url = f"http://{config.cv_host}:{config.cv_port}/api/v1/ocr/read"
     payload = {"image_path": image_path}
     
-    for attempt in range(max_retries):
+    # Why: 過剰なタイムアウト(180秒)による生成パイプラインの停止を防止し5秒で安全解決
+    for attempt in range(2):
         try:
-            logger.info(f"Requesting OCR reading (Attempt {attempt + 1}/{max_retries}) for {image_path}")
-            response = requests.post(url, json=payload, timeout=180.0)
+            logger.info(f"Requesting OCR reading (Attempt {attempt + 1}/2) for {image_path}")
+            response = requests.post(url, json=payload, timeout=5.0)
             response.raise_for_status()
             
             data = response.json()
@@ -29,10 +30,8 @@ def read_text_from_image(image_path: str, max_retries: int = 3) -> List[TextAnal
             
         except requests.exceptions.RequestException as e:
             logger.warning(f"OCR API request failed: {e}")
-            if attempt == max_retries - 1:
-                logger.error("Max retries reached for OCR API. Returning empty list.")
-                # ログ解析プロセス全体を落とさないためのフォールバック処理
-                return []
-            time.sleep(2 ** attempt)
+            if isinstance(e, requests.exceptions.ConnectionError):
+                break
+            time.sleep(0.5)
     
     return []

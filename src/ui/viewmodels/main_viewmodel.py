@@ -23,6 +23,8 @@ class MainViewModel(QObject):
     generation_progress = Signal(int, str)
     generation_finished = Signal(bool, str)
     recording_stopped_by_shortcut = Signal()
+    recording_error = Signal(str)
+    execution_error = Signal(str)
     
     _internal_shortcut_signal = Signal()
     _internal_status_signal = Signal(str, bool) # 自己修復UI通知用シグナル
@@ -54,6 +56,9 @@ class MainViewModel(QObject):
             logger.error(f"Failed to update running dialog status: {e}")
 
     def load_macros(self):
+        import re
+        from datetime import datetime
+
         try:
             from core.recorder.screen_capturer import get_macros_root
             macros_root = get_macros_root()
@@ -63,29 +68,50 @@ class MainViewModel(QObject):
         
         macros = []
         self._macro_id_map.clear()
+
+        # 数値混在文字列を人間が自然に感じる順序(1, 2, 10)で整列
+        def natural_sort_key(s: str):
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(s))]
         
         try:
             if macros_root.exists() and macros_root.is_dir():
-                for wf_dir in sorted(macros_root.glob("wf_*")):
-                    if not wf_dir.is_dir():
-                        continue
-                    
+                macro_dirs = [d for d in macros_root.glob("wf_*") if d.is_dir()]
+                macro_dirs.sort(key=lambda d: natural_sort_key(d.name))
+
+                for wf_dir in macro_dirs:
                     workflow_id = wf_dir.name
-                    macro_name = f"マクロ {workflow_id}"
+                    # 非ITユーザーが直感的に識別できるよう「マクロ 1」形式で表記
+                    if workflow_id.startswith("wf_") and workflow_id[3:].isdigit():
+                        macro_name = f"マクロ {workflow_id[3:]}"
+                    else:
+                        macro_name = f"マクロ {workflow_id}"
                     
+                    if macro_name in self._macro_id_map:
+                        macro_name = f"マクロ {workflow_id}"
+
+                    stat = wf_dir.stat()
+                    created_ts = getattr(stat, 'st_birthtime', stat.st_ctime)
+                    updated_ts = stat.st_mtime
+
+                    # フォルダ内重要ファイルの最新更新日時を反映
+                    for f_name in ("executable_macro.json", "workflow.json", "integrated.json"):
+                        target_file = wf_dir / f_name
+                        if target_file.exists():
+                            try:
+                                f_mtime = target_file.stat().st_mtime
+                                if f_mtime > updated_ts:
+                                    updated_ts = f_mtime
+                            except OSError:
+                                pass
+
+                    created_at_str = datetime.fromtimestamp(created_ts).strftime("%Y/%m/%d %H:%M")
+                    updated_at_str = datetime.fromtimestamp(updated_ts).strftime("%Y/%m/%d %H:%M")
+
                     status = 'success'
                     status_text = '待機中'
                     heals = '0回'
                     heal_level = 'none'
                     last_run = '-'
-                    
-                    integrated_json = wf_dir / "integrated.json"
-                    if integrated_json.exists():
-                        try:
-                            with open(integrated_json, "r", encoding="utf-8") as f:
-                                pass
-                        except Exception as json_err:
-                            logger.warning(f"Failed to parse integrated.json for metadata in {workflow_id}: {json_err}")
                     
                     self._macro_id_map[macro_name] = workflow_id
                     
@@ -95,14 +121,56 @@ class MainViewModel(QObject):
                         status_text=status_text,
                         heals=heals,
                         heal_level=heal_level,
-                        last_run=last_run
+                        last_run=last_run,
+                        created_at=created_at_str,
+                        updated_at=updated_at_str,
+                        created_timestamp=created_ts,
+                        updated_timestamp=updated_ts
                     ))
             
+            # 初期一覧は直近で作業したものが上位に来る更新順降順
+            macros.sort(key=lambda m: m.updated_timestamp, reverse=True)
             self.macros_updated.emit(macros)
             logger.info(f"Successfully loaded {len(macros)} macros from storage.")
         except Exception as e:
             logger.error(f'Failed to load macros from directory structure: {e}')
             raise
+
+    def load_macro_commands(self, macro_name: str) -> list[dict]:
+        workflow_id = self._macro_id_map.get(macro_name)
+        if not workflow_id:
+            raise ValueError(f"Macro not found: {macro_name}")
+            
+        from core.recorder.screen_capturer import get_macros_root
+        macros_root = get_macros_root()
+        macro_file = macros_root / workflow_id / "executable_macro.json"
+        
+        if not macro_file.exists():
+            return []
+            
+        with open(macro_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("commands", [])
+
+    def save_macro_commands(self, macro_name: str, commands: list[dict]):
+        workflow_id = self._macro_id_map.get(macro_name)
+        if not workflow_id:
+            raise ValueError(f"Macro not found: {macro_name}")
+            
+        from core.recorder.screen_capturer import get_macros_root
+        macros_root = get_macros_root()
+        macro_file = macros_root / workflow_id / "executable_macro.json"
+        
+        if macro_file.exists():
+            with open(macro_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {"macro_id": workflow_id, "target_application": "auto_generated"}
+            
+        data["commands"] = commands
+        
+        with open(macro_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
     @Slot()
     def start_recording(self):
@@ -110,7 +178,9 @@ class MainViewModel(QObject):
             logger.info("Starting macro recording...")
             os_hook.start_recording()
         except Exception as e:
-            logger.error(f"Failed to start recording: {e}")
+            err_msg = f"記録開始に失敗しました: {e}"
+            logger.error(err_msg, exc_info=True)
+            self.recording_error.emit(err_msg)
             raise
 
     @Slot()
@@ -156,7 +226,6 @@ class MainViewModel(QObject):
                         def check_cancel() -> bool:
                             return self._cancel_requested
                         
-                        # 修正箇所: cfg=app_config というキーワード引数指定を削除し、位置引数に戻しました
                         log_integrator.generate_macro_workflow(
                             workflow_id, 
                             app_config, 
@@ -178,8 +247,12 @@ class MainViewModel(QObject):
                     logger.warning(f"Background macro generation cancelled.")
                     self.generation_finished.emit(False, "キャンセルされました")
                 except Exception as gen_err:
+                    import traceback
+                    tb_str = traceback.format_exc()
                     err_msg = str(gen_err)
-                    logger.error(f"Unhandled exception during background macro generation: {err_msg}")
+                    detail_err = f"{type(gen_err).__name__}: {gen_err}\n\n【詳細スタックトレース】\n{tb_str}"
+                    logger.error(f"Unhandled exception during background macro generation: {detail_err}")
+                    self.recording_error.emit(detail_err)
                     self.generation_finished.emit(False, err_msg)
                 finally:
                     self._is_stopping = False
@@ -204,8 +277,8 @@ class MainViewModel(QObject):
         self._selected_macro = macro_name if macro_name else None
         self.can_run_changed.emit(self._selected_macro is not None)
 
-    @Slot()
-    def run_selected_macro(self):
+    @Slot(list)
+    def run_selected_macro(self, temp_commands: list[dict] = None):
         if not self._selected_macro:
             logger.warning('Run requested but no macro is selected.')
             return
@@ -223,17 +296,50 @@ class MainViewModel(QObject):
             def status_cb(text: str, is_healing: bool):
                 self._internal_status_signal.emit(text, is_healing)
             
-            def background_execution(cfg: AppConfig):
-                try:
-                    runner.run_workflow(workflow_id, cfg, status_callback=status_cb)
-                    logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
-                except Exception as exec_err:
-                    logger.error(f"Exception occurred during pipeline execution for {workflow_id}: {exec_err}")
-                finally:
-                    self.load_macros()
+            def background_execution(cfg: AppConfig, cmds: list[dict] = None):
+                freeze_handled = threading.Event()
+
+                def on_freeze_detected(step_info: str, elapsed: float, stack_trace: str):
+                    if freeze_handled.is_set():
+                        return
+                    freeze_handled.set()
+                    
+                    err_msg = (
+                        f"マクロ実行の無応答（フリーズ）を検知したため強制終了しました ({elapsed:.1f}秒タイムアウト)。\n\n"
+                        f"【発生箇所】\n{step_info}\n\n"
+                        f"【フリーズ発生時のスタックトレース（原因箇所）】\n{stack_trace}"
+                    )
+                    status_cb("フリーズ検知により強制終了", True)
+                    self.execution_error.emit(err_msg)
                     self.execution_finished.emit()
+
+                try:
+                    runner.run_workflow(
+                        workflow_id,
+                        cfg,
+                        status_callback=status_cb,
+                        temp_commands=cmds,
+                        on_freeze_callback=on_freeze_detected
+                    )
+                    logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
+                except runner.WorkflowStoppedException as stop_err:
+                    logger.warning(f"Macro execution stopped by user: {stop_err}")
+                except runner.WorkflowFreezeException:
+                    pass
+                except Exception as exec_err:
+                    if not freeze_handled.is_set():
+                        import traceback
+                        tb_str = traceback.format_exc()
+                        err_msg = f"{type(exec_err).__name__}: {exec_err}\n\n【詳細スタックトレース】\n{tb_str}"
+                        logger.error(f"Exception occurred during pipeline execution for {workflow_id}:\n{tb_str}")
+                        status_cb(f"エラー: {exec_err}", True)
+                        self.execution_error.emit(err_msg)
+                finally:
+                    if not freeze_handled.is_set():
+                        self.load_macros()
+                        self.execution_finished.emit()
             
-            exec_thread = threading.Thread(target=background_execution, args=(app_config,), daemon=True)
+            exec_thread = threading.Thread(target=background_execution, args=(app_config, temp_commands), daemon=True)
             exec_thread.start()
             
         except Exception as e:
@@ -244,24 +350,36 @@ class MainViewModel(QObject):
     def delete_macro(self, macro_name: str):
         if not macro_name:
             return
-            
-        workflow_id = self._macro_id_map.get(macro_name)
-        if not workflow_id:
-            logger.warning(f'Delete requested, but tracking map does not macro: {macro_name}')
+        self.delete_macros([macro_name])
+
+    @Slot(list)
+    def delete_macros(self, macro_names: list[str]):
+        """複数のマクロを一括で完全に削除する。"""
+        if not macro_names:
             return
-            
+
         try:
-            logger.info(f'Deleting macro: {macro_name} (Target ID: {workflow_id})')
-            
             from core.recorder.screen_capturer import get_macros_root
             macros_root = get_macros_root()
-            target_dir = macros_root / workflow_id
-            
-            if target_dir.exists() and target_dir.is_dir():
-                shutil.rmtree(target_dir)
-                logger.info(f"Physically deleted macro directory tree: {target_dir}")
-            
-            self.load_macros()
         except Exception as e:
-            logger.error(f'Failed to delete macro {macro_name} from workspace: {e}')
-            raise
+            logger.warning(f"Failed to call get_macros_root: {e}")
+            macros_root = Path(__file__).resolve().parent / "../../../macros"
+
+        deleted_count = 0
+        for macro_name in macro_names:
+            workflow_id = self._macro_id_map.get(macro_name)
+            if not workflow_id:
+                logger.warning(f'Delete requested, but tracking map does not contain macro: {macro_name}')
+                continue
+
+            try:
+                target_dir = macros_root / workflow_id
+                if target_dir.exists() and target_dir.is_dir():
+                    shutil.rmtree(target_dir)
+                    deleted_count += 1
+                    logger.info(f"Physically deleted macro directory tree: {target_dir}")
+            except Exception as e:
+                logger.error(f'Failed to delete macro {macro_name} from workspace: {e}')
+
+        logger.info(f"Successfully deleted {deleted_count} macros from storage.")
+        self.load_macros()

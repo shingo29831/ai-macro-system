@@ -31,7 +31,7 @@ class RecorderState:
         
         self.pending_click_event = None
         self.pending_click_timer = None
-        self.pending_click_lock = threading.Lock()
+        self.pending_click_lock = threading.RLock()
         
         self.key_event_queue = queue.Queue()
         self.key_worker_thread = None
