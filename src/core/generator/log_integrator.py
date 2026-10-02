@@ -66,15 +66,15 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 continue
 
             fut_type = str(next_non_move.get("Type", "")).lower()
-            diff_str = entry.get("Images", {}).get("Diff", "0.0%")
-            diff_val = 0.0
-            try:
-                diff_val = float(str(diff_str).replace("%", ""))
-            except Exception:
-                pass
 
             if "click" in fut_type or "drag" in fut_type:
-                # Why: クリック対象への手ブレ移動のみ除外し離れた位置でのメニュー展開ホバーは完全保護
+                # Why: 直前が既にmoveなら過渡移動として即除外。起点ホバーかつメニュー要素のみ保護
+                prev_entry = valid_candidates[i - 1] if i > 0 else {}
+                prev_type = str(prev_entry.get("Type", "")).lower()
+                if "move" in prev_type or "hover" in prev_type:
+                    i += 1
+                    continue
+
                 m_coords = entry.get("Content", {}).get("screen_coordinates") or entry.get("CursorCoordinates") or {}
                 c_coords = next_non_move.get("Content", {}).get("screen_coordinates") or next_non_move.get("CursorCoordinates") or {}
                 mx, my = m_coords.get("x", 0), m_coords.get("y", 0)
@@ -85,16 +85,23 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 c_ctx = next_non_move.get("AppSpecificContext") or {}
                 m_elem = str(m_ctx.get("element_name") or "").strip()
                 c_elem = str(c_ctx.get("element_name") or "").strip()
+                m_sel = str(m_ctx.get("css_selector") or "").lower()
 
-                is_same_target = (dist <= 25) or (m_elem and c_elem and m_elem == c_elem)
-                is_menu_hover = dist > 30 and (diff_val >= 5.0 or (m_elem and m_elem != c_elem))
+                # Why: 動的背景のDiff誤爆を排除し真のメニュー親要素(nav/menu/有為要素名)のみ保護
+                is_menu_parent = (
+                    any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
+                    (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
+                )
 
-                if is_same_target or not is_menu_hover:
+                if dist <= 35 or not is_menu_parent:
                     i += 1
                     continue
-            elif diff_val < 5.0:
-                i += 1
-                continue
+            else:
+                m_ctx = entry.get("AppSpecificContext") or {}
+                m_elem = str(m_ctx.get("element_name") or "").strip()
+                if not m_elem or m_elem in ["move", "left_click"]:
+                    i += 1
+                    continue
 
         if "key" in raw_type:
             content = entry.get("Content") or {}

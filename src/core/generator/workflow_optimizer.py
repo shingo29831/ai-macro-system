@@ -634,10 +634,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if sel and sel in processed_selectors:
             i += 1
             continue
-        # Why: ドロップダウン等の有為なホバーを保持しフォーム入力間の無駄な移動のみ除外
+        # Why: ドロップダウン展開用の真の親ホバーのみ保持し無名・過渡移動を完全排除
         if act == "move":
-            is_meaningful_hover = info.get("is_nav_hover") or bool(elem_name) or info.get("diff_val", 0.0) >= 0.02
-            if is_meaningful_hover:
+            m_ctx = info.get("app_context") or {}
+            m_sel = str(m_ctx.get("css_selector") or "").lower()
+            is_valid_menu_hover = info.get("is_nav_hover") or (
+                bool(elem_name) and elem_name not in ["move", "left_click"]
+            ) or any(k in m_sel for k in ["nav", "menu", "drop", "header"])
+            if is_valid_menu_hover:
                 result.append(info)
             i += 1
             continue
@@ -1180,54 +1184,38 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
 
             if next_click:
                 cx, cy = next_click.get("cursor_x", next_click.get("x", 0)), next_click.get("cursor_y", next_click.get("y", 0))
-                c_elem = (next_click.get("app_context") or {}).get("element_name", "")
+                c_elem = str((next_click.get("app_context") or {}).get("element_name", "")).strip()
 
-                # Why: 同一要素の手ブレは集約しつつ異なるUIへのホバーは完全保持
-                distinct_hovers = []
+                # Why: クリック前の一連の移動からメニュー親要素(起点ホバー)のみを最大1つ厳選し過渡移動を全消去
+                best_hover = None
                 for mv in move_group:
                     mx, my = mv.get("cursor_x", mv.get("x", 0)), mv.get("cursor_y", mv.get("y", 0))
-                    m_elem = (mv.get("app_context") or {}).get("element_name", "")
-                    m_sel = (mv.get("app_context") or {}).get("css_selector", "")
-
-                    if not distinct_hovers:
-                        distinct_hovers.append(mv)
+                    dist_to_click = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
+                    if dist_to_click <= 35:
                         continue
 
-                    last_h = distinct_hovers[-1]
-                    lx, ly = last_h.get("cursor_x", last_h.get("x", 0)), last_h.get("cursor_y", last_h.get("y", 0))
-                    l_elem = (last_h.get("app_context") or {}).get("element_name", "")
-                    l_sel = (last_h.get("app_context") or {}).get("css_selector", "")
-                    dist_to_last = ((mx - lx) ** 2 + (my - ly) ** 2) ** 0.5
+                    m_ctx = mv.get("app_context") or {}
+                    m_elem = str(m_ctx.get("element_name") or mv.get("element_name") or "").strip()
+                    m_sel = str(m_ctx.get("css_selector") or "").lower()
 
-                    if (m_elem and m_elem == l_elem) or (m_sel and m_sel == l_sel) or dist_to_last <= 15:
-                        distinct_hovers[-1] = mv
-                    else:
-                        distinct_hovers.append(mv)
+                    is_menu_parent = (
+                        mv.get("is_nav_hover") or
+                        any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
+                        (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
+                    )
+                    if is_menu_parent:
+                        best_hover = mv
+                        break
 
-                final_hovers = []
-                for h in distinct_hovers:
-                    hx, hy = h.get("cursor_x", h.get("x", 0)), h.get("cursor_y", h.get("y", 0))
-                    h_elem = (h.get("app_context") or {}).get("element_name", "")
-                    dist_to_click = ((hx - cx) ** 2 + (hy - cy) ** 2) ** 0.5
-
-                    # Why: クリック対象そのものへの同一位置ホバーのみクリック側へ委譲
-                    if dist_to_click <= 15 and (not h_elem or h_elem == c_elem):
-                        continue
-                    final_hovers.append(h)
-
-                if final_hovers:
-                    deduped.extend(final_hovers)
-                elif distinct_hovers:
-                    meaningful = [h for h in distinct_hovers if h.get("is_nav_hover") or bool((h.get("app_context") or {}).get("element_name"))]
-                    if meaningful:
-                        deduped.extend(meaningful)
+                if best_hover:
+                    deduped.append(best_hover)
             else:
-                # Why: URLやUI要素を持つサイト訪問移動は直後にクリックがなくても破棄せず保護
-                meaningful_navs = [m for m in move_group if str((m.get("app_context") or {}).get("url") or (m.get("app_context") or {}).get("text") or "").startswith("http") or m.get("is_nav_hover")]
+                meaningful_navs = [
+                    m for m in move_group 
+                    if str((m.get("app_context") or {}).get("url") or "").startswith("http") or m.get("is_nav_hover")
+                ]
                 if meaningful_navs:
-                    deduped.extend(meaningful_navs)
-                else:
-                    deduped.append(move_group[-1])
+                    deduped.append(meaningful_navs[0])
 
             i = j
             continue
