@@ -634,14 +634,17 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if sel and sel in processed_selectors:
             i += 1
             continue
-        # Why: ドロップダウン展開用の真の親ホバーのみ保持し無名・過渡移動を完全排除
+        # Why: ドロップダウン展開用の真の親ホバーのみ保持しルート枠や無名・過渡移動を完全排除
         if act == "move":
             m_ctx = info.get("app_context") or {}
             m_sel = str(m_ctx.get("css_selector") or "").lower()
             diff_val = info.get("diff_val", 0.0)
-            is_valid_menu_hover = info.get("is_nav_hover") or (
-                bool(elem_name) and elem_name not in ["move", "left_click"]
-            ) or any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or diff_val >= 0.15
+            is_container = any(k in m_sel for k in ["root", "app", "main", "window", "mozilla"])
+            is_valid_menu_hover = (
+                info.get("is_nav_hover") or 
+                any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
+                (diff_val >= 0.15 and not is_container and bool(elem_name) and elem_name not in ["move", "left_click"])
+            )
             if is_valid_menu_hover:
                 result.append(info)
             i += 1
@@ -766,11 +769,13 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
                     c_type = str(s_d.get("control_type", "")).lower()
                     break
 
-        # Why: チェックボックスおよびセレクトボックスを除外し真のテキスト・数値入力欄のみ集約
+        # Why: マウス移動やルートコンテナ(#root等)が入力欄へ誤化合してタイピングを破壊するのを厳密遮断
+        is_input_control = any(t in c_type for t in ["edit", "spinner"]) or any(tag in sel.lower() for tag in ["input", "textarea"])
+        is_container_id = any(k in sel.lower() for k in ["root", "app", "main", "container", "wrapper", "content", "body"])
         is_input_field = (
             not is_select and
-            ("edit" in c_type or "spinner" in c_type or act == "type_text" or any(tag in sel.lower() for tag in ["input", "textarea"]) or
-             (sel.startswith("#") and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"])))
+            act in ["type_text", "key_down", "key_press"] and
+            (is_input_control or (sel.startswith("#") and not is_container_id and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"])))
             and "check" not in c_type and not sel.lower().endswith("newsletter")
         )
         if is_input_field:
@@ -800,6 +805,14 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
 
             if final_val and str(final_val).strip() and str(final_val).strip() != elem_name:
                 clean_txt = str(final_val).strip()
+
+                # Why: 既存の正当な完全長文テキストを未確定の1文字等の短縮ゴミ値で上書き破壊しない
+                if result:
+                    prev_item = result[-1]
+                    prev_text = str(prev_item.get("semantic_role") or prev_item.get("text") or "").strip()
+                    if len(prev_text) > len(clean_txt) and (prev_text.startswith(clean_txt) or clean_txt in prev_text):
+                        i += 1
+                        continue
 
                 while result:
                     prev_item = result[-1]
