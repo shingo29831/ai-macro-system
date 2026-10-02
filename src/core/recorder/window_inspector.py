@@ -303,8 +303,8 @@ def get_ui_element_rect_at_point(x: int, y: int) -> dict | None:
             "uia_debug": " | ".join(debug_info),
         }
 
-    except Exception as e:
-        print(f"[process_monitor] UIA rect取得エラー ({x}, {y}): {e}")
+    except Exception:
+        # UIA未対応UIや境界座標でのCOMError(E_INVALIDARG等)発生時は安全にNoneへフォールバック
         return None
     finally:
         try:
