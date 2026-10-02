@@ -545,6 +545,7 @@ class BrowserController:
                     except Exception:
                         pass
                 
+                generic_tags = {"div", "span", "p", "a", "li", "ul", "ol", "body", "html", "section", "header", "footer"}
                 search_terms = []
                 direct_auto_ids = []
                 if selector:
@@ -567,7 +568,8 @@ class BrowserController:
                             search_terms.append(type_match.group(1).lower())
                         if not clean_part.startswith("a:has-text") and not clean_part.startswith("http"):
                             for sub_word in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff\-]+", clean_part):
-                                if len(sub_word) >= 2 and sub_word not in search_terms:
+                                # Why: divやspan等の汎用HTMLタグ単体を検索語から除外し無関係な親要素の誤爆を完全防止
+                                if len(sub_word) >= 2 and sub_word not in search_terms and sub_word not in generic_tags:
                                     search_terms.append(sub_word)
                 if element_name and not element_name.startswith("http"):
                     search_terms.append(element_name.strip().lower())
@@ -687,6 +689,48 @@ class BrowserController:
         else:
             logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'.")
             return None
+
+    def _hover_by_uia_or_selector(
+        self,
+        selector: Optional[str],
+        last_win_args: Optional[Dict[str, Any]],
+        timeout: float = 0.8,
+        element_name: Optional[str] = None,
+        target_x: Optional[int] = None,
+        target_y: Optional[int] = None,
+        **kwargs
+    ) -> bool:
+        # Why: ブラウザ要素のUIA矩形または座標へカーソルを吸着しホバーメニューを確実に展開
+        elem = self._find_uia_element(selector, last_win_args, timeout_sec=timeout, element_name=element_name, x=target_x, y=target_y, **kwargs)
+        hx, hy = None, None
+        if elem:
+            rect = elem.rectangle()
+            cx = (rect.left + rect.right) // 2
+            cy = (rect.top + rect.bottom) // 2
+            if cx > 20 and cy > 20 and rect.width() > 0 and rect.height() > 0:
+                hx, hy = cx, cy
+
+        if hx is None and target_x is not None and target_y is not None and target_x > 20 and target_y > 20:
+            hx, hy = int(target_x), int(target_y)
+
+        if hx is not None and hy is not None:
+            if platform.system() == "Windows":
+                target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+                if target_hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(target_hwnd)
+                    time.sleep(0.04)
+                from core.executor.runner import _smooth_move
+                _smooth_move(hx, hy, steps=12, duration=0.15)
+                # Why: レンダラープロセスにマウス進入・ホバーイベントを確実に認識させる微小往復イベント
+                self._mouse.position = (hx, hy)
+                ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
+                ctypes.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
+            else:
+                self._mouse.position = (hx, hy)
+            # Why: ドロップダウンやメガメニューのCSSアニメーション展開時間を確実に待機
+            time.sleep(0.55)
+            return True
+        return False
 
     def _click_by_uia_or_selector(
         self,

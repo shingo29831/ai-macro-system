@@ -1569,15 +1569,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             logger.warning(f"[{workflow_id}] Failed to select Excel dest cell {excel_dest_cell}: {e}")
                             excel_app_cache = None
                     
+                    # Why: "div"等の汎用タグ単体セレクタは誤爆防止のため物理座標クリックへ委譲
+                    is_generic_tag = selector and selector.strip().lower() in ["div", "span", "p", "a", "li", "ul", "body"]
                     # Why: ブラウザ専用セレクタ/UIA要素が存在する場合は高精度クリックを最優先実行
-                    if not skip_physical and (selector or elem_name or target_url) and is_browser_target:
+                    if not skip_physical and (selector or elem_name or target_url) and is_browser_target and not is_generic_tag:
                         try:
                             from core.executor.browser_controller import BrowserController
                             bc = BrowserController.get_instance()
-                            if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url):
+                            if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url, x=x, y=y):
                                 logger.info(f"[{workflow_id}] High-precision browser click succeeded on '{elem_name or selector}'.")
                                 skip_physical = True
-                            # Why: セレクタ未検出時にURL直接遷移すると未開リンクの誤起動を招くため物理クリックへフォールバック
                         except Exception as b_err:
                             logger.info(f"[{workflow_id}] High-precision browser click bypassed: {b_err}")
 
@@ -1592,6 +1593,8 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     x = args.get("x", 0) + off_x
                     y = args.get("y", 0) + off_y
                     excel_dest_cell = args.get("excel_dest_cell")
+                    selector = args.get("selector")
+                    elem_name = args.get("element_name")
                     
                     skip_physical = False
                     if excel_dest_cell and platform.system() == "Windows":
@@ -1609,13 +1612,26 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             excel_app_cache = None
                     
                     if not skip_physical:
-                        _smooth_move(int(x), int(y))
-                        # Why: ブラウザのレンダラプロセスにWM_MOUSEMOVEを確実に受領させホバーメニューを展開
-                        if platform.system() == "Windows":
-                            mouse.position = (int(x), int(y))
-                            ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
-                            ctypes.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
-                        time.sleep(0.35)
+                        hovered = False
+                        # Why: ブラウザ操作時はセレクタ/UIA要素への高精度ホバー吸着を実行しドロップダウンメニュー展開を完全保証
+                        if is_browser_target and (selector or elem_name):
+                            try:
+                                from core.executor.browser_controller import BrowserController
+                                bc = BrowserController.get_instance()
+                                if bc._hover_by_uia_or_selector(selector, last_win_args, timeout=0.8, element_name=elem_name, target_x=x, target_y=y):
+                                    logger.info(f"[{workflow_id}] High-precision browser hover succeeded on '{elem_name or selector}'.")
+                                    hovered = True
+                            except Exception as b_err:
+                                logger.debug(f"[{workflow_id}] Browser hover bypassed: {b_err}")
+
+                        if not hovered:
+                            _smooth_move(int(x), int(y), duration=0.15)
+                            # Why: ブラウザのレンダラプロセスにWM_MOUSEMOVEを確実に受領させホバーメニューを展開
+                            if platform.system() == "Windows":
+                                mouse.position = (int(x), int(y))
+                                ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
+                                ctypes.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
+                            time.sleep(0.55)
                         
                 elif method == "scroll":
                     dx = args.get("dx", 0.0)
