@@ -100,11 +100,8 @@ def on_scroll(x, y, dx, dy):
     _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
-    # Why: Windowsネイティブスクロールフック有効時の二重記録を完全排除
-    if getattr(state, "native_scroll_hook_active", False):
-        return
     try: 
-        # Why: マウスイベントキューに完全統合しクリックや移動との時系列順序を完全保証
+        # Why: native_scroll_hook解除時の脱落を防ぎつつhandler側の15msデデュープで安全に多重保護
         state.mouse_event_queue.put({
             "type": "scroll",
             "x": int(x),

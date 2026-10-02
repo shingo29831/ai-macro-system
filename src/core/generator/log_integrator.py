@@ -32,6 +32,16 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
 
         win_name = entry.get("WindowName", "")
         w_lower = win_name.lower().strip()
+        # Why: スクロール操作で子ウィンドウ判定によりタイトルが空の場合は直前の有為ウィンドウ名を継承して救済
+        if not w_lower and "scroll" in raw_type:
+            for prev_c in reversed(valid_candidates):
+                p_win = prev_c.get("WindowName", "").strip()
+                if p_win:
+                    win_name = p_win
+                    entry["WindowName"] = win_name
+                    w_lower = win_name.lower().strip()
+                    break
+
         is_browser = any(b in w_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
         if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
             continue

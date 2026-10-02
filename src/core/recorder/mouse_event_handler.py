@@ -331,6 +331,12 @@ def process_scroll_event(event: dict):
             _last_scroll_info = (x, y, dx, dy, source)
 
         point_window = window_inspector.get_window_title_at_point(x, y)
+        # Why: 子コントロールでタイトルが空の場合はフォアグラウンドウィンドウ情報を取得して欠落防止
+        if not point_window or not point_window.get("title"):
+            fg_info = window_inspector.get_foreground_window_info()
+            if fg_info and fg_info.get("title"):
+                point_window = fg_info
+
         if window_inspector.should_ignore_window(point_window.get("title")):
             return
 

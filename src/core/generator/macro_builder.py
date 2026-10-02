@@ -350,7 +350,8 @@ def build_and_save_macro(
         
         cmd_type = step.action.command
         
-        if not integ_evt and cmd_type not in ["LOOP_END", "BROWSER_ACTION", "ACTIVATE_WINDOW"]:
+        # Why: スクロールやループ開始は画像照合用integ_evtが存在しない場合も確実にコマンド生成を保証
+        if not integ_evt and cmd_type not in ["LOOP_END", "BROWSER_ACTION", "ACTIVATE_WINDOW", "MOUSE_SCROLL", "LOOP_START"]:
             continue
 
         current_timestamp = integ_evt.timestamp if integ_evt else prev_timestamp or 0

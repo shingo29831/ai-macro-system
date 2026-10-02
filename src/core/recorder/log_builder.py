@@ -21,14 +21,21 @@ def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict |
     }
 
 def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy: float, point_window: dict | None = None) -> dict:
-    if point_window is None:
+    if point_window is None or not point_window.get("title"):
         point_window = process_monitor.get_window_title_at_point(x, y)
-        
+    if not point_window or not point_window.get("title"):
+        point_window = process_monitor.get_foreground_window_info()
+
+    window_fields = process_monitor.build_recording_window_fields(point_window, cursor_x=x, cursor_y=y)
+
     direction = "none"
     if dy > 0: direction = "up"
     elif dy < 0: direction = "down"
     elif dx > 0: direction = "right"
     elif dx < 0: direction = "left"
+
+    from core.executor.os_env_controller import get_wheel_scroll_settings
+    scroll_settings = get_wheel_scroll_settings()
 
     return {
         "EventNo": event_no,
@@ -39,11 +46,13 @@ def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy:
             "dy": round(float(dy), 3),
             "direction": direction,
             "screen_coordinates": {"x": int(x), "y": int(y)},
+            "scroll_lines": scroll_settings.get("scroll_lines", 3),
+            "is_page_scroll": scroll_settings.get("is_page_scroll", False),
         },
-        "WindowName": point_window.get("title", ""),
-        "WindowSize": None,
-        "WindowCoordinates": None,
-        "CursorCoordinates": None,
+        "WindowName": window_fields["WindowName"],
+        "WindowSize": window_fields["WindowSize"],
+        "WindowCoordinates": window_fields["WindowCoordinates"],
+        "CursorCoordinates": window_fields["CursorCoordinates"],
         "AppSpecificContext": None,
         "Images": {"Pre": None, "Crop": None, "Diff": None},
     }
