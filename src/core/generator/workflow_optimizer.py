@@ -641,12 +641,22 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
             i += 1
             continue
 
-        # Why: 入力要素への重複空クリックやフォーム枠クリックを除去
-        is_redundant_input_click = act == "click" and (
+        # Why: アドレスバー・検索バー操作はWebフォーム集約から除外して時系列を完全保護
+        is_nav_bar = any(k in sel.lower() for k in ["urlbar", "address", "omnibox"]) or ctx.get("is_address_bar")
+        if is_nav_bar:
+            result.append(info)
+            i += 1
+            continue
+
+        # Why: div等のモダンWeb要素(Group型)のクリックをフォーム枠誤認で消失させない
+        cx = info.get("cursor_x", info.get("x", 0))
+        cy = info.get("cursor_y", info.get("y", 0))
+        is_valid_screen_click = cx > 20 and cy > 45
+        is_redundant_input_click = act == "click" and not is_valid_screen_click and (
             sel in processed_selectors or
             sel.lower() in ["#entryform", "form"] or
             sel.startswith("div:has-text") or
-            (c_type in ["group", "pane", "custom", "window"] and not elem_name)
+            (c_type in ["pane", "window"] and not elem_name and not ctx.get("css_selector"))
         )
         if is_redundant_input_click:
             i += 1

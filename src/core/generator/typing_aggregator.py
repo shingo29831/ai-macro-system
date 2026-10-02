@@ -686,9 +686,14 @@ class TypingSessionAggregator:
             if final_text:
                 if role_lower == "tab":
                     continue
-                # Why: IME確定時のEnter/Tabや複合コンボキー残骸を完全除外
-                if (role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "tab"])) and (any_ime_active or e.get("ime_active")):
-                    continue
+                # Why: サジェスト選択後や画面遷移を促す確定Enterは検索実行キーとして確実に保護
+                is_enter_key = role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "return"])
+                if is_enter_key:
+                    has_future_nav = bool(future_events and any(f.get("window_name") != session[0].get("window_name") for f in future_events[:8]))
+                    if has_suggest_selection or has_future_nav:
+                        pass
+                    elif any_ime_active or e.get("ime_active"):
+                        continue
 
             trailing_special_keys.append(e)
 
