@@ -181,7 +181,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
             if diff_val < 0.0005:
                 return None
     
-    if crop_path_str and crop_path_str != "切り抜き失敗":
+    # Why: キー入力・UIAスキャン・スクロールでの不要なYOLO/OCR推論を遮断し解析を劇的高速化
+    if action_type in ["click", "move", "drag"] and crop_path_str and crop_path_str != "切り抜き失敗":
         context_text = app_context.get("text") or app_context.get("value") or app_context.get("url")
         if context_text:
             logger.info(f"[{workflow_id}] Found app_specific_context for Event {event_id}. Skipping CV inference.")

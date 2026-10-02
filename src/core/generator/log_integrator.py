@@ -14,6 +14,86 @@ from core.generator.macro_builder import build_and_save_macro
 
 logger = logging.getLogger(__name__)
 
+def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """マクロで実行・再現する可能性のないノイズログ（過渡マウス移動、クリック直前移動、孤立制御キー、システムUI等）を完全排除する。"""
+    if not raw_logs:
+        return []
+
+    valid_candidates: List[Dict[str, Any]] = []
+    system_exact = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
+    system_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
+
+    for entry in raw_logs:
+        if not isinstance(entry, dict):
+            continue
+        raw_type = str(entry.get("Type", "")).lower()
+        if any(term in raw_type for term in ["recording", "meta"]):
+            continue
+
+        win_name = entry.get("WindowName", "")
+        w_lower = win_name.lower().strip()
+        is_browser = any(b in w_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
+        if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
+            continue
+
+        content = entry.get("Content") or {}
+        if isinstance(content, dict):
+            combo_str = str(content.get("combo") or content.get("key") or "").lower()
+            # Why: IMEトグルキー(shift+space等)は実行エンジン自動IME制御と競合するため除外
+            if "+" in combo_str and any(k in combo_str for k in ["space", "grave", "kanji"]):
+                continue
+
+        valid_candidates.append(entry)
+
+    filtered: List[Dict[str, Any]] = []
+    n = len(valid_candidates)
+    i = 0
+    while i < n:
+        entry = valid_candidates[i]
+        raw_type = str(entry.get("Type", "")).lower()
+
+        if "move" in raw_type or "hover" in raw_type:
+            next_non_move = None
+            for j in range(i + 1, n):
+                fut_type = str(valid_candidates[j].get("Type", "")).lower()
+                if not ("move" in fut_type or "hover" in fut_type):
+                    next_non_move = valid_candidates[j]
+                    break
+
+            # Why: 末尾の移動やクリック・ドラッグ直前・過渡期の移動はマクロ実行に不要なため排除
+            if not next_non_move:
+                i += 1
+                continue
+
+            fut_type = str(next_non_move.get("Type", "")).lower()
+            if "click" in fut_type or "drag" in fut_type:
+                i += 1
+                continue
+
+            diff_str = entry.get("Images", {}).get("Diff", "0.0%")
+            diff_val = 0.0
+            try:
+                diff_val = float(str(diff_str).replace("%", ""))
+            except Exception:
+                pass
+            if diff_val < 5.0:
+                i += 1
+                continue
+
+        if "key" in raw_type:
+            content = entry.get("Content") or {}
+            key_name = str(content.get("key") or "").lower() if isinstance(content, dict) else ""
+            if key_name in ["win", "windows", "cmd", "ctrl", "alt", "shift"]:
+                next_act = valid_candidates[i + 1] if i + 1 < n else None
+                if not next_act or next_act.get("WindowName") != entry.get("WindowName"):
+                    i += 1
+                    continue
+
+        filtered.append(entry)
+        i += 1
+
+    return filtered
+
 def generate_macro_workflow(
     workflow_id: str, 
     config: AppConfig, 
@@ -56,6 +136,8 @@ def generate_macro_workflow(
         else:
             raise ValueError(f"Unsupported JSON structure: {type(raw_logs)}")
 
+        # Why: マクロで使わないノイズログ（過渡移動・クリック直前移動・孤立キー等）を事前完全排除
+        log_entries = filter_meaningful_raw_logs(log_entries)
         total_events = len(log_entries)
         if progress_callback:
             progress_callback(2, f"入力ログの読み込み完了... ({total_events}件のイベントを処理します)")
