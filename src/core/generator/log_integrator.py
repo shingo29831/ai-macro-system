@@ -68,18 +68,28 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
             fut_type = str(next_non_move.get("Type", "")).lower()
 
             if "click" in fut_type or "drag" in fut_type:
-                # Why: 直前が既にmoveなら過渡移動として即除外。起点ホバーかつメニュー要素のみ保護
-                prev_entry = valid_candidates[i - 1] if i > 0 else {}
-                prev_type = str(prev_entry.get("Type", "")).lower()
-                if "move" in prev_type or "hover" in prev_type:
-                    i += 1
-                    continue
-
                 m_coords = entry.get("Content", {}).get("screen_coordinates") or entry.get("CursorCoordinates") or {}
                 c_coords = next_non_move.get("Content", {}).get("screen_coordinates") or next_non_move.get("CursorCoordinates") or {}
                 mx, my = m_coords.get("x", 0), m_coords.get("y", 0)
                 cx, cy = c_coords.get("x", 0), c_coords.get("y", 0)
                 dist = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
+
+                # Why: クリック対象への近傍移動(<=35px)はクリック側に委譲して完全除外
+                if dist <= 35:
+                    i += 1
+                    continue
+
+                # Why: 一連の移動の先頭起点のみを評価し、途中の通過移動は即座に完全除外
+                prev_entry = valid_candidates[i - 1] if i > 0 else {}
+                prev_type = str(prev_entry.get("Type", "")).lower()
+                is_start_of_moves = not ("move" in prev_type or "hover" in prev_type)
+
+                diff_str = entry.get("Images", {}).get("Diff", "0.0%")
+                diff_val = 0.0
+                try:
+                    diff_val = float(str(diff_str).replace("%", ""))
+                except Exception:
+                    pass
 
                 m_ctx = entry.get("AppSpecificContext") or {}
                 c_ctx = next_non_move.get("AppSpecificContext") or {}
@@ -87,13 +97,11 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 c_elem = str(c_ctx.get("element_name") or "").strip()
                 m_sel = str(m_ctx.get("css_selector") or "").lower()
 
-                # Why: 動的背景のDiff誤爆を排除し真のメニュー親要素(nav/menu/有為要素名)のみ保護
-                is_menu_parent = (
-                    any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
-                    (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
-                )
+                # Why: UIAが要素取得失敗時も急激な画面変化(Diff>=15%)を伴う起点ホバーを確実に救出
+                has_nav_markup = any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
+                has_visual_menu_popup = is_start_of_moves and diff_val >= 15.0
 
-                if dist <= 35 or not is_menu_parent:
+                if not is_start_of_moves or not (has_nav_markup or has_visual_menu_popup):
                     i += 1
                     continue
             else:

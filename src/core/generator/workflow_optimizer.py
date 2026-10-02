@@ -638,9 +638,10 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
         if act == "move":
             m_ctx = info.get("app_context") or {}
             m_sel = str(m_ctx.get("css_selector") or "").lower()
+            diff_val = info.get("diff_val", 0.0)
             is_valid_menu_hover = info.get("is_nav_hover") or (
                 bool(elem_name) and elem_name not in ["move", "left_click"]
-            ) or any(k in m_sel for k in ["nav", "menu", "drop", "header"])
+            ) or any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or diff_val >= 0.15
             if is_valid_menu_hover:
                 result.append(info)
             i += 1
@@ -1197,11 +1198,13 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                     m_ctx = mv.get("app_context") or {}
                     m_elem = str(m_ctx.get("element_name") or mv.get("element_name") or "").strip()
                     m_sel = str(m_ctx.get("css_selector") or "").lower()
+                    diff_val = mv.get("diff_val", 0.0)
 
                     is_menu_parent = (
                         mv.get("is_nav_hover") or
                         any(k in m_sel for k in ["nav", "menu", "drop", "header"]) or
-                        (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"])
+                        (bool(m_elem) and m_elem != c_elem and m_elem not in ["move", "left_click"]) or
+                        diff_val >= 0.15
                     )
                     if is_menu_parent:
                         best_hover = mv
