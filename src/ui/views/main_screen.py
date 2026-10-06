@@ -5,9 +5,13 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
+    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
+    QSizePolicy,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -27,6 +31,191 @@ from models.data_types import MacroSummary
 from ui.viewmodels.main_viewmodel import MainViewModel
 
 
+class MacroCardWidget(QFrame):
+    """単一マクロの情報を大画面でも視認性高く表示するカードウィジェット"""
+
+    card_clicked = Signal(str)
+    card_double_clicked = Signal(str)
+    card_checked_changed = Signal(str, bool)
+    run_requested = Signal(str)
+    edit_requested = Signal(str)
+
+    def __init__(
+        self,
+        macro: MacroSummary,
+        is_delete_mode: bool = False,
+        is_selected: bool = False,
+        is_checked: bool = False,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.macro = macro
+        self._is_delete_mode = is_delete_mode
+        self._is_selected = is_selected
+        self._is_checked = is_checked
+
+        self.setObjectName("MacroCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(156)
+
+        self._build_ui()
+        self._update_card_style()
+
+    def _font(self, size: int, bold: bool = False) -> QFont:
+        font = QFont("Yu Gothic UI", size)
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        font.setWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+        return font
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(8)
+
+        # 上部: チェックボックス + マクロ名 + 自己修復バッジ
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(10)
+
+        self.chk_box = CheckBox(self)
+        self.chk_box.setVisible(self._is_delete_mode)
+        self.chk_box.setChecked(self._is_checked)
+        self.chk_box.stateChanged.connect(self._on_check_changed)
+        top_layout.addWidget(self.chk_box)
+
+        self.lbl_name = QLabel(self.macro.name, self)
+        self.lbl_name.setFont(self._font(12, bold=True))
+        self.lbl_name.setStyleSheet("color: #0f172a;")
+        top_layout.addWidget(self.lbl_name, 1)
+
+        heal_count_str = str(self.macro.heals)
+        is_healed = heal_count_str not in ("0", "", "0回")
+        badge_bg = "#ecfdf5" if is_healed else "#f1f5f9"
+        badge_color = "#059669" if is_healed else "#64748b"
+        badge_border = "#a7f3d0" if is_healed else "#e2e8f0"
+
+        self.lbl_badge = QLabel(f"修復: {self.macro.heals}", self)
+        self.lbl_badge.setFont(self._font(9, bold=True))
+        self.lbl_badge.setStyleSheet(
+            f"background-color: {badge_bg}; color: {badge_color}; "
+            f"border: 1px solid {badge_border}; border-radius: 6px; padding: 2px 8px;"
+        )
+        top_layout.addWidget(self.lbl_badge)
+
+        layout.addLayout(top_layout)
+
+        # メタ情報
+        meta_layout = QVBoxLayout()
+        meta_layout.setSpacing(3)
+
+        self.lbl_updated = QLabel(f"最終更新: {self.macro.updated_at}", self)
+        self.lbl_updated.setFont(self._font(9.5))
+        self.lbl_updated.setStyleSheet("color: #475569;")
+
+        self.lbl_created = QLabel(f"作成日時: {self.macro.created_at}", self)
+        self.lbl_created.setFont(self._font(9))
+        self.lbl_created.setStyleSheet("color: #94a3b8;")
+
+        meta_layout.addWidget(self.lbl_updated)
+        meta_layout.addWidget(self.lbl_created)
+        layout.addLayout(meta_layout)
+
+        layout.addStretch(1)
+
+        # 下部アクションボタン
+        self.action_layout = QHBoxLayout()
+        self.action_layout.setSpacing(8)
+
+        self.btn_edit = PushButton("✎ 編集", self)
+        self.btn_edit.setFont(self._font(9.5))
+        self.btn_edit.setFixedSize(76, 30)
+        self.btn_edit.clicked.connect(lambda: self.edit_requested.emit(self.macro.name))
+
+        self.btn_run = PrimaryPushButton("▶ 実行", self)
+        self.btn_run.setFont(self._font(9.5, bold=True))
+        self.btn_run.setFixedSize(80, 30)
+        self.btn_run.clicked.connect(lambda: self.run_requested.emit(self.macro.name))
+
+        self.action_layout.addStretch(1)
+        self.action_layout.addWidget(self.btn_edit)
+        self.action_layout.addWidget(self.btn_run)
+
+        if self._is_delete_mode:
+            self.btn_edit.setVisible(False)
+            self.btn_run.setVisible(False)
+
+        layout.addLayout(self.action_layout)
+
+    def set_selected(self, selected: bool):
+        if self._is_selected != selected:
+            self._is_selected = selected
+            self._update_card_style()
+
+    def set_checked(self, checked: bool):
+        self._is_checked = checked
+        self.chk_box.blockSignals(True)
+        self.chk_box.setChecked(checked)
+        self.chk_box.blockSignals(False)
+        self._update_card_style()
+
+    def set_delete_mode(self, enabled: bool):
+        self._is_delete_mode = enabled
+        self.chk_box.setVisible(enabled)
+        self.btn_edit.setVisible(not enabled)
+        self.btn_run.setVisible(not enabled)
+        self._update_card_style()
+
+    def _update_card_style(self):
+        if self._is_delete_mode and self._is_checked:
+            self.setStyleSheet(
+                "QFrame#MacroCard {"
+                "  background-color: #fef2f2;"
+                "  border: 2px solid #ef4444;"
+                "  border-radius: 12px;"
+                "}"
+            )
+        elif self._is_selected:
+            self.setStyleSheet(
+                "QFrame#MacroCard {"
+                "  background-color: #eff6ff;"
+                "  border: 2px solid #2563eb;"
+                "  border-radius: 12px;"
+                "}"
+            )
+        else:
+            self.setStyleSheet(
+                "QFrame#MacroCard {"
+                "  background-color: #ffffff;"
+                "  border: 1px solid #e2e8f0;"
+                "  border-radius: 12px;"
+                "}"
+                "QFrame#MacroCard:hover {"
+                "  border: 1.5px solid #60a5fa;"
+                "  background-color: #f8fafc;"
+                "}"
+            )
+
+    def _on_check_changed(self, state: int):
+        self._is_checked = (state == 2 or state == Qt.CheckState.Checked.value)
+        self._update_card_style()
+        self.card_checked_changed.emit(self.macro.name, self._is_checked)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._is_delete_mode:
+                new_state = not self._is_checked
+                self.set_checked(new_state)
+                self.card_checked_changed.emit(self.macro.name, new_state)
+            else:
+                self.card_clicked.emit(self.macro.name)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._is_delete_mode:
+            self.card_double_clicked.emit(self.macro.name)
+        super().mouseDoubleClickEvent(event)
+
+
 class MainScreen(QWidget):
     """ホーム画面。マクロの記録・実行・削除・一覧表示を担当する。"""
 
@@ -43,8 +232,12 @@ class MainScreen(QWidget):
         self.setObjectName("MacroManager")
 
         self._all_macros: list[MacroSummary] = []
+        self._displayed_macros: list[MacroSummary] = []
+        self._card_widgets: list[MacroCardWidget] = []
         self._current_selected_name: str = ""
         self._is_delete_mode: bool = False
+        self._current_view_mode: str = "cards"
+        self._last_grid_cols: int = 0
 
         self.btn_start_record = None
         self.btn_run_selected = None
@@ -54,6 +247,13 @@ class MainScreen(QWidget):
         self.chk_select_all = None
         self.btn_cancel_delete = None
         self.btn_confirm_delete = None
+
+        self.btn_view_cards = None
+        self.btn_view_table = None
+
+        self.cards_scroll_area = None
+        self.cards_container = None
+        self.cards_grid_layout = None
 
         self.table_macros = None
         self.search_box = None
@@ -90,7 +290,7 @@ class MainScreen(QWidget):
         main_layout.addWidget(page_description)
         main_layout.addSpacing(4)
 
-        # 録画エリア（ボーダーラインのないクリーンなレイアウト）
+        # 録画エリア
         record_area = QHBoxLayout()
         record_area.setSpacing(16)
 
@@ -176,21 +376,19 @@ class MainScreen(QWidget):
         table_top_bar.addLayout(title_layout)
         table_top_bar.addStretch(1)
 
-        # 通常ボタングループ
         table_top_bar.addWidget(self.btn_edit_selected)
         table_top_bar.addWidget(self.btn_delete_selected)
         table_top_bar.addWidget(self.btn_run_selected)
 
-        # 一括削除ボタングループ
         table_top_bar.addWidget(self.chk_select_all)
         table_top_bar.addWidget(self.btn_cancel_delete)
         table_top_bar.addWidget(self.btn_confirm_delete)
 
         main_layout.addLayout(table_top_bar)
 
-        # 検索・並び替えコントロールバー
+        # 検索・並び替え・表示形式切替コントロールバー
         control_bar = QHBoxLayout()
-        control_bar.setSpacing(12)
+        control_bar.setSpacing(10)
 
         self.search_box = SearchLineEdit(self)
         self.search_box.setPlaceholderText("マクロ名で検索...")
@@ -203,7 +401,7 @@ class MainScreen(QWidget):
 
         self.sort_combo = ComboBox(self)
         self.sort_combo.setFont(self._font(10))
-        self.sort_combo.setFixedWidth(170)
+        self.sort_combo.setFixedWidth(160)
         self.sort_combo.addItems([
             "更新が新しい順",
             "更新が古い順",
@@ -213,20 +411,49 @@ class MainScreen(QWidget):
             "マクロ名順（降順）",
         ])
 
-        hint_label = QLabel("※ ダブルクリックでも即時実行できます", self)
+        # ビュー切替トグル
+        self.btn_view_cards = PushButton("⊞ カード", self)
+        self.btn_view_cards.setFont(self._font(9.5))
+        self.btn_view_cards.setFixedSize(82, 34)
+        self.btn_view_cards.clicked.connect(lambda: self._switch_view_mode("cards"))
+
+        self.btn_view_table = PushButton("☰ リスト", self)
+        self.btn_view_table.setFont(self._font(9.5))
+        self.btn_view_table.setFixedSize(82, 34)
+        self.btn_view_table.clicked.connect(lambda: self._switch_view_mode("table"))
+
+        hint_label = QLabel("※ カードの直接実行やダブルクリックで即時起動できます", self)
         hint_label.setFont(self._font(9))
         hint_label.setStyleSheet("color: #94a3b8;")
 
         control_bar.addWidget(self.search_box)
         control_bar.addWidget(sort_label)
         control_bar.addWidget(self.sort_combo)
-        control_bar.addSpacing(8)
+        control_bar.addSpacing(6)
+        control_bar.addWidget(self.btn_view_cards)
+        control_bar.addWidget(self.btn_view_table)
+        control_bar.addSpacing(6)
         control_bar.addWidget(hint_label)
         control_bar.addStretch(1)
 
         main_layout.addLayout(control_bar)
 
-        # マクロテーブル (列0: チェックボックス, 列1: マクロ名, 列2: 更新日時, 列3: 作成日時, 列4: 自己修復)
+        # 1. カードグリッドエリア (デフォルト)
+        self.cards_scroll_area = QScrollArea(self)
+        self.cards_scroll_area.setWidgetResizable(True)
+        self.cards_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.cards_scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        self.cards_container = QWidget()
+        self.cards_container.setStyleSheet("background: transparent;")
+        self.cards_grid_layout = QGridLayout(self.cards_container)
+        self.cards_grid_layout.setContentsMargins(0, 4, 0, 16)
+        self.cards_grid_layout.setSpacing(14)
+        self.cards_scroll_area.setWidget(self.cards_container)
+
+        main_layout.addWidget(self.cards_scroll_area, 1)
+
+        # 2. テーブルエリア
         self.table_macros = TableWidget(self)
         self.table_macros.setColumnCount(5)
         self.table_macros.setHorizontalHeaderLabels([
@@ -238,6 +465,7 @@ class MainScreen(QWidget):
         ])
         self.table_macros.setFont(self._font(10))
         self.table_macros.horizontalHeader().setFont(self._font(10, bold=True))
+        self.table_macros.setVisible(False)
 
         main_layout.addWidget(self.table_macros, 1)
 
@@ -252,6 +480,8 @@ class MainScreen(QWidget):
         self.empty_state_label.setVisible(False)
         main_layout.addWidget(self.empty_state_label)
 
+        self._update_view_toggle_style()
+
     def _setup_table(self):
         self.table_macros.setShowGrid(False)
         self.table_macros.setAlternatingRowColors(True)
@@ -259,7 +489,7 @@ class MainScreen(QWidget):
         self.table_macros.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
         self.table_macros.verticalHeader().setVisible(False)
-        self.table_macros.verticalHeader().setDefaultSectionSize(50)
+        self.table_macros.verticalHeader().setDefaultSectionSize(54)
 
         header = self.table_macros.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -269,11 +499,10 @@ class MainScreen(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
 
         self.table_macros.setColumnWidth(0, 56)
-        self.table_macros.setColumnWidth(2, 160)
-        self.table_macros.setColumnWidth(3, 160)
+        self.table_macros.setColumnWidth(2, 170)
+        self.table_macros.setColumnWidth(3, 170)
         self.table_macros.setColumnWidth(4, 110)
 
-        # 通常時はチェックボックス列を隠す
         self.table_macros.setColumnHidden(0, True)
 
     def _bind_viewmodel(self):
@@ -281,7 +510,6 @@ class MainScreen(QWidget):
         self.btn_run_selected.clicked.connect(self.run_macro_requested.emit)
         self.btn_edit_selected.clicked.connect(self.edit_macro_requested.emit)
 
-        # 削除ボタン押下で複数選択モードに移行
         self.btn_delete_selected.clicked.connect(self._enter_delete_mode)
         self.btn_cancel_delete.clicked.connect(self._exit_delete_mode)
         self.btn_confirm_delete.clicked.connect(self._on_confirm_batch_delete)
@@ -297,6 +525,53 @@ class MainScreen(QWidget):
 
         self.viewmodel.macros_updated.connect(self._on_macros_loaded)
         self.viewmodel.can_run_changed.connect(self._update_control_buttons_state)
+
+    def _switch_view_mode(self, mode: str):
+        if self._current_view_mode == mode:
+            return
+        self._current_view_mode = mode
+        self._update_view_toggle_style()
+
+        if not self._displayed_macros:
+            self.cards_scroll_area.setVisible(False)
+            self.table_macros.setVisible(False)
+            self.empty_state_label.setVisible(True)
+            return
+
+        self.empty_state_label.setVisible(False)
+        if mode == "cards":
+            self.cards_scroll_area.setVisible(True)
+            self.table_macros.setVisible(False)
+            self._relayout_cards()
+        else:
+            self.cards_scroll_area.setVisible(False)
+            self.table_macros.setVisible(True)
+
+    def _update_view_toggle_style(self):
+        active_style = (
+            "QPushButton { background-color: #2563eb; color: #ffffff; border: 1px solid #2563eb; "
+            "border-radius: 6px; font-weight: bold; } "
+            "QPushButton:hover { background-color: #1d4ed8; }"
+        )
+        inactive_style = (
+            "QPushButton { background-color: #ffffff; color: #475569; border: 1px solid #cbd5e1; "
+            "border-radius: 6px; } "
+            "QPushButton:hover { background-color: #f1f5f9; }"
+        )
+        if self._current_view_mode == "cards":
+            self.btn_view_cards.setStyleSheet(active_style)
+            self.btn_view_table.setStyleSheet(inactive_style)
+        else:
+            self.btn_view_cards.setStyleSheet(inactive_style)
+            self.btn_view_table.setStyleSheet(active_style)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_view_mode == "cards" and self.cards_scroll_area.isVisible():
+            viewport_width = self.cards_scroll_area.viewport().width()
+            cols = max(1, min(4, viewport_width // 300))
+            if cols != self._last_grid_cols:
+                self._relayout_cards()
 
     @Slot(list)
     def _on_macros_loaded(self, macros: list):
@@ -328,6 +603,8 @@ class MainScreen(QWidget):
         elif sort_type == "マクロ名順（降順）":
             items.sort(key=lambda m: self._natural_sort_key(m.name), reverse=True)
 
+        self._displayed_macros = items
+
         total_count = len(self._all_macros)
         filtered_count = len(items)
         if query:
@@ -337,6 +614,7 @@ class MainScreen(QWidget):
 
         if not items:
             self.table_macros.setVisible(False)
+            self.cards_scroll_area.setVisible(False)
             self.empty_state_label.setVisible(True)
             if query:
                 self.empty_state_label.setText(f"「{query}」に一致するマクロは見つかりませんでした。")
@@ -345,10 +623,62 @@ class MainScreen(QWidget):
                     "保存されているマクロがありません。\n「● 記録を開始」ボタンを押して操作を記録しましょう。"
                 )
         else:
-            self.table_macros.setVisible(True)
             self.empty_state_label.setVisible(False)
+            if self._current_view_mode == "cards":
+                self.cards_scroll_area.setVisible(True)
+                self.table_macros.setVisible(False)
+            else:
+                self.cards_scroll_area.setVisible(False)
+                self.table_macros.setVisible(True)
 
         self._render_table(items)
+        self._render_cards(items)
+
+    def _render_cards(self, macros: list[MacroSummary]):
+        for card in self._card_widgets:
+            card.deleteLater()
+        self._card_widgets.clear()
+
+        checked_names = set(self._get_checked_macro_names())
+
+        for macro in macros:
+            is_selected = (macro.name == self._current_selected_name)
+            is_checked = (macro.name in checked_names)
+            card = MacroCardWidget(
+                macro=macro,
+                is_delete_mode=self._is_delete_mode,
+                is_selected=is_selected,
+                is_checked=is_checked,
+                parent=self.cards_container,
+            )
+            card.card_clicked.connect(self._select_macro)
+            card.card_double_clicked.connect(self._on_card_double_clicked)
+            card.card_checked_changed.connect(self._on_card_checked_changed)
+            card.run_requested.connect(self._on_card_run_clicked)
+            card.edit_requested.connect(self._on_card_edit_clicked)
+
+            self._card_widgets.append(card)
+
+        self._relayout_cards()
+
+    def _relayout_cards(self):
+        if not self._card_widgets:
+            return
+
+        viewport_width = self.cards_scroll_area.viewport().width()
+        cols = max(1, min(4, viewport_width // 300))
+        self._last_grid_cols = cols
+
+        while self.cards_grid_layout.count():
+            self.cards_grid_layout.takeAt(0)
+
+        for idx, card in enumerate(self._card_widgets):
+            row = idx // cols
+            col = idx % cols
+            self.cards_grid_layout.addWidget(card, row, col)
+
+        for c in range(cols):
+            self.cards_grid_layout.setColumnStretch(c, 1)
 
     def _render_table(self, macros: list[MacroSummary]):
         self.table_macros.blockSignals(True)
@@ -359,35 +689,30 @@ class MainScreen(QWidget):
         selected_row = -1
 
         for row, macro in enumerate(macros):
-            # チェックボックス (列0)
             chk_item = QTableWidgetItem()
             chk_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             chk_item.setCheckState(Qt.CheckState.Unchecked)
             chk_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table_macros.setItem(row, 0, chk_item)
 
-            # マクロ名 (列1)
             name_item = QTableWidgetItem(f"  {macro.name}")
-            name_item.setFont(self._font(10, bold=True))
+            name_item.setFont(self._font(10.5, bold=True))
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_macros.setItem(row, 1, name_item)
 
-            # 最終更新日時 (列2)
             updated_item = QTableWidgetItem(macro.updated_at)
             updated_item.setFont(item_font)
             updated_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             updated_item.setFlags(updated_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_macros.setItem(row, 2, updated_item)
 
-            # 作成日時 (列3)
             created_item = QTableWidgetItem(macro.created_at)
             created_item.setFont(item_font)
             created_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             created_item.setFlags(created_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_macros.setItem(row, 3, created_item)
 
-            # 自己修復回数 (列4)
             heals_item = QTableWidgetItem(macro.heals)
             heals_item.setFont(item_font)
             heals_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -401,17 +726,70 @@ class MainScreen(QWidget):
 
         if selected_row >= 0:
             self.table_macros.selectRow(selected_row)
-        else:
+        elif not self._current_selected_name:
             self.viewmodel.select_macro("")
+
+    def _select_macro(self, macro_name: str):
+        self._current_selected_name = macro_name
+        self.viewmodel.select_macro(macro_name)
+
+        for card in self._card_widgets:
+            card.set_selected(card.macro.name == macro_name)
+
+        self.table_macros.blockSignals(True)
+        selected_row = -1
+        for row in range(self.table_macros.rowCount()):
+            item = self.table_macros.item(row, 1)
+            if item and item.text().strip() == macro_name:
+                selected_row = row
+                break
+        if selected_row >= 0:
+            self.table_macros.selectRow(selected_row)
+        else:
+            self.table_macros.clearSelection()
+        self.table_macros.blockSignals(False)
+
+        has_selection = bool(macro_name)
+        self.btn_run_selected.setEnabled(has_selection)
+        self.btn_edit_selected.setEnabled(has_selection)
+
+    @Slot(str)
+    def _on_card_double_clicked(self, macro_name: str):
+        if not self._is_delete_mode and self.btn_run_selected.isEnabled():
+            self.run_macro_requested.emit()
+
+    @Slot(str)
+    def _on_card_run_clicked(self, macro_name: str):
+        self._select_macro(macro_name)
+        self.run_macro_requested.emit()
+
+    @Slot(str)
+    def _on_card_edit_clicked(self, macro_name: str):
+        self._select_macro(macro_name)
+        self.edit_macro_requested.emit()
+
+    @Slot(str, bool)
+    def _on_card_checked_changed(self, macro_name: str, checked: bool):
+        self.table_macros.blockSignals(True)
+        for row in range(self.table_macros.rowCount()):
+            name_item = self.table_macros.item(row, 1)
+            if name_item and name_item.text().strip() == macro_name:
+                chk_item = self.table_macros.item(row, 0)
+                if chk_item:
+                    chk_item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                break
+        self.table_macros.blockSignals(False)
+        self._update_batch_delete_status()
 
     @Slot()
     def _enter_delete_mode(self):
-        """削除ボタン押下時にチェックボックス列と一括削除ツールバーを表示する"""
         if not self._all_macros:
             return
 
         self._is_delete_mode = True
         self.table_macros.setColumnHidden(0, False)
+        for card in self._card_widgets:
+            card.set_delete_mode(True)
 
         self.btn_edit_selected.setVisible(False)
         self.btn_delete_selected.setVisible(False)
@@ -421,8 +799,11 @@ class MainScreen(QWidget):
         self.btn_cancel_delete.setVisible(True)
         self.btn_confirm_delete.setVisible(True)
 
-        # 既に選択中のマクロがあれば初期チェックを付与
         if self._current_selected_name:
+            for card in self._card_widgets:
+                if card.macro.name == self._current_selected_name:
+                    card.set_checked(True)
+                    break
             for row in range(self.table_macros.rowCount()):
                 name_item = self.table_macros.item(row, 1)
                 if name_item and name_item.text().strip() == self._current_selected_name:
@@ -435,9 +816,11 @@ class MainScreen(QWidget):
 
     @Slot()
     def _exit_delete_mode(self):
-        """一括削除モードを終了して通常の表示状態に戻す"""
         self._is_delete_mode = False
         self.table_macros.setColumnHidden(0, True)
+        for card in self._card_widgets:
+            card.set_delete_mode(False)
+            card.set_checked(False)
 
         self.chk_select_all.setVisible(False)
         self.btn_cancel_delete.setVisible(False)
@@ -447,7 +830,6 @@ class MainScreen(QWidget):
         self.btn_delete_selected.setVisible(True)
         self.btn_run_selected.setVisible(True)
 
-        # 全チェックをクリア
         self.table_macros.blockSignals(True)
         for row in range(self.table_macros.rowCount()):
             chk_item = self.table_macros.item(row, 0)
@@ -461,35 +843,57 @@ class MainScreen(QWidget):
 
     @Slot(int)
     def _on_select_all_changed(self, state: int):
-        target_state = Qt.CheckState.Checked if state == 2 else Qt.CheckState.Unchecked
+        target_state = Qt.CheckState.Checked if (state == 2 or state == Qt.CheckState.Checked.value) else Qt.CheckState.Unchecked
+        is_checked = (target_state == Qt.CheckState.Checked)
+
         self.table_macros.blockSignals(True)
         for row in range(self.table_macros.rowCount()):
             chk_item = self.table_macros.item(row, 0)
             if chk_item:
                 chk_item.setCheckState(target_state)
         self.table_macros.blockSignals(False)
+
+        for card in self._card_widgets:
+            card.set_checked(is_checked)
+
         self._update_batch_delete_status()
 
     @Slot(int, int)
     def _on_cell_clicked(self, row: int, column: int):
-        # 削除モード中は行全体のクリックでチェックボックスをトグル可能にする
         if not self._is_delete_mode or column == 0:
             return
 
         chk_item = self.table_macros.item(row, 0)
-        if chk_item:
+        name_item = self.table_macros.item(row, 1)
+        if chk_item and name_item:
             current = chk_item.checkState()
-            chk_item.setCheckState(
-                Qt.CheckState.Unchecked if current == Qt.CheckState.Checked else Qt.CheckState.Checked
-            )
+            new_state = (current != Qt.CheckState.Checked)
+            chk_item.setCheckState(Qt.CheckState.Checked if new_state else Qt.CheckState.Unchecked)
+            name = name_item.text().strip()
+            for card in self._card_widgets:
+                if card.macro.name == name:
+                    card.set_checked(new_state)
+                    break
+        self._update_batch_delete_status()
 
     @Slot(QTableWidgetItem)
     def _on_table_item_changed(self, item: QTableWidgetItem):
         if not self._is_delete_mode or item.column() != 0:
             return
+        row = item.row()
+        name_item = self.table_macros.item(row, 1)
+        if name_item:
+            name = name_item.text().strip()
+            is_chk = (item.checkState() == Qt.CheckState.Checked)
+            for card in self._card_widgets:
+                if card.macro.name == name:
+                    card.set_checked(is_chk)
+                    break
         self._update_batch_delete_status()
 
     def _get_checked_macro_names(self) -> list[str]:
+        if self._current_view_mode == "cards" and self._card_widgets:
+            return [card.macro.name for card in self._card_widgets if card._is_checked]
         checked = []
         for row in range(self.table_macros.rowCount()):
             chk = self.table_macros.item(row, 0)
@@ -504,7 +908,7 @@ class MainScreen(QWidget):
         self.btn_confirm_delete.setText(f"🗑 削除する ({count}件)")
         self.btn_confirm_delete.setEnabled(count > 0)
 
-        total = self.table_macros.rowCount()
+        total = len(self._displayed_macros)
         self.chk_select_all.blockSignals(True)
         self.chk_select_all.setChecked(total > 0 and count == total)
         self.chk_select_all.blockSignals(False)
@@ -519,16 +923,13 @@ class MainScreen(QWidget):
     def _on_table_selection_changed(self):
         selected_items = self.table_macros.selectedItems()
         if not selected_items:
-            self._current_selected_name = ""
-            self.viewmodel.select_macro("")
             return
 
         row = selected_items[0].row()
         name_item = self.table_macros.item(row, 1)
         if name_item:
             clean_name = name_item.text().strip()
-            self._current_selected_name = clean_name
-            self.viewmodel.select_macro(clean_name)
+            self._select_macro(clean_name)
 
     @Slot(QTableWidgetItem)
     def _on_table_double_clicked(self, item: QTableWidgetItem):
