@@ -105,12 +105,14 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 has_recent_nav_action = True
                 break
 
-        if recent_click_info:
+        # Why: 遷移契機となったクリックまたは遷移先自身のクリック要素名を実遷移先タイトルで完全修復
+        target_click = recent_click_info if recent_click_info else (curr_info if curr_info.get("raw_action") == "click" else None)
+        if target_click:
             clean_target_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
             if clean_target_title:
-                click_elem_name = str(recent_click_info.get("element_name") or recent_click_info.get("semantic_role") or "").strip()
-                click_ctx = recent_click_info.setdefault("app_context", {})
-                click_url = str(click_ctx.get("url") or recent_click_info.get("url") or "").strip()
+                click_elem_name = str(target_click.get("element_name") or target_click.get("semantic_role") or "").strip()
+                click_ctx = target_click.setdefault("app_context", {})
+                click_url = str(click_ctx.get("url") or target_click.get("url") or "").strip()
 
                 target_keywords = [w for w in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff]+", clean_target_title) if len(w) >= 2]
                 title_mismatch = False
@@ -118,25 +120,24 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                     if not any(kw.lower() in click_elem_name.lower() for kw in target_keywords):
                         title_mismatch = True
 
-                # Why: 記録時UIA誤判定(高度情報学科と情報総合学科の取り違え等)を実遷移先タイトルで完全修復
+                # Why: 記録時UIA誤判定や無名divクリックを実遷移先タイトルで完全修復
                 if title_mismatch or not click_elem_name or click_elem_name in ["left_click", "move", "click"]:
                     logger.info(f"Reconciling clicked element '{click_elem_name}' with actual destination window title '{clean_target_title}'")
-                    recent_click_info["element_name"] = clean_target_title
-                    recent_click_info["semantic_role"] = clean_target_title
+                    target_click["element_name"] = clean_target_title
+                    target_click["semantic_role"] = clean_target_title
                     click_ctx["element_name"] = clean_target_title
 
                     clean_title_esc = clean_target_title.replace("'", "\\'")
-                    recent_click_info["selector"] = f"a:has-text('{clean_title_esc}')"
-                    recent_click_info["selector_type"] = "css"
+                    target_click["selector"] = f"a:has-text('{clean_title_esc}')"
+                    target_click["selector_type"] = "css"
                     click_ctx["css_selector"] = f"a:has-text('{clean_title_esc}')"
                     click_ctx["xpath"] = f"//a[contains(., '{clean_title_esc}')]"
 
                     if click_url and any(kw.lower() not in click_url.lower() for kw in target_keywords):
-                        # Why: 遷移先タイトルと乖離したURL属性は消去しセレクタによる安全なDOM探索へ委譲
-                        recent_click_info.pop("url", None)
+                        target_click.pop("url", None)
                         click_ctx.pop("url", None)
 
-        if has_recent_nav_action:
+        if has_recent_nav_action or curr_info.get("raw_action") == "click":
             i += 1
             continue
 
@@ -1599,9 +1600,50 @@ def optimize_workflow_events(
 
         layout_cleaned.append(info)
 
+    def _rescue_missing_web_scrolls(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Why: ログ側で取りこぼされたWebブラウザ内の下方向スクロールを座標差から自律補完
+        if len(events) < 2: return events
+        rescued = []
+        for idx in range(len(events)):
+            c_evt = events[idx]
+            rescued.append(c_evt)
+            if idx < len(events) - 1:
+                n_evt = events[idx + 1]
+                w_str = (str(c_evt.get("window_name", "")) + str(n_evt.get("window_name", ""))).lower()
+                is_br = any(b in w_str for b in ["firefox", "chrome", "edge", "brave", "opera"])
+                c_act = c_evt.get("raw_action", "")
+                n_act = n_evt.get("raw_action", "")
+                if is_br and c_act == "click" and n_act in ["click", "move"]:
+                    cy = c_evt.get("cursor_y", c_evt.get("y", 0))
+                    ny = n_evt.get("cursor_y", n_evt.get("y", 0))
+                    if (ny - cy >= 280) and ny > 500:
+                        has_sc = any(e.get("raw_action") == "scroll" for e in events[idx:idx + 3])
+                        if not has_sc:
+                            s_dy = -round(max(2.5, (ny - cy) / 110.0), 1)
+                            rescued.append({
+                                "raw_action": "scroll",
+                                "raw_type": "mouse_scroll",
+                                "dx": 0.0,
+                                "dy": s_dy,
+                                "cursor_x": c_evt.get("cursor_x", 960),
+                                "cursor_y": cy,
+                                "x": c_evt.get("cursor_x", 960),
+                                "y": cy,
+                                "event_id": f"{c_evt.get('event_id')}_scroll_res",
+                                "fallback_events": [c_evt.get("event_id")],
+                                "window_name": c_evt.get("window_name", ""),
+                                "win_x": c_evt.get("win_x", 0),
+                                "win_y": c_evt.get("win_y", 0),
+                                "win_w": c_evt.get("win_w", 1920),
+                                "win_h": c_evt.get("win_h", 1080),
+                            })
+                            logger.info(f"Rescued missing browser scroll (dy={s_dy}) between {c_evt.get('event_id')} and {n_evt.get('event_id')}")
+        return rescued
+
     temp_workflow_info = layout_cleaned
     temp_workflow_info = _optimize_typing_and_search_flow(temp_workflow_info)
     temp_workflow_info = _promote_navigation_hover_to_click(temp_workflow_info)
+    temp_workflow_info = _rescue_missing_web_scrolls(temp_workflow_info)
     temp_workflow_info = _reorder_displaced_clicks_before_scroll(temp_workflow_info)
     temp_workflow_info = _cleanup_redundant_moves_and_scrolls(temp_workflow_info)
 
@@ -1873,18 +1915,21 @@ def optimize_workflow_events(
                     target_url = ""
 
                 has_http = target_url.startswith(("http://", "https://"))
-                has_selector = bool(app_ctx.get("css_selector") or app_ctx.get("xpath"))
-                elem_name = app_ctx.get("element_name") or info.get("semantic_role") or ""
+                cur_sel = info.get("selector") or app_ctx.get("css_selector") or app_ctx.get("xpath")
+                has_selector = bool(cur_sel)
+                elem_name = info.get("element_name") or app_ctx.get("element_name") or info.get("semantic_role") or ""
 
-                if has_http:
+                if has_http or (has_selector and act == "click"):
                     info["raw_action"] = "browser_action"
                     info["raw_type"] = "browser_action"
                     if has_selector and act == "click":
                         info["action"] = "click_element"
-                        info["selector"] = app_ctx.get("css_selector") or app_ctx.get("xpath")
+                        info["selector"] = cur_sel
+                        info["selector_type"] = info.get("selector_type") or "css"
                     else:
                         info["action"] = "open_url"
-                    info["url"] = target_url
+                    if has_http:
+                        info["url"] = target_url
                     if elem_name and elem_name != "left_click":
                         info["element_name"] = elem_name
                         info["semantic_role"] = elem_name

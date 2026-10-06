@@ -322,23 +322,31 @@ def process_scroll_event(event: dict):
         source = event.get("source", "unknown")
 
         with _scroll_dedup_lock:
-            # Why: 異なるフックソース(win_scroll/pynput)からの同一操作二重受信(100ms以内)を完全除外
+            # Why: 異なるフックソース(win_scroll/pynput)からの同一操作二重受信(120ms以内)を同方向判定で安全に除外
             if _last_scroll_info is not None:
                 lx, ly, ldx, ldy, lsrc, ltime = _last_scroll_info
                 time_diff = abs(evt_time - ltime)
-                if (time_diff < 0.100) and (source != lsrc) and abs(x - lx) <= 10 and abs(y - ly) <= 10 and (dx == ldx) and (dy == ldy):
+                same_dir = (dy * ldy > 0) or (dx * ldx > 0)
+                if (time_diff < 0.120) and (source != lsrc) and abs(x - lx) <= 30 and abs(y - ly) <= 30 and same_dir:
                     return
             _last_scroll_time = evt_time
             _last_scroll_info = (x, y, dx, dy, source, evt_time)
 
         point_window = window_inspector.get_window_title_at_point(x, y)
-        # Why: 子コントロールでタイトルが空の場合はフォアグラウンドウィンドウ情報を取得して欠落防止
+        # Why: 子コントロールでタイトルが空の場合はフォアグラウンドまたは直前ログから継承し破棄を完全防止
         if not point_window or not point_window.get("title"):
             fg_info = window_inspector.get_foreground_window_info()
             if fg_info and fg_info.get("title"):
                 point_window = fg_info
+            elif state.input_logs:
+                for prev_l in reversed(state.input_logs):
+                    p_w = prev_l.get("WindowName", "").strip()
+                    if p_w:
+                        point_window = {"title": p_w}
+                        break
 
-        if window_inspector.should_ignore_window(point_window.get("title")):
+        w_title = point_window.get("title", "") if point_window else ""
+        if w_title and window_inspector.should_ignore_window(w_title):
             return
 
         event_no = state.get_next_event_no()

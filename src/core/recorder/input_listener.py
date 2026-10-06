@@ -100,9 +100,7 @@ def on_scroll(x, y, dx, dy):
     _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
-    # Why: Windows環境ではwin_scroll低レベルフックが主系として動作するためpynputからの二重投入を根絶
-    if getattr(state, "native_scroll_hook_active", False):
-        return
+    # Why: 低レベルフックのサイレントアンフックによる欠落を防ぎ常時キュー投入(重複はハンドラ側で除外)
     try: 
         import time
         state.mouse_event_queue.put({
