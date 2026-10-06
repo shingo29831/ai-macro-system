@@ -124,11 +124,10 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
         if "key" in raw_type:
             content = entry.get("Content") or {}
             key_name = str(content.get("key") or "").lower() if isinstance(content, dict) else ""
+            # Why: 単独のWinキーや修飾キーはマクロ実行に不要なノイズのため常に完全排除
             if key_name in ["win", "windows", "cmd", "ctrl", "alt", "shift"]:
-                next_act = valid_candidates[i + 1] if i + 1 < n else None
-                if not next_act or next_act.get("WindowName") != entry.get("WindowName"):
-                    i += 1
-                    continue
+                i += 1
+                continue
 
         filtered.append(entry)
         i += 1

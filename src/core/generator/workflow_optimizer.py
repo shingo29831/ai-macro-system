@@ -1503,7 +1503,8 @@ def optimize_workflow_events(
             sys_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
             is_system = not wn_lower or (not is_browser_w and (wn_lower in sys_exact or any(sw in wn_lower for sw in sys_contains)))
             
-            if not is_system and win_name != win_key_window_name:
+            # Why: 業務アクションが開始された場合、または新ウィンドウが出現した場合はシェルスキップを即時解除
+            if _is_business_action(info) or (not is_system and win_name != win_key_window_name):
                 skip_until_new_window = False
             else:
                 continue
@@ -1899,7 +1900,10 @@ def optimize_workflow_events(
             if p_idx > 0:
                 prev = promoted_browser_info[p_idx - 1]
                 prev_act = prev.get("raw_action")
-                prev_b_act = prev.get("action")
+                prev_role = str(prev.get("semantic_role", "")).lower()
+                # Why: IME確定Enterと送信Enterが連続する場合は送信用の1回へ集約
+                if p_role in ["enter", "return"] and prev_role in ["enter", "return"] and prev_act in ["key_down", "key_press", "press_key"]:
+                    continue
                 if prev_act in ["browser_action", "type_text"]:
                     # Why: 末尾のEnterや非IME確定Enterは送信キーのため除去せず保持
                     if p_role == "tab" or (p_info.get("ime_active") and p_idx < m_len - 1 and promoted_browser_info[p_idx + 1].get("raw_action") in ["type_text", "key_press"]):
