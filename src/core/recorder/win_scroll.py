@@ -53,13 +53,15 @@ def native_scroll_hook_callback(n_code, w_param, l_param):
                 dx, dy = (0.0, delta) if w_param == WM_MOUSEWHEEL else (delta, 0.0)
                 
                 # Why: マウスイベントキューに完全統合しクリックや移動との時系列順序を完全保証
+                import time
                 state.mouse_event_queue.put({
                     "type": "scroll",
                     "x": int(mouse_info.pt.x),
                     "y": int(mouse_info.pt.y),
                     "dx": dx,
                     "dy": dy,
-                    "source": "win_scroll"
+                    "source": "win_scroll",
+                    "timestamp": time.time()
                 })
             except Exception:
                 traceback.print_exc()

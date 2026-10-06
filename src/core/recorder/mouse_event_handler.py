@@ -314,7 +314,7 @@ def process_scroll_event(event: dict):
         # Why: スクロール操作直前に保留クリックを同期確定させ順序逆転を完全防止
         process_pending_single_click(sync=True)
         import time
-        now = time.time()
+        evt_time = event.get("timestamp") or time.time()
         x = int(event["x"])
         y = int(event["y"])
         dx = float(event["dx"])
@@ -322,13 +322,14 @@ def process_scroll_event(event: dict):
         source = event.get("source", "unknown")
 
         with _scroll_dedup_lock:
-            # Why: 異なるフックソースからの二重受信(15ms以内)のみ除外し正規の高速連続ノッチを保護
+            # Why: 異なるフックソース(win_scroll/pynput)からの同一操作二重受信(100ms以内)を完全除外
             if _last_scroll_info is not None:
-                lx, ly, ldx, ldy, lsrc = _last_scroll_info
-                if (now - _last_scroll_time < 0.015) and (source != lsrc) and abs(x - lx) <= 5 and abs(y - ly) <= 5 and (dx == ldx) and (dy == ldy):
+                lx, ly, ldx, ldy, lsrc, ltime = _last_scroll_info
+                time_diff = abs(evt_time - ltime)
+                if (time_diff < 0.100) and (source != lsrc) and abs(x - lx) <= 10 and abs(y - ly) <= 10 and (dx == ldx) and (dy == ldy):
                     return
-            _last_scroll_time = now
-            _last_scroll_info = (x, y, dx, dy, source)
+            _last_scroll_time = evt_time
+            _last_scroll_info = (x, y, dx, dy, source, evt_time)
 
         point_window = window_inspector.get_window_title_at_point(x, y)
         # Why: 子コントロールでタイトルが空の場合はフォアグラウンドウィンドウ情報を取得して欠落防止

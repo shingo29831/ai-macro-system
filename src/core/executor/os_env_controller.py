@@ -27,10 +27,21 @@ SPIF_UPDATEINIFILE = 0x0001
 SPIF_SENDCHANGE = 0x0002
 
 
+_wheel_scroll_settings_cache = None
+_wheel_scroll_settings_cache_time = 0.0
+
 def get_wheel_scroll_settings() -> dict:
     """Why: Windows設定から1ノッチあたりのスクロール行数/文字数を取得し環境差による乖離を根絶"""
+    global _wheel_scroll_settings_cache, _wheel_scroll_settings_cache_time
+    import time
+    now = time.time()
+    if _wheel_scroll_settings_cache is not None and (now - _wheel_scroll_settings_cache_time < 5.0):
+        return _wheel_scroll_settings_cache
+
     if platform.system() != "Windows":
-        return {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
+        _wheel_scroll_settings_cache = {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
+        _wheel_scroll_settings_cache_time = now
+        return _wheel_scroll_settings_cache
     try:
         user32 = ctypes.windll.user32
         lines = ctypes.c_uint()
@@ -38,11 +49,14 @@ def get_wheel_scroll_settings() -> dict:
         user32.SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, ctypes.byref(lines), 0)
         user32.SystemParametersInfoW(SPI_GETWHEELSCROLLCHARS, 0, ctypes.byref(chars), 0)
         is_page = (lines.value == WHEEL_PAGESCROLL)
-        return {
+        res = {
             "scroll_lines": 3 if is_page else max(1, lines.value),
             "scroll_chars": max(1, chars.value),
             "is_page_scroll": is_page
         }
+        _wheel_scroll_settings_cache = res
+        _wheel_scroll_settings_cache_time = now
+        return res
     except Exception:
         return {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
 

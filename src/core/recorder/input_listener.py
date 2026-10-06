@@ -100,15 +100,19 @@ def on_scroll(x, y, dx, dy):
     _cancel_hover_timer()
     state.cancel_hover()
     if state.is_stopping: return
+    # Why: Windows環境ではwin_scroll低レベルフックが主系として動作するためpynputからの二重投入を根絶
+    if getattr(state, "native_scroll_hook_active", False):
+        return
     try: 
-        # Why: native_scroll_hook解除時の脱落を防ぎつつhandler側の15msデデュープで安全に多重保護
+        import time
         state.mouse_event_queue.put({
             "type": "scroll",
             "x": int(x),
             "y": int(y),
             "dx": float(dx),
             "dy": float(dy),
-            "source": "pynput"
+            "source": "pynput",
+            "timestamp": time.time()
         })
     except Exception: 
         logger.exception("スクロールイベントの記録に失敗しました")
