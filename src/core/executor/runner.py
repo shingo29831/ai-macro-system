@@ -1649,27 +1649,29 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         try:
                             from core.executor.browser_controller import BrowserController
                             bc = BrowserController.get_instance()
-                            # 1ノッチ = 標準100px換算（dy負方向=下スクロール=正のトップ移動）
-                            pix_top = int(-dy * 100)
-                            pix_left = int(dx * 100)
+                            # Why: 1ノッチ = ブラウザ標準120px換算で実移動量との乖離を根絶
+                            pix_top = int(-dy * 120)
+                            pix_left = int(dx * 120)
                             script = f"window.scrollBy({{top: {pix_top}, left: {pix_left}, behavior: 'instant'}});"
                             res = bc.execute_action({"action": "execute_script", "script": script}, variables, last_win_args, workflow_id)
                             if res and res.get("status") == "success":
                                 executed_via_browser = True
                                 logger.info(f"[{workflow_id}] High-precision DOM scroll executed: top={pix_top}px, left={pix_left}px")
-                                time.sleep(0.15)
+                                time.sleep(0.2)
                         except Exception as b_err:
                             logger.debug(f"[{workflow_id}] Browser DOM scroll bypassed: {b_err}")
 
                     if not executed_via_browser:
-                        if x is not None and y is not None and (x != 0 or y != 0):
-                            sx, sy = int(x + off_x), int(y + off_y)
-                            if platform.system() == "Windows":
-                                ctypes.windll.user32.SetCursorPos(sx, sy)
-                                ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
-                            else:
-                                mouse.position = (sx, sy)
-                            time.sleep(0.05)
+                        # Why: 座標未指定・枠外時にウィンドウクライアント領域中央へ安全移動
+                        target_sx = int(x + off_x) if (x is not None and x > 50) else (current_win_x + current_win_w // 2 if current_win_w > 100 else 960)
+                        target_sy = int(y + off_y) if (y is not None and y > 100) else (current_win_y + current_win_h // 2 if current_win_h > 100 else 540)
+                        
+                        if platform.system() == "Windows":
+                            ctypes.windll.user32.SetCursorPos(target_sx, target_sy)
+                            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
+                        else:
+                            mouse.position = (target_sx, target_sy)
+                        time.sleep(0.08)
                         
                         if platform.system() == "Windows":
                             from core.executor.os_env_controller import get_wheel_scroll_settings

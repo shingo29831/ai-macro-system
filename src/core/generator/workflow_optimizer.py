@@ -1601,7 +1601,7 @@ def optimize_workflow_events(
         layout_cleaned.append(info)
 
     def _rescue_missing_web_scrolls(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Why: ログ側で取りこぼされたWebブラウザ内の下方向スクロールを座標差から自律補完
+        # Why: ログ側で取りこぼされたWebブラウザ内の下方向スクロールを画面差分・要素距離から高精度補完
         if len(events) < 2: return events
         rescued = []
         for idx in range(len(events)):
@@ -1613,31 +1613,43 @@ def optimize_workflow_events(
                 is_br = any(b in w_str for b in ["firefox", "chrome", "edge", "brave", "opera"])
                 c_act = c_evt.get("raw_action", "")
                 n_act = n_evt.get("raw_action", "")
-                if is_br and c_act == "click" and n_act in ["click", "move"]:
+                
+                # Why: スクロール存在チェック
+                has_sc = any(e.get("raw_action") == "scroll" for e in events[max(0, idx - 1):min(len(events), idx + 3)])
+                if is_br and not has_sc:
                     cy = c_evt.get("cursor_y", c_evt.get("y", 0))
                     ny = n_evt.get("cursor_y", n_evt.get("y", 0))
-                    if (ny - cy >= 280) and ny > 500:
-                        has_sc = any(e.get("raw_action") == "scroll" for e in events[idx:idx + 3])
-                        if not has_sc:
-                            s_dy = -round(max(2.5, (ny - cy) / 110.0), 1)
-                            rescued.append({
-                                "raw_action": "scroll",
-                                "raw_type": "mouse_scroll",
-                                "dx": 0.0,
-                                "dy": s_dy,
-                                "cursor_x": c_evt.get("cursor_x", 960),
-                                "cursor_y": cy,
-                                "x": c_evt.get("cursor_x", 960),
-                                "y": cy,
-                                "event_id": f"{c_evt.get('event_id')}_scroll_res",
-                                "fallback_events": [c_evt.get("event_id")],
-                                "window_name": c_evt.get("window_name", ""),
-                                "win_x": c_evt.get("win_x", 0),
-                                "win_y": c_evt.get("win_y", 0),
-                                "win_w": c_evt.get("win_w", 1920),
-                                "win_h": c_evt.get("win_h", 1080),
-                            })
-                            logger.info(f"Rescued missing browser scroll (dy={s_dy}) between {c_evt.get('event_id')} and {n_evt.get('event_id')}")
+                    c_diff = c_evt.get("diff_val", 0.0)
+                    n_diff = n_evt.get("diff_val", 0.0)
+                    
+                    # Why: 大画面差分(Diff>=20%)または下部要素への移動・セクション探索をスクロールと判定
+                    has_visual_scroll = (c_diff >= 0.20 or n_diff >= 0.20) and c_act in ["click", "move"] and n_act in ["click", "move"]
+                    has_downward_nav = (c_act == "click" and n_act in ["click", "move"] and (ny - cy >= 150 or ny > 450))
+
+                    if has_visual_scroll or has_downward_nav:
+                        # Why: 微小な2.7等を排し1画面分のセクション移動に必要な実スクロール量(6〜10ノッチ)を算出
+                        dist_val = max(abs(ny - cy), 450)
+                        s_dy = -round(max(6.5, min(12.0, dist_val / 55.0)), 1)
+                        mid_x = c_evt.get("cursor_x", c_evt.get("x", 960))
+                        mid_y = max(350, min(cy, 700))
+                        rescued.append({
+                            "raw_action": "scroll",
+                            "raw_type": "mouse_scroll",
+                            "dx": 0.0,
+                            "dy": s_dy,
+                            "cursor_x": mid_x,
+                            "cursor_y": mid_y,
+                            "x": mid_x,
+                            "y": mid_y,
+                            "event_id": f"{c_evt.get('event_id')}_scroll_res",
+                            "fallback_events": [c_evt.get("event_id")],
+                            "window_name": c_evt.get("window_name", ""),
+                            "win_x": c_evt.get("win_x", 0),
+                            "win_y": c_evt.get("win_y", 0),
+                            "win_w": c_evt.get("win_w", 1920),
+                            "win_h": c_evt.get("win_h", 1080),
+                        })
+                        logger.info(f"Rescued missing browser scroll (dy={s_dy}) between {c_evt.get('event_id')} and {n_evt.get('event_id')}")
         return rescued
 
     temp_workflow_info = layout_cleaned
