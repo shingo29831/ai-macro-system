@@ -23,6 +23,7 @@ class MacroEditorScreen(QWidget):
         self.commands = []
         self.workflow_dir = None
         self.is_temporary = False
+        self.is_review = False
         
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -185,6 +186,11 @@ class MacroEditorScreen(QWidget):
         header_layout.addWidget(self.title_label)
         header_layout.addStretch()
 
+        self.review_banner = QLabel("【記録結果の確認】各ステップを確認し、不要な操作の削除や値の調整を行ってください。")
+        self.review_banner.setStyleSheet("color: #b45309; background-color: #fef3c7; border: 1px solid #fcd34d; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px;")
+        self.review_banner.setVisible(False)
+        header_layout.addWidget(self.review_banner)
+
         self.btn_index = TransparentToolButton(FluentIcon.MENU)
         self.btn_index.setToolTip("目次パネルの開閉")
         self.btn_index.clicked.connect(self._toggle_index_panel)
@@ -259,14 +265,17 @@ class MacroEditorScreen(QWidget):
     def _toggle_index_panel(self):
         self.index_panel.setVisible(not self.index_panel.isVisible())
         
-    def load_macro(self, macro_name: str, commands: list, workflow_dir: Path, is_temporary: bool = False):
+    def load_macro(self, macro_name: str, commands: list, workflow_dir: Path, is_temporary: bool = False, is_review: bool = False):
         self.macro_name = macro_name
         self.commands = commands
         self.workflow_dir = workflow_dir
         self.is_temporary = is_temporary
+        self.is_review = is_review
         
-        self.title_label.setText(f"{macro_name}" + (" (実行前確認)" if is_temporary else ""))
-        self.btn_save.setText("実行" if is_temporary else "保存")
+        suffix = " (実行前確認)" if is_temporary else (" (記録ステップの確認・精査)" if is_review else "")
+        self.title_label.setText(f"{macro_name}{suffix}")
+        self.review_banner.setVisible(is_review)
+        self.btn_save.setText("実行" if is_temporary else ("確認完了して保存" if is_review else "保存"))
         
         while self.canvas_container_layout.count():
             item = self.canvas_container_layout.takeAt(0)

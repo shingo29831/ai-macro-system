@@ -206,6 +206,16 @@ class MainWindow(FluentWindow):
             self.raise_()
             self.activateWindow()
 
+    def open_macro_editor_for_review(self, macro_name: str):
+        self.viewmodel.select_macro(macro_name)
+        commands = self.viewmodel.load_macro_commands(macro_name)
+        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
+        workflow_dir = get_macros_root() / workflow_id
+
+        self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False, is_review=True)
+        self.navigationInterface.hide()
+        self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
+
     def open_macro_editor_for_edit(self):
         macro_name = self.viewmodel._selected_macro
         if not macro_name:
@@ -398,22 +408,29 @@ class MainWindow(FluentWindow):
         self.raise_()
         self.activateWindow()
 
-    @Slot(bool, str)
-    def _on_generation_finished(self, success: bool, message: str):
+    @Slot(bool, str, str)
+    def _on_generation_finished(self, success: bool, message: str, macro_name: str = ""):
         if self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
 
-        if not success and message != "キャンセルされました":
-            QMessageBox.warning(
-                self,
-                "マクロ生成エラー",
-                f"マクロの生成に失敗しました:\n{message}",
-            )
-
         self.show()
         self.raise_()
         self.activateWindow()
+
+        if not success:
+            if message != "キャンセルされました":
+                QMessageBox.warning(
+                    self,
+                    "マクロ生成エラー",
+                    f"マクロの生成に失敗しました:\n{message}",
+                )
+            return
+
+        # Why: 記録完了後に対話的なステップ精査・取捨選択エディタへシームレスに誘導
+        target_name = macro_name or self.viewmodel._selected_macro
+        if target_name:
+            self.open_macro_editor_for_review(target_name)
 
     def open_settings_dialog(self):
         """設定ダイアログを開く。"""

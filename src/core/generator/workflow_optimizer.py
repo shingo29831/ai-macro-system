@@ -440,7 +440,38 @@ def _optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) -
 
     return result
 
-def _evaluate_form_value(candidates: List[str], elem_name: str, has_snapshot_val: Optional[str] = None) -> str:
+def _select_candidate_with_llm(candidates: List[str], elem_name: str, config: Optional[Any] = None) -> Optional[str]:
+    # Why: 小型モデル(Gemma 2B)でも崩れない番号選択プロンプトで曖昧な候補値を高精度判定
+    if not config or len(candidates) < 2:
+        return None
+    try:
+        from engines.llm.client import LLMClient
+        client = LLMClient(host=config.llm_host, port=int(config.llm_port), timeout=3, max_retries=1)
+        options_text = "\n".join(f"{idx + 1}: {c}" for idx, c in enumerate(candidates))
+        prompt = (
+            f"You are a form field input analyzer.\n"
+            f"Target input field: \"{elem_name}\"\n"
+            f"Candidates:\n{options_text}\n\n"
+            f"Select the single most complete, definitive value intended for submission.\n"
+            f"Respond ONLY with the choice number (e.g., 1 or 2)."
+        )
+        res = client.generate(prompt)
+        if res.get("success") and "response" in res:
+            content = res["response"]["choices"][0]["message"]["content"].strip()
+            match = re.search(r'\b([1-9])\b', content)
+            if match:
+                selected_idx = int(match.group(1)) - 1
+                if 0 <= selected_idx < len(candidates):
+                    logger.info(f"LLM resolved field '{elem_name}' value to candidate [{selected_idx + 1}]: {candidates[selected_idx]}")
+                    return candidates[selected_idx].strip()
+    except Exception as e:
+        logger.debug(f"LLM candidate evaluation skipped/failed: {e}")
+    return None
+
+def _evaluate_form_value(candidates: List[str], elem_name: str, has_snapshot_val: Optional[str] = None, config: Optional[Any] = None) -> str:
+    llm_val = _select_candidate_with_llm(candidates, elem_name, config)
+    if llm_val:
+        return llm_val
     # Why: ブラウザ確定スナップショット値を絶対最優先し普遍判定で最適値を決定
     if has_snapshot_val and str(has_snapshot_val).strip():
         s_val = str(has_snapshot_val).strip()
@@ -481,7 +512,7 @@ def _evaluate_form_value(candidates: List[str], elem_name: str, has_snapshot_val
             best_score, best_val = s, c.strip()
     return best_val if best_score > 0 else (candidates[-1].strip() if candidates else "")
 
-def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], config: Optional[Any] = None) -> List[Dict[str, Any]]:
     # Why: ハードコードを完全排除しコントロール種別と最新確定値に基づく普遍的なフォーム最適化
     if not temp_workflow_info:
         return temp_workflow_info
@@ -600,7 +631,7 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]])
     for k, cand_list in selector_candidates.items():
         clean_name = k.replace("name:", "") if k.startswith("name:") else ""
         snap_val = global_form_snapshot.get(k) or global_form_snapshot.get(clean_name) or global_form_snapshot.get(f"name:{clean_name}")
-        chosen = _evaluate_form_value(cand_list, clean_name, has_snapshot_val=snap_val)
+        chosen = _evaluate_form_value(cand_list, clean_name, has_snapshot_val=snap_val, config=config)
         if chosen:
             element_final_values[k] = chosen
 
@@ -1307,7 +1338,8 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
 def optimize_workflow_events(
     temp_workflow_info: List[Dict[str, Any]], 
     workflow_id: str, 
-    check_cancel_callback: Optional[Callable[[], bool]] = None
+    check_cancel_callback: Optional[Callable[[], bool]] = None,
+    config: Optional[Any] = None
 ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     last_cancel_check_time = time.time()
     def should_cancel():
@@ -1637,7 +1669,7 @@ def optimize_workflow_events(
                     if not i_ctx.get("control_type") and last_clk_ctx.get("control_type"):
                         i_ctx["control_type"] = last_clk_ctx["control_type"]
 
-    temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info)
+    temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info, config=config)
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:

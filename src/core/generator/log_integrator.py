@@ -217,7 +217,7 @@ def generate_macro_workflow(
             progress_callback(75, "ワークフローの最適化中 (Office連携, ループ解析, 変数化)...")
         generation_debug_log["stages"].append({"name": "Workflow Optimization", "status": "started"})
         
-        temp_workflow_info, variables = optimize_workflow_events(temp_workflow_info, workflow_id, check_cancel_callback)
+        temp_workflow_info, variables = optimize_workflow_events(temp_workflow_info, workflow_id, check_cancel_callback, config=config)
 
         if progress_callback:
             progress_callback(85, "ワークフロー生成中... アクションの最適化とマッピング")

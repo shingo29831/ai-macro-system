@@ -21,7 +21,7 @@ class MainViewModel(QObject):
     can_run_changed = Signal(bool)
     execution_finished = Signal()
     generation_progress = Signal(int, str)
-    generation_finished = Signal(bool, str)
+    generation_finished = Signal(bool, str, str)
     recording_stopped_by_shortcut = Signal()
     recording_error = Signal(str)
     execution_error = Signal(str)
@@ -235,17 +235,20 @@ class MainViewModel(QObject):
                         
                         logger.info(f"Background macro generation successfully completed for ID: {workflow_id}")
                         self.load_macros()
-                        self.generation_finished.emit(True, "")
+                        # Why: 生成直後のステップ精査・レビューUIを自動起動するためマクロ名を解決して通知
+                        resolved_name = next((name for name, wid in self._macro_id_map.items() if wid == workflow_id), f"マクロ {workflow_id}")
+                        self._selected_macro = resolved_name
+                        self.generation_finished.emit(True, "", resolved_name)
                             
                     else:
                         msg = "Recording stopped, but target workflow_id could not be resolved from os_hook."
                         logger.warning(msg)
                         self.load_macros()
-                        self.generation_finished.emit(False, msg)
+                        self.generation_finished.emit(False, msg, "")
                         
                 except InterruptedError:
                     logger.warning(f"Background macro generation cancelled.")
-                    self.generation_finished.emit(False, "キャンセルされました")
+                    self.generation_finished.emit(False, "キャンセルされました", "")
                 except Exception as gen_err:
                     import traceback
                     tb_str = traceback.format_exc()
@@ -253,7 +256,7 @@ class MainViewModel(QObject):
                     detail_err = f"{type(gen_err).__name__}: {gen_err}\n\n【詳細スタックトレース】\n{tb_str}"
                     logger.error(f"Unhandled exception during background macro generation: {detail_err}")
                     self.recording_error.emit(detail_err)
-                    self.generation_finished.emit(False, err_msg)
+                    self.generation_finished.emit(False, err_msg, "")
                 finally:
                     self._is_stopping = False
                     
