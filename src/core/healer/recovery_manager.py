@@ -14,11 +14,68 @@ from pathlib import Path
 from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
+import re
+from difflib import SequenceMatcher
 from core.recorder.screen_capturer import take_screenshot, get_macros_root
-from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
 
 logger = logging.getLogger(__name__)
+
+def _is_logo_symbol_noise(text: str, bbox: Any = None, confidence: float = 1.0) -> bool:
+    # Why: ロゴやアイコン枠線のOCR誤認識（幾何記号・罫線・単一文字）を完全除外
+    if not text:
+        return True
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+
+    meaningful = re.findall(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fffA-Za-z0-9]', cleaned)
+    if not meaningful:
+        return True
+
+    symbol_ratio = (len(cleaned) - len(meaningful)) / len(cleaned)
+    if symbol_ratio >= 0.5:
+        return True
+
+    if len(meaningful) == 1:
+        if meaningful[0] in "oOclIivVxXuU一ロ口十人入八二三日目田-|_~^+=*/\\":
+            return True
+        if confidence < 0.75:
+            return True
+
+    if bbox:
+        w = getattr(bbox, "width", 0) or getattr(bbox, "w", 0)
+        h = getattr(bbox, "height", 0) or getattr(bbox, "h", 0)
+        if 0 < w <= 65 and 0 < h <= 65:
+            aspect = w / h
+            if 0.7 <= aspect <= 1.4 and len(meaningful) <= 2:
+                return True
+
+    return False
+
+def _match_target_text(target: str, candidate: str) -> Tuple[bool, float]:
+    # Why: 1文字ノイズによる逆包含誤爆を根絶し完全一致または部分単語・高類似度のみ判定
+    t_clean = re.sub(r'[\s\-_]', '', target.lower())
+    c_clean = re.sub(r'[\s\-_]', '', candidate.lower())
+    if not t_clean or not c_clean:
+        return False, 0.0
+
+    if t_clean == c_clean:
+        return True, 1.0
+
+    if len(t_clean) >= 2 and t_clean in c_clean:
+        return True, 0.95
+
+    if len(c_clean) >= 2 and c_clean in t_clean:
+        ratio = len(c_clean) / len(t_clean)
+        if ratio >= 0.6:
+            return True, 0.85 * ratio
+
+    sim = SequenceMatcher(None, t_clean, c_clean).ratio()
+    if sim >= 0.75 and len(t_clean) >= 2:
+        return True, sim
+
+    return False, 0.0
 
 def attempt_recovery(workflow_id: str, target_id: str, window_hwnd: int = 0, raw_event_id: str = "") -> Dict[str, Any]:
     """UIA、マルチスケール画像照合、AIビジョンの3段階フォールバックにより目標UI座標を自律修復する。"""
@@ -120,54 +177,49 @@ def attempt_recovery(workflow_id: str, target_id: str, window_hwnd: int = 0, raw
         except Exception as cv_err:
             logger.debug(f"[{workflow_id}] Template match recovery bypassed: {cv_err}")
 
-    # --- Stage 3: OCR & YOLO ビジョンスキャン (大幅UI再配置・テキスト認識) ---
+    # --- Stage 3: クリーンアップ済みOCRビジョンスキャン (YOLO誤爆排除) ---
     temp_dir = target_dir / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_img_path = temp_dir / f"recovery_s3_{target_id}.png"
 
     try:
         full_img.save(temp_img_path)
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_ocr = executor.submit(read_text_from_image, str(temp_img_path))
-            future_yolo = executor.submit(detect_ui_elements, str(temp_img_path))
-            ocr_results = future_ocr.result()
-            yolo_results = future_yolo.result()
+        # Why: 誤検出の原因となるYOLOを遮断しクリーンアップ済みOCRのみ実行
+        ocr_results = read_text_from_image(str(temp_img_path))
 
         found_box = None
-        best_confidence = 0.0
-        target_text_lower = semantic_role.lower()
+        best_score = 0.0
 
-        if ocr_results and target_text_lower:
+        if ocr_results and semantic_role:
             for ocr_res in ocr_results:
-                if not ocr_res.content:
-                    continue
-                res_text = ocr_res.content.lower()
-                if target_text_lower in res_text or res_text in target_text_lower:
-                    if ocr_res.confidence > best_confidence:
-                        best_confidence = ocr_res.confidence
-                        found_box = ocr_res.boundingBox
+                raw_text = getattr(ocr_res, "content", "")
+                conf = getattr(ocr_res, "confidence", 1.0)
+                box = getattr(ocr_res, "boundingBox", None)
 
-        if not found_box and yolo_results and ui_type:
-            for yolo_res in yolo_results:
-                if yolo_res.type.lower() == ui_type.lower():
-                    if yolo_res.confidence > best_confidence:
-                        best_confidence = yolo_res.confidence
-                        found_box = yolo_res.boundingBox
+                if _is_logo_symbol_noise(raw_text, box, conf):
+                    continue
+
+                is_match, match_score = _match_target_text(semantic_role, raw_text)
+                if is_match:
+                    combined = match_score * conf
+                    if combined > best_score:
+                        best_score = combined
+                        found_box = box
 
         if found_box:
             m_left = monitor_info.get("left", 0) if isinstance(monitor_info, dict) else 0
             m_top = monitor_info.get("top", 0) if isinstance(monitor_info, dict) else 0
             cx = m_left + getattr(found_box, 'x', 0) + (getattr(found_box, 'width', 0) // 2)
             cy = m_top + getattr(found_box, 'y', 0) + (getattr(found_box, 'height', 0) // 2)
-            logger.info(f"[{workflow_id}] Stage 3 (AI Vision) recovered target at ({cx}, {cy}).")
+            logger.info(f"[{workflow_id}] Stage 3 (Clean OCR) recovered '{semantic_role}' at ({cx}, {cy}) (Score: {best_score:.2f}).")
             return {
                 "success": True,
                 "stage": 3,
-                "method": "ai_vision",
+                "method": "clean_ocr",
                 "new_coordinates": {"x": int(cx), "y": int(cy)}
             }
     except Exception as e:
-        logger.error(f"[{workflow_id}] Critical error during AI vision recovery: {e}")
+        logger.error(f"[{workflow_id}] Critical error during OCR recovery: {e}")
     finally:
         if temp_img_path.exists():
             try:
