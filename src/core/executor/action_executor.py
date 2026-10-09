@@ -20,6 +20,7 @@ from core.executor.input_helper import (
     detect_unexpected_dialog as _detect_unexpected_dialog,
 )
 from core.executor.excel_handler import get_excel_application as _get_excel_application
+from core.executor.target_healer import verify_and_heal_target
 from core.executor.window_manager import activate_and_restore_window
 
 logger = logging.getLogger(__name__)

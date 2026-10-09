@@ -29,11 +29,10 @@ class BrowserController:
         return cls._instance
 
     def _resolve_template(self, text: Optional[str], variables: Dict[str, Any]) -> str:
-        # Why: runner側の包括的エイリアス・正規化解決エンジンへ完全統一
         if not text:
             return ""
-        from core.executor.runner import _resolve_variables
-        return str(_resolve_variables(text, variables))
+        from core.executor.input_helper import resolve_variables
+        return str(resolve_variables(text, variables))
 
     def _get_active_cdp_tab(self) -> Optional[Dict[str, Any]]:
         # Why: ChromiumのJSONエンドポイントからアクティブタブのCDP情報を検出
@@ -62,15 +61,15 @@ class BrowserController:
                     time.sleep(0.05)
                 rec_x = last_win_args.get("x", 0)
                 rec_y = last_win_args.get("y", 0)
-                from core.executor.runner import _get_window_offset
-                off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+                from core.executor.input_helper import get_window_offset
+                off_x, off_y = get_window_offset(target_hwnd, rec_x, rec_y)
             except Exception:
                 pass
 
         actual_x = int(x + off_x)
         actual_y = int(y + off_y)
-        from core.executor.runner import _smooth_move
-        _smooth_move(actual_x, actual_y)
+        from core.executor.input_helper import smooth_move
+        smooth_move(actual_x, actual_y)
         time.sleep(0.04)
         set_system_cursor("run_click")
         self._mouse.click(Button.left, 1)
@@ -92,15 +91,14 @@ class BrowserController:
             time.sleep(0.04)
 
         from core.executor.os_env_controller import ensure_ime_state, normalize_text_width
-        from core.executor.runner import _set_clipboard_text
+        from core.executor.input_helper import send_unicode_string, set_clipboard_text
         norm_text = normalize_text_width(text)
         # Why: クリップボード貼付直前はIMEを半角OFFにしてローマ字誤変換(ろｗ等)を完全根絶
         ensure_ime_state(target_state=False, timeout=0.4)
         time.sleep(0.04)
 
         # Why: クリップボード貼付とSendInput(Unicode)ダイレクト入力の二重化で確実に入力
-        from core.executor.runner import _send_unicode_string
-        clip_ok = _set_clipboard_text(norm_text)
+        clip_ok = set_clipboard_text(norm_text)
         if clip_ok:
             self._keyboard.press(Key.ctrl)
             self._keyboard.press('v')
@@ -111,7 +109,7 @@ class BrowserController:
             self._keyboard.release(Key.right)
             time.sleep(0.06)
         else:
-            _send_unicode_string(norm_text)
+            send_unicode_string(norm_text)
         time.sleep(0.15)
 
     def execute_action(
@@ -153,8 +151,8 @@ class BrowserController:
                 time.sleep(0.08)
                 # フォーカス移動後も半角状態を再確認
                 ensure_ime_state(target_state=False, timeout=0.4)
-                from core.executor.runner import _set_clipboard_text
-                if _set_clipboard_text(norm_url):
+                from core.executor.input_helper import set_clipboard_text
+                if set_clipboard_text(norm_url):
                     time.sleep(0.04)
                     self._keyboard.press(Key.ctrl)
                     self._keyboard.press('v')
@@ -300,8 +298,8 @@ class BrowserController:
                             target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
                             rec_x = last_win_args.get("x", 0) if last_win_args else 0
                             rec_y = last_win_args.get("y", 0) if last_win_args else 0
-                            from core.executor.runner import _get_window_offset
-                            off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+                            from core.executor.input_helper import get_window_offset
+                            off_x, off_y = get_window_offset(target_hwnd, rec_x, rec_y)
                             ctrl = auto.ControlFromPoint(int(opt_x + off_x), int(opt_y + off_y))
                     except Exception:
                         pass
@@ -372,8 +370,8 @@ class BrowserController:
                     target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
                     rec_x = last_win_args.get("x", 0) if last_win_args else 0
                     rec_y = last_win_args.get("y", 0) if last_win_args else 0
-                    from core.executor.runner import _get_window_offset
-                    off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+                    from core.executor.input_helper import get_window_offset
+                    off_x, off_y = get_window_offset(target_hwnd, rec_x, rec_y)
                     ctrl = auto.ControlFromPoint(int(opt_x + off_x), int(opt_y + off_y))
                 except Exception:
                     pass
@@ -569,8 +567,8 @@ class BrowserController:
                         if last_win_args and platform.system() == "Windows":
                             rec_x = last_win_args.get("x", 0)
                             rec_y = last_win_args.get("y", 0)
-                            from core.executor.runner import _get_window_offset
-                            off_x, off_y = _get_window_offset(target_hwnd, rec_x, rec_y)
+                            from core.executor.input_helper import get_window_offset
+                            off_x, off_y = get_window_offset(target_hwnd, rec_x, rec_y)
                         pt_ctrl = auto.ControlFromPoint(int(target_x + off_x), int(target_y + off_y))
                         if pt_ctrl and pt_ctrl.Exists(0, 0):
                             from pywinauto.controls.uiawrapper import UIAWrapper
@@ -834,8 +832,9 @@ class BrowserController:
                 if cy < vp_top or cy > vp_bottom or cx < w_left or cx > w_right:
                     scroll_center_x = (w_left + w_right) // 2
                     scroll_center_y = (w_top + w_bottom) // 2
-                    from core.executor.runner import _smooth_move, WHEEL_DELTA, MOUSEEVENTF_WHEEL
-                    _smooth_move(scroll_center_x, scroll_center_y, duration=0.05)
+                    from core.executor.input_helper import smooth_move
+                    from core.executor.action_executor import MOUSEEVENTF_WHEEL, WHEEL_DELTA
+                    smooth_move(scroll_center_x, scroll_center_y, duration=0.05)
                     time.sleep(0.04)
 
                     diff_y = cy - (vp_top + vp_bottom) // 2
@@ -882,8 +881,8 @@ class BrowserController:
                 if target_hwnd:
                     ctypes.windll.user32.SetForegroundWindow(target_hwnd)
                     time.sleep(0.04)
-                from core.executor.runner import _smooth_move
-                _smooth_move(hx, hy, steps=12, duration=0.15)
+                from core.executor.input_helper import smooth_move
+                smooth_move(hx, hy, steps=12, duration=0.15)
                 # Why: レンダラープロセスにマウス進入・ホバーイベントを確実に認識させる微小往復イベント
                 self._mouse.position = (hx, hy)
                 ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
@@ -919,8 +918,8 @@ class BrowserController:
         if coords:
             cx, cy = coords
             if platform.system() == "Windows":
-                from core.executor.runner import _smooth_move
-                _smooth_move(cx, cy)
+                from core.executor.input_helper import smooth_move
+                smooth_move(cx, cy)
                 time.sleep(0.04)
                 set_system_cursor("run_click")
                 time.sleep(0.03)
@@ -939,8 +938,8 @@ class BrowserController:
                 logger.warning(f"UIA element has invalid rectangle ({cx}, {cy}). Falling back to physical coords.")
                 return False
             if platform.system() == "Windows":
-                from core.executor.runner import _smooth_move
-                _smooth_move(cx, cy)
+                from core.executor.input_helper import smooth_move
+                smooth_move(cx, cy)
                 time.sleep(0.04)
                 set_system_cursor("run_click")
                 time.sleep(0.03)

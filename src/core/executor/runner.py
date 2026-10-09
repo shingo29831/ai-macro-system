@@ -11,7 +11,23 @@ import time
 from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener
 from pynput.mouse import Controller as MouseController
 
-from core.executor.input_helper import resolve_variables
+from core.executor.input_helper import (
+    detect_unexpected_dialog as _detect_unexpected_dialog,
+    get_window_offset as _get_window_offset,
+    resolve_variables,
+    resolve_variables as _resolve_variables,
+    send_unicode_string as _send_unicode_string,
+    set_clipboard_text as _set_clipboard_text,
+    smooth_move as _smooth_move,
+    wait_for_screen_settle as _wait_for_screen_settle,
+)
+from core.executor.action_executor import (
+    MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_WHEEL,
+    WHEEL_DELTA,
+    execute_physical_action,
+    verify_and_heal_target,
+)
 from core.executor.loop_controller import LoopController
 from core.executor.os_env_controller import restore_system_cursor, set_system_cursor
 from core.executor.step_dispatcher import StepDispatcher
