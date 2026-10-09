@@ -1408,15 +1408,12 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                         needs_recovery = True
 
                     if needs_recovery:
-                        logger.warning(f"[{workflow_id}] Healer is disabled temporarily. Bypassing recovery and continuing.")
-                        needs_recovery = False
-
-                    if needs_recovery:
                         _check_stop()
                         if status_callback:
                             status_callback("自己修復中...", True)
-                            
-                        recovery_result = attempt_recovery(workflow_id, target_id)
+
+                        target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else 0) or 0
+                        recovery_result = attempt_recovery(workflow_id, target_id, window_hwnd=target_hwnd, raw_event_id=raw_event_id)
                         _check_stop()
                         
                         step_log["recovery_info"] = recovery_result
@@ -1464,7 +1461,15 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     i += 1
                     continue
 
-                duration = args.get("duration", 0.0)
+                duration = float(args.get("duration", 0.0))
+                # Why: 0.6秒以上の待機時は画面描画収束を検知して無駄な待機時間を適応短縮
+                if duration >= 0.6 and prev_method in ["click", "type_text", "press_key", "browser_action"]:
+                    settled = _wait_for_screen_settle(timeout=min(duration, 3.0), settle_threshold=0.003)
+                    if settled:
+                        logger.info(f"[{workflow_id}] Smart adaptive wait: Screen settled early, proceeding.")
+                        i += 1
+                        continue
+
                 sleep_intervals = int(duration * 10)
                 for _ in range(sleep_intervals):
                     _check_stop()
