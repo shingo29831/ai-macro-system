@@ -1639,81 +1639,99 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             time.sleep(0.55)
                         
                 elif method == "scroll":
-                    dx = args.get("dx", 0.0)
-                    dy = args.get("dy", 0.0)
+                    try:
+                        dx = float(args.get("dx") or 0.0)
+                        dy = float(args.get("dy") or 0.0)
+                    except (ValueError, TypeError):
+                        dx, dy = 0.0, 0.0
                     x = args.get("x")
                     y = args.get("y")
-                    
+
                     if dx == 0.0 and dy == 0.0:
                         i += 1
                         continue
 
-                    # Why: ブラウザ対象時はピクセル単位で100%同一量を再現できるDOMスクロールを最優先実行
-                    executed_via_browser = False
-                    if is_browser_target:
+                    # Why: 座標未指定・枠外時にウィンドウクライアント領域中央へ安全移動
+                    target_sx = int(x + off_x) if (x is not None and x > 20) else (current_win_x + current_win_w // 2 if current_win_w > 100 else 960)
+                    target_sy = int(y + off_y) if (y is not None and y > 20) else (current_win_y + current_win_h // 2 if current_win_h > 100 else 540)
+
+                    # Why: スクロール受領対象へ確実にカーソルを移動させホバー状態を確立
+                    _smooth_move(target_sx, target_sy, duration=0.08)
+                    time.sleep(0.05)
+
+                    cur_win_title = str((last_win_args or {}).get("window_title", "")).lower()
+                    is_current_browser = any(b in cur_win_title for b in ["firefox", "chrome", "edge", "brave", "opera"])
+
+                    # Why: DOMスクロール(window+内部コンテナ対応)を試行しSPA描画を即時追従
+                    if is_current_browser:
                         try:
                             from core.executor.browser_controller import BrowserController
                             bc = BrowserController.get_instance()
-                            # Why: 1ノッチ = ブラウザ標準120px換算で実移動量との乖離を根絶
-                            pix_top = int(-dy * 120)
-                            pix_left = int(dx * 120)
-                            script = f"window.scrollBy({{top: {pix_top}, left: {pix_left}, behavior: 'instant'}});"
+                            pix_top = int(-dy * 100)
+                            pix_left = int(dx * 100)
+                            rel_x = target_sx - current_win_x if current_win_x > 0 else 400
+                            rel_y = target_sy - current_win_y if current_win_y > 0 else 400
+                            script = f"""
+                            (() => {{
+                                const t = {pix_top}, l = {pix_left};
+                                window.scrollBy({{top: t, left: l, behavior: 'instant'}});
+                                if (document.scrollingElement) document.scrollingElement.scrollBy({{top: t, left: l, behavior: 'instant'}});
+                                const el = document.elementFromPoint({rel_x}, {rel_y});
+                                if (el) {{
+                                    let cur = el;
+                                    while (cur && cur !== document.body) {{
+                                        const s = window.getComputedStyle(cur);
+                                        if (/(auto|scroll)/.test(s.overflow + s.overflowY)) {{
+                                            cur.scrollBy({{top: t, left: l, behavior: 'instant'}});
+                                            break;
+                                        }}
+                                        cur = cur.parentElement;
+                                    }}
+                                }}
+                            }})();
+                            """
                             res = bc.execute_action({"action": "execute_script", "script": script}, variables, last_win_args, workflow_id)
                             if res and res.get("status") == "success":
-                                executed_via_browser = True
-                                logger.info(f"[{workflow_id}] High-precision DOM scroll executed: top={pix_top}px, left={pix_left}px")
-                                time.sleep(0.2)
+                                logger.info(f"[{workflow_id}] Multi-target DOM scroll applied: top={pix_top}px")
                         except Exception as b_err:
-                            logger.debug(f"[{workflow_id}] Browser DOM scroll bypassed: {b_err}")
+                            logger.debug(f"[{workflow_id}] DOM scroll bypassed: {b_err}")
 
-                    if not executed_via_browser:
-                        # Why: 座標未指定・枠外時にウィンドウクライアント領域中央へ安全移動
-                        target_sx = int(x + off_x) if (x is not None and x > 50) else (current_win_x + current_win_w // 2 if current_win_w > 100 else 960)
-                        target_sy = int(y + off_y) if (y is not None and y > 100) else (current_win_y + current_win_h // 2 if current_win_h > 100 else 540)
-                        
-                        if platform.system() == "Windows":
-                            ctypes.windll.user32.SetCursorPos(target_sx, target_sy)
-                            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
-                        else:
-                            mouse.position = (target_sx, target_sy)
-                        time.sleep(0.08)
-                        
-                        if platform.system() == "Windows":
-                            from core.executor.os_env_controller import get_wheel_scroll_settings
-                            settings = get_wheel_scroll_settings()
-                            is_page = settings.get("is_page_scroll", False)
+                    # Why: DOM成否に関わらず符号付きLONGでOS物理マウスホイールを確実に発火
+                    if platform.system() == "Windows":
+                        from core.executor.os_env_controller import get_wheel_scroll_settings
+                        settings = get_wheel_scroll_settings()
+                        is_page = settings.get("is_page_scroll", False)
 
-                            if is_page and dy != 0.0:
-                                page_key = Key.page_down if dy < 0 else Key.page_up
-                                keyboard.press(page_key)
-                                keyboard.release(page_key)
-                                time.sleep(0.15)
-                            else:
-                                # Why: 45msレート制御によりブラウザのスクロール加速誤爆とVSync間引きを完全排除
-                                if dy != 0.0:
-                                    direction = 1 if dy > 0 else -1
-                                    total_notches = max(1, int(round(abs(dy))))
-                                    raw_val = ctypes.c_ulong((direction * WHEEL_DELTA) & 0xFFFFFFFF).value
-                                    for _ in range(total_notches):
-                                        _check_stop()
-                                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, raw_val, 0)
-                                        time.sleep(0.045)
-                                if dx != 0.0:
-                                    direction_x = 1 if dx > 0 else -1
-                                    total_notches_x = max(1, int(round(abs(dx))))
-                                    raw_val_x = ctypes.c_ulong((direction_x * WHEEL_DELTA) & 0xFFFFFFFF).value
-                                    for _ in range(total_notches_x):
-                                        _check_stop()
-                                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, raw_val_x, 0)
-                                        time.sleep(0.045)
-                            time.sleep(0.2)
+                        if is_page and dy != 0.0:
+                            page_key = Key.page_down if dy < 0 else Key.page_up
+                            keyboard.press(page_key)
+                            keyboard.release(page_key)
+                            time.sleep(0.15)
                         else:
-                            steps = max(1, int(round(abs(dy))))
+                            total_notches = max(1, int(round(abs(dy))))
                             dir_y = 1 if dy > 0 else -1
-                            for _ in range(steps):
-                                mouse.scroll(0, dir_y)
-                                time.sleep(0.045)
-                            time.sleep(0.2)
+                            wheel_val = int(dir_y * WHEEL_DELTA)
+                            for _ in range(total_notches):
+                                _check_stop()
+                                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_long(wheel_val).value, 0)
+                                time.sleep(0.04)
+
+                            if dx != 0.0:
+                                total_notches_x = max(1, int(round(abs(dx))))
+                                dir_x = 1 if dx > 0 else -1
+                                hwheel_val = int(dir_x * WHEEL_DELTA)
+                                for _ in range(total_notches_x):
+                                    _check_stop()
+                                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, ctypes.c_long(hwheel_val).value, 0)
+                                    time.sleep(0.04)
+                        time.sleep(0.15)
+                    else:
+                        steps = max(1, int(round(abs(dy))))
+                        dir_y = 1 if dy > 0 else -1
+                        for _ in range(steps):
+                            mouse.scroll(0, dir_y)
+                            time.sleep(0.04)
+                        time.sleep(0.15)
                         
                 elif method == "type_text":
                     raw_text = args.get("text", "")
