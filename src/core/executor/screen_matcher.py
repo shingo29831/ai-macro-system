@@ -497,3 +497,155 @@ def is_screen_match(pre_image_path: Path, curr_img_cv, win_x: int, win_y: int, w
     is_structural_match = (ssim_val >= 0.75) or (orb_score >= 0.15) or (orb_score >= 0.08 and max_val >= 0.6)
     
     return (is_exact_match or is_high_match or is_structural_match), scores
+
+def align_scroll_by_screen_match(
+    target_dir: Path,
+    raw_event_id: str,
+    win_x: int,
+    win_y: int,
+    win_w: int,
+    win_h: int,
+    target_hwnd: int = 0,
+    max_down_steps: int = 15,
+    max_up_steps: int = 5,
+    status_callback=None,
+    check_cancel_callback=None
+) -> tuple[bool, dict]:
+    # Why: 記録時pre画像の特徴・構造(SSIM/ORB)と一致するまでホイールスクロールを自律反復
+    if not raw_event_id or win_w <= 0 or win_h <= 0:
+        return False, {}
+
+    pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
+    if not pre_image_path.exists():
+        return False, {}
+
+    def update_ui(text, is_warning=False):
+        if status_callback:
+            status_callback(text, is_warning)
+        else:
+            try:
+                from ui.views.running_dialog import RunningDialog
+                RunningDialog.set_status(text, is_warning)
+            except Exception:
+                pass
+
+    try:
+        curr_pil, curr_mon = take_screenshot()
+        curr_color = cv2.cvtColor(np.array(curr_pil), cv2.COLOR_RGB2BGR)
+        curr_gray = cv2.cvtColor(curr_color, cv2.COLOR_BGR2GRAY)
+        off_x = curr_mon.get("left", 0) if isinstance(curr_mon, dict) else 0
+        off_y = curr_mon.get("top", 0) if isinstance(curr_mon, dict) else 0
+
+        is_match, scores = is_screen_match(
+            pre_image_path, curr_gray, win_x, win_y, win_w, win_h, off_x, off_y
+        )
+        if is_match:
+            return True, scores
+
+        cx = win_x + win_w // 2 if win_w > 100 else 960
+        cy = win_y + win_h // 2 if win_h > 100 else 540
+
+        import platform
+        import ctypes
+        from pynput.mouse import Controller as MouseController
+        from core.executor.runner import _smooth_move, WHEEL_DELTA, MOUSEEVENTF_WHEEL
+        _smooth_move(cx, cy, duration=0.06)
+        time.sleep(0.04)
+
+        best_score = scores.get("ssim", 0.0) + scores.get("orb", 0.0)
+        best_scores = scores
+        best_step = 0
+        current_step = 0
+
+        update_ui("スクロール位置を自動照合中...", False)
+        notches_per_step = 2
+        wheel_down = int(-1 * WHEEL_DELTA * notches_per_step)
+
+        # 1. 下方向へスクロールしながら特徴・構造の一致を探索
+        for step in range(1, max_down_steps + 1):
+            if check_cancel_callback and check_cancel_callback():
+                return False, scores
+
+            if platform.system() == "Windows":
+                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_long(wheel_down).value, 0)
+            else:
+                MouseController().scroll(0, -notches_per_step)
+
+            time.sleep(0.14)
+            current_step += 1
+
+            step_pil, step_mon = take_screenshot()
+            step_gray = cv2.cvtColor(np.array(step_pil), cv2.COLOR_RGB2GRAY)
+            s_off_x = step_mon.get("left", 0) if isinstance(step_mon, dict) else 0
+            s_off_y = step_mon.get("top", 0) if isinstance(step_mon, dict) else 0
+
+            is_step_match, step_scores = is_screen_match(
+                pre_image_path, step_gray, win_x, win_y, win_w, win_h, s_off_x, s_off_y
+            )
+
+            current_composite = step_scores.get("ssim", 0.0) + step_scores.get("orb", 0.0)
+            if current_composite > best_score:
+                best_score = current_composite
+                best_scores = step_scores
+                best_step = current_step
+
+            if is_step_match or step_scores.get("ssim", 0.0) >= 0.72 or step_scores.get("orb", 0.0) >= 0.12 or (step_scores.get("sim", 0.0) >= 0.86 and step_scores.get("diff_ratio", 1.0) <= 0.15):
+                logger.info(f"Visual scroll matched at down-step {step}: {step_scores}")
+                update_ui("画面の一致を確認しました。", False)
+                time.sleep(0.1)
+                return True, step_scores
+
+        # 2. 下方向未検出時は巻き戻しつつ上方向も探索
+        wheel_up = int(1 * WHEEL_DELTA * notches_per_step)
+        steps_to_rewind = current_step + max_up_steps
+        for _ in range(steps_to_rewind):
+            if check_cancel_callback and check_cancel_callback():
+                return False, scores
+
+            if platform.system() == "Windows":
+                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_long(wheel_up).value, 0)
+            else:
+                MouseController().scroll(0, notches_per_step)
+
+            time.sleep(0.14)
+            current_step -= 1
+
+            step_pil, step_mon = take_screenshot()
+            step_gray = cv2.cvtColor(np.array(step_pil), cv2.COLOR_RGB2GRAY)
+            s_off_x = step_mon.get("left", 0) if isinstance(step_mon, dict) else 0
+            s_off_y = step_mon.get("top", 0) if isinstance(step_mon, dict) else 0
+
+            is_step_match, step_scores = is_screen_match(
+                pre_image_path, step_gray, win_x, win_y, win_w, win_h, s_off_x, s_off_y
+            )
+
+            current_composite = step_scores.get("ssim", 0.0) + step_scores.get("orb", 0.0)
+            if current_composite > best_score:
+                best_score = current_composite
+                best_scores = step_scores
+                best_step = current_step
+
+            if is_step_match or step_scores.get("ssim", 0.0) >= 0.72 or step_scores.get("orb", 0.0) >= 0.12 or (step_scores.get("sim", 0.0) >= 0.86 and step_scores.get("diff_ratio", 1.0) <= 0.15):
+                logger.info(f"Visual scroll matched at rewind-step {current_step}: {step_scores}")
+                update_ui("画面の一致を確認しました。", False)
+                time.sleep(0.1)
+                return True, step_scores
+
+        # 3. 最適スコア位置への復帰
+        if best_step != current_step and best_score >= 0.55:
+            delta_steps = best_step - current_step
+            dir_w = wheel_down if delta_steps > 0 else wheel_up
+            for _ in range(abs(delta_steps)):
+                if platform.system() == "Windows":
+                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_long(dir_w).value, 0)
+                else:
+                    MouseController().scroll(0, -notches_per_step if delta_steps > 0 else notches_per_step)
+                time.sleep(0.05)
+            time.sleep(0.1)
+            logger.info(f"Visual scroll settled at best step {best_step} (score: {best_score:.2f})")
+            return (best_scores.get("ssim", 0.0) >= 0.65 or best_scores.get("orb", 0.0) >= 0.08), best_scores
+
+        return False, best_scores
+    except Exception as e:
+        logger.warning(f"Error during align_scroll_by_screen_match: {e}")
+        return False, {}

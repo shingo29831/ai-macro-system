@@ -1228,6 +1228,24 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
 
+            # Why: 記録時pre画像の特徴・構造照合により操作対象のスクロール位置を完全同期
+            if raw_event_id and method in ["click", "move", "type_text", "browser_action"] and is_browser_target:
+                from core.executor.screen_matcher import align_scroll_by_screen_match
+                target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or 0
+                scrolled_ok, match_sc = align_scroll_by_screen_match(
+                    target_dir=target_dir,
+                    raw_event_id=raw_event_id,
+                    win_x=current_win_x,
+                    win_y=current_win_y,
+                    win_w=current_win_w,
+                    win_h=current_win_h,
+                    target_hwnd=target_hwnd,
+                    status_callback=status_callback,
+                    check_cancel_callback=lambda: _stop_requested
+                )
+                if scrolled_ok:
+                    logger.info(f"[{workflow_id}] Visual scroll aligned with step {i+1} pre-image: {match_sc}")
+
             if method == "loop_start":
                 data_source = args.get("data_source", "static")
                 if data_source == "excel":
