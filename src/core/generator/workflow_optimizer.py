@@ -105,19 +105,57 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                 has_recent_nav_action = True
                 break
 
+        # Why: 遷移直前(直近移動)に遷移先タイトルやURLに合致するリンクがあれば先行クリックの有無に関わらず最優先昇格
+        nav_link_cand = None
+        clean_target_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
+        target_kws = [w for w in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff]+", clean_target_title) if len(w) >= 2]
+
+        for k in range(i - 1, max(-1, i - 6), -1):
+            cand = temp_workflow_info[k]
+            if cand.get("window_name") != prev_win:
+                break
+            if cand.get("raw_action") == "move":
+                c_ctx = cand.get("app_context") or {}
+                c_url = str(c_ctx.get("url") or c_ctx.get("text") or c_ctx.get("value") or "").strip()
+                c_name = str(c_ctx.get("element_name") or cand.get("element_name") or "").strip()
+                c_ctl = str(c_ctx.get("control_type", "")).lower()
+
+                matched = False
+                if c_url.startswith("http"):
+                    if target_url and (c_url.split("#")[0] in target_url or target_url.split("#")[0] in c_url):
+                        matched = True
+                    elif target_kws and any(kw.lower() in c_url.lower() for kw in target_kws):
+                        matched = True
+                if not matched and c_name and target_kws:
+                    if any(kw.lower() in c_name.lower() for kw in target_kws):
+                        matched = True
+                if matched or "hyperlink" in c_ctl:
+                    nav_link_cand = cand
+                    break
+
+        if nav_link_cand is not None:
+            nav_link_cand["raw_action"] = "click"
+            nav_link_cand["raw_type"] = "mouse_click"
+            nav_link_cand["button"] = "left"
+            if clean_target_title:
+                nav_link_cand["element_name"] = clean_target_title
+                nav_link_cand["semantic_role"] = clean_target_title
+                nav_link_cand.setdefault("app_context", {})["element_name"] = clean_target_title
+            logger.info(f"Promoted navigation link move to click for Event: {nav_link_cand.get('event_id')} targeting '{clean_target_title}'")
+            i += 1
+            continue
+
         # Why: 遷移契機となったクリックまたは遷移先自身のクリック要素名を実遷移先タイトルで完全修復
         target_click = recent_click_info if recent_click_info else (curr_info if curr_info.get("raw_action") == "click" else None)
         if target_click:
-            clean_target_title = re.split(r"[\-—–―]", target_title)[0].strip() if target_title else ""
             if clean_target_title:
                 click_elem_name = str(target_click.get("element_name") or target_click.get("semantic_role") or "").strip()
                 click_ctx = target_click.setdefault("app_context", {})
                 click_url = str(click_ctx.get("url") or target_click.get("url") or "").strip()
 
-                target_keywords = [w for w in re.findall(r"[\w\u3000-\u30ff\u4e00-\u9fff]+", clean_target_title) if len(w) >= 2]
                 title_mismatch = False
-                if target_keywords and click_elem_name:
-                    if not any(kw.lower() in click_elem_name.lower() for kw in target_keywords):
+                if target_kws and click_elem_name:
+                    if not any(kw.lower() in click_elem_name.lower() for kw in target_kws):
                         title_mismatch = True
 
                 # Why: 記録時UIA誤判定や無名divクリックを実遷移先タイトルで完全修復
@@ -133,7 +171,7 @@ def _promote_navigation_hover_to_click(temp_workflow_info: List[Dict[str, Any]])
                     click_ctx["css_selector"] = f"a:has-text('{clean_title_esc}')"
                     click_ctx["xpath"] = f"//a[contains(., '{clean_title_esc}')]"
 
-                    if click_url and any(kw.lower() not in click_url.lower() for kw in target_keywords):
+                    if click_url and any(kw.lower() not in click_url.lower() for kw in target_kws):
                         target_click.pop("url", None)
                         click_ctx.pop("url", None)
 
@@ -1274,6 +1312,19 @@ def _cleanup_redundant_moves_and_scrolls(temp_workflow_info: List[Dict[str, Any]
                 ]
                 if meaningful_navs:
                     deduped.append(meaningful_navs[0])
+                else:
+                    # Why: 後続クリックがない場合も新ウィンドウ遷移後や有意差分を持つ操作は破棄せず保持
+                    first_m = move_group[0]
+                    prev_win = deduped[-1].get("window_name", "") if deduped else ""
+                    curr_win = first_m.get("window_name", "")
+                    has_win_transition = bool(prev_win and curr_win and prev_win != curr_win)
+                    for m_cand in move_group:
+                        m_diff = m_cand.get("diff_val", 0.0)
+                        m_ctx = m_cand.get("app_context") or {}
+                        m_has_ui = bool(m_ctx.get("element_name") or m_ctx.get("css_selector") or m_cand.get("element_name"))
+                        if has_win_transition or m_diff >= 0.02 or m_has_ui:
+                            deduped.append(m_cand)
+                            break
 
             i = j
             continue
@@ -1704,8 +1755,10 @@ def optimize_workflow_events(
             diff = last_evt.get("diff_val", 0.0)
             cy = last_evt.get("cursor_y", last_evt.get("y", 0))
             wy = last_evt.get("win_y", 0)
-            # Why: 画面上部ウィンドウ枠外や差分のない停止ボタンへの移動のみ除外
-            if diff < 0.005 or (cy - wy) <= 45:
+            # Why: 画面遷移後の操作や有意差分を持つ操作は末尾にあっても保護
+            prev_events_win = [e.get("window_name", "") for e in temp_workflow_info[:-1] if e.get("window_name")]
+            is_new_win = bool(prev_events_win and last_evt.get("window_name") and last_evt.get("window_name") != prev_events_win[0])
+            if (diff < 0.005 or (cy - wy) <= 45) and not is_new_win:
                 temp_workflow_info.pop()
             else:
                 break

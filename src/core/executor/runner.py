@@ -1185,8 +1185,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
             raw_event_id = args.get("raw_event_id")
             target_id = args.get("target_id")
 
-            # Why: 記録時pre画像の特徴・構造照合により操作対象のスクロール位置を完全同期
-            if raw_event_id and method in ["click", "move", "type_text", "browser_action"] and is_browser_target:
+            # Why: マクロ内にスクロールコマンドが存在しない場合は誤判定による意図しないホイール回転を完全遮断
+            has_scroll_in_macro = any(c.get("method") == "scroll" for c in commands)
+            has_prior_scroll = any(commands[k].get("method") == "scroll" for k in range(max(0, i - 3), i))
+            if raw_event_id and method in ["click", "move", "type_text", "browser_action"] and is_browser_target and has_scroll_in_macro and has_prior_scroll:
                 from core.executor.screen_matcher import align_scroll_by_screen_match
                 target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or 0
                 scrolled_ok, match_sc = align_scroll_by_screen_match(
@@ -1324,8 +1326,11 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     except Exception:
                         pass
 
-            # Why: ブラウザ操作時に対象要素が表示領域外にある場合、要素まで自律スクロールして可視化
-            if is_browser_target and method in ["click", "type_text", "move"] and (args.get("selector") or args.get("element_name") or args.get("url")):
+            # Why: 汎用タグ(div等)や既に可視領域内にある座標は自律スクロールせず直ちに入力・クリックへ移行
+            cur_sel = str(args.get("selector") or "").strip().lower()
+            is_generic = cur_sel in ["div", "span", "p", "a", "li", "ul", "body"]
+            is_coords_visible = args.get("x") is not None and args.get("y") is not None and args.get("x") > 20 and args.get("y") > 45
+            if is_browser_target and method in ["click", "type_text", "move"] and (args.get("selector") or args.get("element_name") or args.get("url")) and not is_generic and not is_coords_visible:
                 try:
                     from core.executor.browser_controller import BrowserController
                     bc = BrowserController.get_instance()

@@ -735,6 +735,27 @@ class BrowserController:
         y: Optional[int] = None,
         **kwargs
     ) -> Optional[Tuple[int, int]]:
+        # Why: 汎用タグ単体セレクタまたは可視領域内座標は誤スクロール防止のため即時返却
+        sel_clean = str(selector or "").strip().lower()
+        if sel_clean in ["div", "span", "p", "a", "li", "ul", "body"]:
+            if x is not None and y is not None and x > 20 and y > 20:
+                return (int(x), int(y))
+            return None
+
+        target_hwnd_check = last_win_args.get("mapped_hwnd") if last_win_args else None
+        if not target_hwnd_check and platform.system() == "Windows":
+            target_hwnd_check = ctypes.windll.user32.GetForegroundWindow()
+        if target_hwnd_check and platform.system() == "Windows" and x is not None and y is not None:
+            try:
+                class RECT_CHECK(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                r_chk = RECT_CHECK()
+                if ctypes.windll.user32.GetWindowRect(target_hwnd_check, ctypes.byref(r_chk)):
+                    if r_chk.left <= x <= r_chk.right and (r_chk.top + 80) <= y <= (r_chk.bottom - 40):
+                        return (int(x), int(y))
+            except Exception:
+                pass
+
         # Why: 操作対象のUI要素が表示領域外にある場合、自動でスクロールして可視化し最新物理座標を算出
         elem = self._find_uia_element(
             selector=selector,
@@ -801,6 +822,14 @@ class BrowserController:
                 w_left, w_top, w_right, w_bottom = win_rect
                 vp_top = w_top + 80
                 vp_bottom = w_bottom - 40
+
+                # Why: 巨大要素（全画面コンテナ等）は中心座標による誤スクロールを抑止
+                if rect.height() >= (vp_bottom - vp_top) * 0.7 or rect.width() >= (w_right - w_left) * 0.9:
+                    if x is not None and y is not None and w_left <= x <= w_right and vp_top <= y <= vp_bottom:
+                        return (int(x), int(y))
+                    if vp_top <= cy <= vp_bottom and w_left <= cx <= w_right:
+                        return (cx, cy)
+                    return (int(x), int(y)) if (x is not None and y is not None) else None
 
                 if cy < vp_top or cy > vp_bottom or cx < w_left or cx > w_right:
                     scroll_center_x = (w_left + w_right) // 2
@@ -877,6 +906,11 @@ class BrowserController:
         **kwargs
     ) -> bool:
         effective_timeout = timeout_sec if timeout_sec is not None else timeout
+        # Why: 汎用タグ(div等)単体セレクタは誤爆および誤スクロール防止のためUIAクリックを回避
+        sel_clean = str(selector or "").strip().lower()
+        if sel_clean in ["div", "span", "p", "a", "li", "ul", "body"]:
+            return False
+
         # Why: 操作対象要素が表示領域外にある場合はスクロールして可視化し実座標を取得
         coords = self.scroll_into_view(
             selector, last_win_args, timeout_sec=effective_timeout, element_name=element_name, url=url,

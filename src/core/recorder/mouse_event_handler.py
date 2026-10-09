@@ -157,7 +157,12 @@ def process_click_event(event: dict, input_type: str, click_count: int):
         x, y, button = int(event["x"]), int(event["y"]), event["button"]
         pre_img, pre_monitor, pre_ref = event["pre_full_img"], event["pre_monitor"], event["pre_ref"]
 
-        app_context = _get_app_context(event["window_info"], x=x, y=y)
+        app_context = None
+        try:
+            app_context = _get_app_context(event["window_info"], x=x, y=y)
+        except Exception:
+            pass
+
         content = {
             "button": mouse_button_to_string(button),
             "click_count": int(click_count),
@@ -173,19 +178,26 @@ def process_click_event(event: dict, input_type: str, click_count: int):
             cursor_y=y,
             app_specific_context=app_context,
         )
-        diff = calculate_and_update_diff(pre_img)
+        diff = "0.0%"
+        try:
+            diff = calculate_and_update_diff(pre_img)
+        except Exception:
+            pass
 
-        ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
-        if ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(
-                event_no=event_no, rect=ui_rect, full_img=pre_img, monitor=pre_monitor
-            )
-        else:
-            crop = screen_capturer.save_ui_crop(
-                event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor
-            )
-
-        crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
+        crop_ref = "切り抜き失敗"
+        try:
+            ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
+            if ui_rect is not None:
+                crop = screen_capturer.save_ui_crop_by_rect(
+                    event_no=event_no, rect=ui_rect, full_img=pre_img, monitor=pre_monitor
+                )
+            else:
+                crop = screen_capturer.save_ui_crop(
+                    event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor
+                )
+            crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
+        except Exception:
+            pass
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
         state.append_log(log)
@@ -193,6 +205,23 @@ def process_click_event(event: dict, input_type: str, click_count: int):
     except Exception:
         print("クリック処理中にエラーが発生しました")
         traceback.print_exc()
+        # Why: 例外発生時も最低限のクリックログを必ず保存してイベント欠落を完全根絶
+        try:
+            event_no = event.get("event_no", state.get_next_event_no())
+            fallback_log = build_base_log(
+                event_no=event_no,
+                dt=event.get("datetime") or now_datetime(),
+                input_type=input_type,
+                content={"button": mouse_button_to_string(event.get("button", "left")), "click_count": click_count, "screen_coordinates": {"x": int(event.get("x", 0)), "y": int(event.get("y", 0))}},
+                window_info=event.get("window_info", {}),
+                cursor_x=int(event.get("x", 0)),
+                cursor_y=int(event.get("y", 0)),
+                app_specific_context=None,
+            )
+            fallback_log["Images"] = {"Pre": event.get("pre_ref"), "Crop": "切り抜き失敗", "Diff": "0.0%"}
+            state.append_log(fallback_log)
+        except Exception:
+            pass
     finally:
         state.is_click_processing = False
 
@@ -322,12 +351,12 @@ def process_scroll_event(event: dict):
         source = event.get("source", "unknown")
 
         with _scroll_dedup_lock:
-            # Why: 異なるフックソース(win_scroll/pynput)からの同一操作二重受信(120ms以内)を同方向判定で安全に除外
+            # Why: 異ソース同一瞬間(40ms以内)の二重受信のみ除外して連続回転を保護
             if _last_scroll_info is not None:
                 lx, ly, ldx, ldy, lsrc, ltime = _last_scroll_info
                 time_diff = abs(evt_time - ltime)
                 same_dir = (dy * ldy > 0) or (dx * ldx > 0)
-                if (time_diff < 0.120) and (source != lsrc) and abs(x - lx) <= 30 and abs(y - ly) <= 30 and same_dir:
+                if (time_diff < 0.040) and (source != lsrc) and abs(x - lx) <= 30 and abs(y - ly) <= 30 and same_dir:
                     return
             _last_scroll_time = evt_time
             _last_scroll_info = (x, y, dx, dy, source, evt_time)
@@ -338,12 +367,6 @@ def process_scroll_event(event: dict):
             fg_info = window_inspector.get_foreground_window_info()
             if fg_info and fg_info.get("title"):
                 point_window = fg_info
-            elif state.input_logs:
-                for prev_l in reversed(state.input_logs):
-                    p_w = prev_l.get("WindowName", "").strip()
-                    if p_w:
-                        point_window = {"title": p_w}
-                        break
 
         w_title = point_window.get("title", "") if point_window else ""
         if w_title and window_inspector.should_ignore_window(w_title):

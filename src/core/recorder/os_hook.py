@@ -127,6 +127,14 @@ def stop_recording():
             from core.recorder.mouse_event_handler import process_click_event
             process_click_event(pending_event, input_type="mouse_click", click_count=1)
 
+        # Why: 押下状態のまま録画停止されたクリックも同期救済
+        with state.latest_mouse_down_lock:
+            down_evt = state.latest_mouse_down_event
+            state.latest_mouse_down_event = None
+        if down_evt is not None:
+            from core.recorder.mouse_event_handler import process_click_event
+            process_click_event(down_evt, input_type="mouse_click", click_count=1)
+
         # 背景: pynputの停止時にエラーが発生しても処理が止まらないようにtry-exceptで保護
         try:
             if _mouse_listener:
