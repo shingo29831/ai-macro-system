@@ -214,10 +214,26 @@ def generate_macro_workflow(
             logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
 
         if progress_callback:
-            progress_callback(75, "ワークフローの最適化中 (Office連携, ループ解析, 変数化)...")
-        generation_debug_log["stages"].append({"name": "Workflow Optimization", "status": "started"})
-        
-        temp_workflow_info, variables = optimize_workflow_events(temp_workflow_info, workflow_id, check_cancel_callback, config=config)
+            progress_callback(75, "マクロ候補の抽出と品質ゲート判定中 (Judge)...")
+        generation_debug_log["stages"].append({"name": "Quality Gate & Candidate Evaluation", "status": "started"})
+
+        from core.generator.quality_gate import QualityGateEvaluator
+        evaluator = QualityGateEvaluator()
+        best_candidate = evaluator.generate_and_select_best_candidate(
+            temp_workflow_info=temp_workflow_info,
+            workflow_id=workflow_id,
+            config=config,
+            check_cancel_callback=check_cancel_callback,
+            progress_callback=progress_callback
+        )
+        temp_workflow_info = best_candidate.events
+        variables = best_candidate.variables
+        generation_debug_log["stages"].append({
+            "name": "Quality Gate Decision",
+            "selected_strategy": best_candidate.strategy,
+            "score": best_candidate.total_score,
+            "judgment": best_candidate.judgment.model_dump() if best_candidate.judgment else None
+        })
 
         if progress_callback:
             progress_callback(85, "ワークフロー生成中... アクションの最適化とマッピング")

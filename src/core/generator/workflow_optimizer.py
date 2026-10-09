@@ -1339,7 +1339,8 @@ def optimize_workflow_events(
     temp_workflow_info: List[Dict[str, Any]], 
     workflow_id: str, 
     check_cancel_callback: Optional[Callable[[], bool]] = None,
-    config: Optional[Any] = None
+    config: Optional[Any] = None,
+    strategy: str = "hybrid"
 ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     last_cancel_check_time = time.time()
     def should_cancel():
@@ -1669,7 +1670,9 @@ def optimize_workflow_events(
                     if not i_ctx.get("control_type") and last_clk_ctx.get("control_type"):
                         i_ctx["control_type"] = last_clk_ctx["control_type"]
 
-    temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info, config=config)
+    # Why: ビジュアル優先戦略時は過剰なWebフォーム集約を抑止し物理入力構造を保護
+    if strategy != "visual":
+        temp_workflow_info = _consolidate_web_form_interactions(temp_workflow_info, config=config)
 
     # Why: 最初の有為操作より前、および最後の有為操作より後の停止ボタン関連ノイズを除去
     while temp_workflow_info:
@@ -1879,7 +1882,8 @@ def optimize_workflow_events(
         win_name = info.get("window_name", "").lower()
         is_browser = app_ctx.get("app") == "Browser" or any(b in win_name for b in ["firefox", "chrome", "edge", "brave", "opera"])
 
-        if is_browser:
+        # Why: ビジュアル戦略時はブラウザアクションへの過剰昇格を抑え高精度な画面照合を保持
+        if is_browser and strategy != "visual":
             if act == "type_text":
                 role_text = str(info.get("semantic_role", "")).strip()
                 is_addr = app_ctx.get("is_address_bar") or "検索" in str(app_ctx.get("element_name", "")) or "url" in str(app_ctx.get("element_name", "")).lower()
