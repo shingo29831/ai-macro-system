@@ -566,9 +566,13 @@ def build_and_save_macro(
             })
         elif cmd_type == "BROWSER_ACTION":
             elem_name_val = cur_info.get("element_name") or (cur_info.get("app_context") or {}).get("element_name") or params.text
+            if elem_name_val in ["NDLOCR未設定", "切り抜き失敗", "left_click", "move", "click"]:
+                elem_name_val = ""
             b_act = params.browser_action or "open_url"
             b_val = params.browser_value if params.browser_value is not None else cur_info.get("value")
             b_text = params.text or (str(b_val) if b_val is not None else "")
+            if b_text in ["NDLOCR未設定", "切り抜き失敗", "left_click", "move", "click"]:
+                b_text = ""
             # Why: select_option時のleft_click誤認を防止し選択テキストをvalueへフォールバック補完
             if b_act == "select_option" and (b_val is None or b_val == "left_click"):
                 b_val = b_text if b_text and b_text != "left_click" else cur_info.get("value")

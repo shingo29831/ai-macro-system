@@ -682,9 +682,17 @@ def _consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]],
                 result.append(info)
             i += 1
             continue
-        if "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "CoreWindow"]):
-            i += 1
-            continue
+        # Why: 背景Documentの空クリックのみ除外対象とし、リンクやURL・要素名を持つサイト遷移クリックを完全保護
+        is_document_container = "document" in c_type or any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "CoreWindow"])
+        if is_document_container:
+            has_nav_target = (
+                bool(str(ctx.get("url") or ctx.get("text") or ctx.get("value") or "").startswith("http")) or
+                (bool(elem_name) and elem_name not in ["left_click", "move", "click"]) or
+                (bool(sel) and not any(cls in sel for cls in ["MozillaWindowClass", "Chrome_WidgetWin", "CoreWindow"]))
+            )
+            if not has_nav_target or act != "click":
+                i += 1
+                continue
 
         # Why: アドレスバー・検索バー操作はWebフォーム集約から除外して時系列を完全保護
         is_nav_bar = any(k in sel.lower() for k in ["urlbar", "address", "omnibox"]) or ctx.get("is_address_bar")

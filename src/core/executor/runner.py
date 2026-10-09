@@ -1092,52 +1092,9 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     global_dynamic_mask[static_edges_dilated == 255] = 0
 
                 last_win_args = args
-                # Why: ループ構造を持つマクロでは変数初期化スキップを防ぐため画面マッチ途中開始を完全無効化
-                has_loop_command = any(c.get("method") == "loop_start" for c in commands)
-                if is_browser_target and not has_loop_command:
-                    for i, cmd in enumerate(commands):
-                        _check_stop()
-                        if cmd.get("method") == "activate_window":
-                            last_win_args = cmd.get("args", {})
-                        
-                        raw_event_id = cmd.get("args", {}).get("raw_event_id")
-                        if raw_event_id and last_win_args:
-                            pre_image_path = target_dir / "images" / f"{raw_event_id}_pre.png"
-                            if pre_image_path.exists():
-                                win_x = last_win_args.get("x", 0)
-                                win_y = last_win_args.get("y", 0)
-                                win_w = last_win_args.get("width", 0)
-                                win_h = last_win_args.get("height", 0)
-                                
-                                is_match, scores = is_screen_match(pre_image_path, curr_img_cv, win_x, win_y, win_w, win_h, offset_x, offset_y, global_dynamic_mask)
-                                if is_match:
-                                    logger.info(f"[{workflow_id}] Current screen matches step {i+1} (event: {raw_event_id}). Starting from here. Scores: {scores}")
-                                    start_index = i
-                                    screen_matched = True
-                                    execution_log["start_step"] = start_index
-                                    execution_log["initial_match_scores"] = scores
-                                    break
-                                
-            if screen_matched and start_index > 0:
-                last_activation = None
-                for j in range(start_index):
-                    if commands[j].get("method") == "activate_window":
-                        last_activation = commands[j]
-                
-                if last_activation:
-                    args = last_activation.get("args", {})
-                    activate_and_restore_window(
-                        args.get("window_title", ""),
-                        args.get("x", 0),
-                        args.get("y", 0),
-                        args.get("width", 0),
-                        args.get("height", 0),
-                        workflow_id,
-                        args.get("launch_cmd", ""),
-                        args.get("mapped_hwnd"),
-                        args.get("is_maximized")
-                    )
-                    time.sleep(0.5)
+                # Why: 初期画面の一致誤判定によるステップ途中ジャンプ・即終了を防止しStep 1から確実に遂行
+                start_index = 0
+                screen_matched = False
                 
         except Exception as e:
             logger.warning(f"[{workflow_id}] Failed to determine start step by screen match: {e}")

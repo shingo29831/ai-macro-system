@@ -184,6 +184,12 @@ class BrowserController:
                     logger.info(f"[{workflow_id}] Button click fell back to physical click at ({x}, {y})")
                     res_data["status"] = "fallback_click_succeeded"
                     clicked = True
+                elif url and str(url).startswith("http"):
+                    # Why: クリックが届かない場合も遷移先URLへの直接ナビゲーションでサイト遷移を完全保証
+                    logger.info(f"[{workflow_id}] Click missed, navigating directly to target URL: {url}")
+                    self.execute_action({"action": "open_url", "url": url}, variables, last_win_args, workflow_id)
+                    clicked = True
+                    res_data["status"] = "url_navigation_succeeded"
                 else:
                     logger.warning(f"[{workflow_id}] Click failed for selector '{selector}' and no valid fallback coordinates.")
                     res_data["status"] = "click_failed"
