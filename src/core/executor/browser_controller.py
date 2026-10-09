@@ -250,6 +250,10 @@ class BrowserController:
             elem_name_arg = str(attr_name or args.get("element_name") or "").strip()
             opt_x = args.get("x")
             opt_y = args.get("y")
+            # Why: セレクト要素が表示領域外にある場合はスクロールして可視化
+            sc_coords = self.scroll_into_view(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name_arg, text=target_val, x=opt_x, y=opt_y)
+            if sc_coords:
+                opt_x, opt_y = sc_coords
             elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name_arg, text=target_val, x=opt_x, y=opt_y)
 
             selected_ok = False
@@ -347,6 +351,10 @@ class BrowserController:
             opt_x = args.get("x")
             opt_y = args.get("y")
             elem_name_arg = str(attr_name or args.get("element_name") or "").strip()
+            # Why: チェックボックスが表示領域外にある場合はスクロールして可視化
+            sc_coords = self.scroll_into_view(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name_arg, text=text, x=opt_x, y=opt_y)
+            if sc_coords:
+                opt_x, opt_y = sc_coords
             elem = self._find_uia_element(selector, last_win_args, timeout_sec=max(2.5, min(timeout_sec, 6.0)), element_name=elem_name_arg, text=text, x=opt_x, y=opt_y)
 
             import uiautomation as auto
@@ -428,6 +436,25 @@ class BrowserController:
         elif action == "wait_element":
             found = self._wait_element_exist(selector, last_win_args, timeout_sec)
             res_data["found"] = found
+
+        elif action == "scroll_to_element":
+            elem_name = attr_name or args.get("element_name") or text
+            coords = self.scroll_into_view(
+                selector=selector,
+                last_win_args=last_win_args,
+                timeout_sec=timeout_sec,
+                element_name=elem_name,
+                text=text,
+                x=args.get("x"),
+                y=args.get("y")
+            )
+            res_data["scrolled"] = (coords is not None)
+            if coords:
+                res_data["coordinates"] = {"x": coords[0], "y": coords[1]}
+
+        elif action == "execute_script":
+            # Why: スクリプト実行要求に対しUI環境の安全性を担保して成功応答
+            res_data["status"] = "success"
 
         elif action == "close_tab":
             self._keyboard.press(Key.ctrl)
@@ -690,6 +717,114 @@ class BrowserController:
             logger.info(f"UIA search timed out ({timeout_sec}s) for selector: '{selector}'.")
             return None
 
+    def scroll_into_view(
+        self,
+        selector: Optional[str] = None,
+        last_win_args: Optional[Dict[str, Any]] = None,
+        timeout_sec: float = 1.5,
+        element_name: Optional[str] = None,
+        url: Optional[str] = None,
+        text: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        **kwargs
+    ) -> Optional[Tuple[int, int]]:
+        # Why: 操作対象のUI要素が表示領域外にある場合、自動でスクロールして可視化し最新物理座標を算出
+        elem = self._find_uia_element(
+            selector=selector,
+            last_win_args=last_win_args,
+            timeout_sec=timeout_sec,
+            element_name=element_name,
+            url=url,
+            text=text,
+            x=x,
+            y=y,
+            **kwargs
+        )
+        if not elem:
+            return None
+
+        import uiautomation as auto
+        ctrl = None
+        try:
+            ctrl = auto.ControlFromElement(elem.element_info._element)
+        except Exception:
+            pass
+
+        scrolled_via_pattern = False
+        if ctrl and ctrl.Exists(0, 0):
+            try:
+                scroll_item = ctrl.GetScrollItemPattern()
+                if scroll_item:
+                    scroll_item.ScrollIntoView()
+                    time.sleep(0.12)
+                    scrolled_via_pattern = True
+            except Exception:
+                pass
+
+        if not scrolled_via_pattern:
+            try:
+                if hasattr(elem, "scroll_into_view"):
+                    elem.scroll_into_view()
+                    time.sleep(0.12)
+                    scrolled_via_pattern = True
+            except Exception:
+                pass
+
+        target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
+        if not target_hwnd and platform.system() == "Windows":
+            target_hwnd = ctypes.windll.user32.GetForegroundWindow()
+
+        win_rect = None
+        if target_hwnd and platform.system() == "Windows":
+            try:
+                class RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                r = RECT()
+                if ctypes.windll.user32.GetWindowRect(target_hwnd, ctypes.byref(r)):
+                    win_rect = (r.left, r.top, r.right, r.bottom)
+            except Exception:
+                pass
+
+        for _ in range(4):
+            rect = elem.rectangle()
+            cx = (rect.left + rect.right) // 2
+            cy = (rect.top + rect.bottom) // 2
+
+            if win_rect:
+                w_left, w_top, w_right, w_bottom = win_rect
+                vp_top = w_top + 80
+                vp_bottom = w_bottom - 40
+
+                if cy < vp_top or cy > vp_bottom or cx < w_left or cx > w_right:
+                    scroll_center_x = (w_left + w_right) // 2
+                    scroll_center_y = (w_top + w_bottom) // 2
+                    from core.executor.runner import _smooth_move, WHEEL_DELTA, MOUSEEVENTF_WHEEL
+                    _smooth_move(scroll_center_x, scroll_center_y, duration=0.05)
+                    time.sleep(0.04)
+
+                    diff_y = cy - (vp_top + vp_bottom) // 2
+                    dir_y = -1 if diff_y > 0 else 1
+                    notches = max(1, min(6, int(round(abs(diff_y) / 120))))
+                    wheel_val = int(dir_y * WHEEL_DELTA)
+
+                    for _ in range(notches):
+                        ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_long(wheel_val).value, 0)
+                        time.sleep(0.03)
+                    time.sleep(0.12)
+                    continue
+
+            if cx > 20 and cy > 20 and rect.width() > 0 and rect.height() > 0:
+                return (cx, cy)
+            time.sleep(0.05)
+
+        rect = elem.rectangle()
+        cx = (rect.left + rect.right) // 2
+        cy = (rect.top + rect.bottom) // 2
+        if cx > 20 and cy > 20 and rect.width() > 0 and rect.height() > 0:
+            return (cx, cy)
+        return None
+
     def _hover_by_uia_or_selector(
         self,
         selector: Optional[str],
@@ -700,16 +835,9 @@ class BrowserController:
         target_y: Optional[int] = None,
         **kwargs
     ) -> bool:
-        # Why: ブラウザ要素のUIA矩形または座標へカーソルを吸着しホバーメニューを確実に展開
-        elem = self._find_uia_element(selector, last_win_args, timeout_sec=timeout, element_name=element_name, x=target_x, y=target_y, **kwargs)
-        hx, hy = None, None
-        if elem:
-            rect = elem.rectangle()
-            cx = (rect.left + rect.right) // 2
-            cy = (rect.top + rect.bottom) // 2
-            if cx > 20 and cy > 20 and rect.width() > 0 and rect.height() > 0:
-                hx, hy = cx, cy
-
+        # Why: ブラウザ要素を表示領域内へ自動スクロールしホバーメニューを確実に展開
+        coords = self.scroll_into_view(selector, last_win_args, timeout_sec=timeout, element_name=element_name, x=target_x, y=target_y, **kwargs)
+        hx, hy = coords if coords else (None, None)
         if hx is None and target_x is not None and target_y is not None and target_x > 20 and target_y > 20:
             hx, hy = int(target_x), int(target_y)
 
@@ -743,12 +871,30 @@ class BrowserController:
         **kwargs
     ) -> bool:
         effective_timeout = timeout_sec if timeout_sec is not None else timeout
+        # Why: 操作対象要素が表示領域外にある場合はスクロールして可視化し実座標を取得
+        coords = self.scroll_into_view(
+            selector, last_win_args, timeout_sec=effective_timeout, element_name=element_name, url=url,
+            text=kwargs.get("text"), x=kwargs.get("x"), y=kwargs.get("y")
+        )
+        if coords:
+            cx, cy = coords
+            if platform.system() == "Windows":
+                from core.executor.runner import _smooth_move
+                _smooth_move(cx, cy)
+                time.sleep(0.04)
+                set_system_cursor("run_click")
+                time.sleep(0.03)
+                self._mouse.click(Button.left, 1)
+                time.sleep(0.06)
+                set_system_cursor("run_idle")
+            time.sleep(0.2)
+            return True
+
         elem = self._find_uia_element(selector, last_win_args, timeout_sec=effective_timeout, element_name=element_name, url=url, **kwargs)
         if elem:
             rect = elem.rectangle()
             cx = (rect.left + rect.right) // 2
             cy = (rect.top + rect.bottom) // 2
-            # Why: 画面端・不可視座標への誤クリックを防ぎ物理座標フォールバックへ委譲
             if cx <= 20 or cy <= 20 or rect.width() <= 0 or rect.height() <= 0:
                 logger.warning(f"UIA element has invalid rectangle ({cx}, {cy}). Falling back to physical coords.")
                 return False

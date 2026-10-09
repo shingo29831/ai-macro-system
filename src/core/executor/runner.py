@@ -1349,6 +1349,30 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     except Exception:
                         pass
 
+            # Why: ブラウザ操作時に対象要素が表示領域外にある場合、要素まで自律スクロールして可視化
+            if is_browser_target and method in ["click", "type_text", "move"] and (args.get("selector") or args.get("element_name") or args.get("url")):
+                try:
+                    from core.executor.browser_controller import BrowserController
+                    bc = BrowserController.get_instance()
+                    target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or (ctypes.windll.user32.GetForegroundWindow() if platform.system() == "Windows" else None)
+                    pre_off_x, pre_off_y = _get_window_offset(target_hwnd_for_offset, current_win_x, current_win_y)
+                    new_coords = bc.scroll_into_view(
+                        selector=args.get("selector"),
+                        last_win_args=last_win_args,
+                        timeout_sec=0.8,
+                        element_name=args.get("element_name"),
+                        url=args.get("url"),
+                        text=args.get("text"),
+                        x=args.get("x"),
+                        y=args.get("y")
+                    )
+                    if new_coords:
+                        args["x"] = new_coords[0] - pre_off_x
+                        args["y"] = new_coords[1] - pre_off_y
+                        logger.info(f"[{workflow_id}] Element scrolled into view. Updated coords to ({new_coords[0]}, {new_coords[1]})")
+                except Exception as sc_err:
+                    logger.debug(f"[{workflow_id}] Auto scroll_into_view bypassed: {sc_err}")
+
             # Why: スクロールや移動での照合待機を排除し主要入力時も最大1.5秒で高速評価
             if method in ["click", "type_text"] and raw_event_id:
                 if loop_stack:
@@ -1659,44 +1683,6 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                     _smooth_move(target_sx, target_sy, duration=0.08)
                     time.sleep(0.05)
 
-                    cur_win_title = str((last_win_args or {}).get("window_title", "")).lower()
-                    is_current_browser = any(b in cur_win_title for b in ["firefox", "chrome", "edge", "brave", "opera"])
-
-                    # Why: DOMスクロール(window+内部コンテナ対応)を試行しSPA描画を即時追従
-                    if is_current_browser:
-                        try:
-                            from core.executor.browser_controller import BrowserController
-                            bc = BrowserController.get_instance()
-                            pix_top = int(-dy * 100)
-                            pix_left = int(dx * 100)
-                            rel_x = target_sx - current_win_x if current_win_x > 0 else 400
-                            rel_y = target_sy - current_win_y if current_win_y > 0 else 400
-                            script = f"""
-                            (() => {{
-                                const t = {pix_top}, l = {pix_left};
-                                window.scrollBy({{top: t, left: l, behavior: 'instant'}});
-                                if (document.scrollingElement) document.scrollingElement.scrollBy({{top: t, left: l, behavior: 'instant'}});
-                                const el = document.elementFromPoint({rel_x}, {rel_y});
-                                if (el) {{
-                                    let cur = el;
-                                    while (cur && cur !== document.body) {{
-                                        const s = window.getComputedStyle(cur);
-                                        if (/(auto|scroll)/.test(s.overflow + s.overflowY)) {{
-                                            cur.scrollBy({{top: t, left: l, behavior: 'instant'}});
-                                            break;
-                                        }}
-                                        cur = cur.parentElement;
-                                    }}
-                                }}
-                            }})();
-                            """
-                            res = bc.execute_action({"action": "execute_script", "script": script}, variables, last_win_args, workflow_id)
-                            if res and res.get("status") == "success":
-                                logger.info(f"[{workflow_id}] Multi-target DOM scroll applied: top={pix_top}px")
-                        except Exception as b_err:
-                            logger.debug(f"[{workflow_id}] DOM scroll bypassed: {b_err}")
-
-                    # Why: DOM成否に関わらず符号付きLONGでOS物理マウスホイールを確実に発火
                     if platform.system() == "Windows":
                         from core.executor.os_env_controller import get_wheel_scroll_settings
                         settings = get_wheel_scroll_settings()
@@ -1708,7 +1694,10 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                             keyboard.release(page_key)
                             time.sleep(0.15)
                         else:
-                            total_notches = max(1, int(round(abs(dy))))
+                            # Why: 環境設定に応じたスクロール係数を反映し物理ホイールを正確に送出
+                            lines_per_notch = settings.get("wheel_scroll_lines", 3)
+                            scroll_multiplier = max(1, min(5, lines_per_notch // 3)) if lines_per_notch > 0 else 1
+                            total_notches = max(1, int(round(abs(dy) * scroll_multiplier)))
                             dir_y = 1 if dy > 0 else -1
                             wheel_val = int(dir_y * WHEEL_DELTA)
                             for _ in range(total_notches):
@@ -1724,14 +1713,16 @@ def run_workflow(workflow_id: str, config: AppConfig, status_callback=None, temp
                                     _check_stop()
                                     ctypes.windll.user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, ctypes.c_long(hwheel_val).value, 0)
                                     time.sleep(0.04)
-                        time.sleep(0.15)
+                        # Why: スクロール直後のレイアウト再計算と描画収束を待機
+                        time.sleep(0.2)
+                        _wait_for_screen_settle(timeout=0.6, settle_threshold=0.003)
                     else:
                         steps = max(1, int(round(abs(dy))))
                         dir_y = 1 if dy > 0 else -1
                         for _ in range(steps):
                             mouse.scroll(0, dir_y)
                             time.sleep(0.04)
-                        time.sleep(0.15)
+                        time.sleep(0.2)
                         
                 elif method == "type_text":
                     raw_text = args.get("text", "")
