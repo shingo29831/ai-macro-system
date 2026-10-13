@@ -19,6 +19,7 @@ def verify_and_heal_target(
     last_win_args: Optional[Dict[str, Any]],
     status_callback: Optional[Callable[[str, bool], None]],
     check_stop_callback: Callable[[], None],
+    window_offset: Tuple[int, int] = (0, 0),
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     needs_recovery = False
     crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
@@ -28,8 +29,11 @@ def verify_and_heal_target(
         from core.recorder.screen_capturer import take_screenshot
         from core.healer.recovery_manager import attempt_recovery
 
-        current_img_pil, _ = take_screenshot()
+        current_img_pil, monitor_info = take_screenshot()
         check_stop_callback()
+
+        m_left = int(monitor_info.get("left", 0)) if isinstance(monitor_info, dict) else 0
+        m_top = int(monitor_info.get("top", 0)) if isinstance(monitor_info, dict) else 0
 
         if crop_image_path.exists():
             current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
@@ -43,13 +47,14 @@ def verify_and_heal_target(
                     logger.warning(f"[{workflow_id}] Template match failed (Confidence: {max_val:.2f}). Initiating Healer...")
                     needs_recovery = True
                 else:
-                    match_center_x = max_loc[0] + template_cv.shape[1] // 2
-                    match_center_y = max_loc[1] + template_cv.shape[0] // 2
-                    expected_x = args.get("x", 0)
-                    expected_y = args.get("y", 0)
-                    dist = ((match_center_x - expected_x) ** 2 + (match_center_y - expected_y) ** 2) ** 0.5
+                    # Why: モニター原点を加算した絶対画面座標で判定しマルチモニター誤爆を根絶
+                    abs_match_x = m_left + max_loc[0] + template_cv.shape[1] // 2
+                    abs_match_y = m_top + max_loc[1] + template_cv.shape[0] // 2
+                    expected_x = args.get("x", 0) + window_offset[0]
+                    expected_y = args.get("y", 0) + window_offset[1]
+                    dist = ((abs_match_x - expected_x) ** 2 + (abs_match_y - expected_y) ** 2) ** 0.5
 
-                    if dist > 20:
+                    if dist > 25:
                         logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
                         needs_recovery = True
             else:
@@ -70,18 +75,19 @@ def verify_and_heal_target(
             recovery_info = recovery_result
             if recovery_result.get("success"):
                 new_coords = recovery_result.get("new_coordinates")
-                if new_coords:
-                    args["x"] = new_coords["x"]
-                    args["y"] = new_coords["y"]
-                    logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
+                if new_coords and "x" in new_coords and "y" in new_coords:
+                    # Why: 実行時オフセットを逆算して格納し後続の二重加算を完全防止
+                    args["x"] = int(new_coords["x"]) - window_offset[0]
+                    args["y"] = int(new_coords["y"]) - window_offset[1]
+                    logger.info(f"[{workflow_id}] Healer successfully updated base coordinates to ({args['x']}, {args['y']}).")
                     if status_callback:
                         status_callback("実行中...", False)
                     return True, recovery_info
-            else:
-                logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'.")
-                if status_callback:
-                    status_callback("実行中...", False)
-                return False, recovery_info
+
+            logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'.")
+            if status_callback:
+                status_callback("実行中...", False)
+            return False, recovery_info
 
         return True, None
 
@@ -89,6 +95,4 @@ def verify_and_heal_target(
         logger.error(f"[{workflow_id}] Error during image validation/recovery: {e}")
         if status_callback:
             status_callback("実行中...", False)
-        if "安全のため" in str(e):
-            raise e
-        return True, None
+        return False, {"error": str(e)}

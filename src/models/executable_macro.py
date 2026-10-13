@@ -26,6 +26,12 @@ class ClickArgs(BaseModel):
     clicks: Optional[int] = 1
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    selector: Optional[str] = None
+    selector_type: Optional[Literal["css", "xpath", "text", "auto"]] = "css"
+    element_name: Optional[str] = None
+    url: Optional[str] = None
+    match_event_id: Optional[str] = None
+    excel_dest_cell: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class ClickCommand(BaseModel):
@@ -36,6 +42,14 @@ class TypeTextArgs(BaseModel):
     text: str = Field(..., description="Text string to type.")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    x: Optional[int] = None
+    y: Optional[int] = None
+    element_name: Optional[str] = None
+    selector: Optional[str] = None
+    selector_type: Optional[Literal["css", "xpath", "text", "auto"]] = "css"
+    xpath: Optional[str] = None
+    excel_cell: Optional[str] = None
+    sequence_value: Optional[dict] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
     use_clipboard: Optional[bool] = Field(default=None, description="Inject text via clipboard paste (Ctrl+V) to avoid IME desync.")
     clear_before_typing: Optional[bool] = Field(default=False, description="Clear existing field text (Ctrl+A, Backspace) before typing.")
@@ -78,17 +92,38 @@ class MoveArgs(BaseModel):
     y: int
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    selector: Optional[str] = None
+    selector_type: Optional[Literal["css", "xpath", "text", "auto"]] = "css"
+    element_name: Optional[str] = None
+    url: Optional[str] = None
+    excel_dest_cell: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class MoveCommand(BaseModel):
     method: Literal["move"] = "move"
     args: MoveArgs
 
+class DragArgs(BaseModel):
+    start_x: int
+    start_y: int
+    end_x: int
+    end_y: int
+    button: Literal["left", "right", "middle"] = "left"
+    target_id: Optional[str] = None
+    raw_event_id: Optional[str] = None
+    seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
+
+class DragCommand(BaseModel):
+    method: Literal["drag"] = "drag"
+    args: DragArgs
+
 class ScrollArgs(BaseModel):
     dx: float
     dy: float
     x: int
     y: int
+    raw_event_id: Optional[str] = None
+    target_id: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
 
 class ScrollCommand(BaseModel):
@@ -99,6 +134,7 @@ class LoopStartArgs(BaseModel):
     loop_count: int = Field(default=1, description="Number of times to repeat the loop.")
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
+    loop_variables: Optional[dict] = Field(default_factory=dict, description="Variables per loop.")
     data_source: Optional[Literal["static", "excel", "variable"]] = Field(default="static", description="Loop data source type.")
     file_path: Optional[str] = Field(default=None, description="Path to Excel data file.")
     sheet_name: Optional[str] = Field(default=None, description="Sheet name for data loop.")
@@ -165,6 +201,9 @@ class BrowserArgs(BaseModel):
     script: Optional[str] = Field(default=None, description="JavaScript code snippet to execute.")
     timeout_sec: float = Field(default=10.0, description="Timeout in seconds for waiting.")
     clear_before_typing: bool = Field(default=True, description="Clear existing input before typing.")
+    x: Optional[int] = None
+    y: Optional[int] = None
+    element_name: Optional[str] = None
     target_id: Optional[str] = None
     raw_event_id: Optional[str] = None
     seq_vars: Optional[dict] = Field(default_factory=dict, description="Loop sequence variables.")
@@ -180,6 +219,7 @@ MacroCommand = Union[
     PressKeyCommand, 
     ActivateWindowCommand, 
     MoveCommand, 
+    DragCommand,
     ScrollCommand,
     LoopStartCommand,
     LoopEndCommand,

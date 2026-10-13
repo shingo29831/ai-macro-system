@@ -283,9 +283,14 @@ def activate_and_restore_window(window_title: str, win_x: int, win_y: int, win_w
                 if txt:
                     txt_lower = txt.lower()
                     if is_target_browser:
-                        if any(b in txt_lower for b in SUPPORTED_BROWSERS):
+                        # Why: ブラウザ名だけでなくターゲットタイトルの合致度を最優先
+                        if window_title.lower() in txt_lower:
+                            matched_hwnds.insert(0, hwnd)
+                        elif any(b in txt_lower for b in SUPPORTED_BROWSERS):
                             matched_hwnds.append(hwnd)
-                    elif app_name.lower() in txt_lower or window_title.lower() in txt_lower:
+                    elif window_title.lower() in txt_lower:
+                        matched_hwnds.insert(0, hwnd)
+                    elif app_name.lower() in txt_lower:
                         matched_hwnds.append(hwnd)
             return True
 

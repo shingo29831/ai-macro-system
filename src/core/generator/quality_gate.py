@@ -69,19 +69,24 @@ class QualityGateEvaluator:
             except Exception as e:
                 logger.warning(f"[{workflow_id}] Candidate generation failed for {strat.value}: {e}")
 
-        # Why: 全戦略失敗時も生成を破綻させず元イベント列を最低限のフォールバック候補として救済
+        # Why: 全戦略失敗時も生成を破綻させず元イベント列をフォールバック候補として評価
         if not candidates:
+            fallback_score, _ = self._evaluate_static_rules(temp_workflow_info)
             fallback = WorkflowCandidate(
                 strategy="raw_fallback",
                 events=temp_workflow_info,
                 variables={},
-                total_score=50.0,
-                judgment=QualityGateJudgment(status="PASS", reason="Fallback candidate used", confidence=0.5)
+                total_score=fallback_score,
+                judgment=QualityGateJudgment(
+                    status="PASS" if fallback_score >= 50.0 else "FAIL",
+                    reason="Fallback candidate used",
+                    confidence=0.5
+                )
             )
             return fallback
 
-        # スコア降順（同点時はPASSを優先）
-        candidates.sort(key=lambda c: (1 if c.judgment and c.judgment.status == "PASS" else 0, c.total_score), reverse=True)
+        # スコア降順（実効性スコア優先、同点時はPASSを優先）
+        candidates.sort(key=lambda c: (c.total_score, 1 if c.judgment and c.judgment.status == "PASS" else 0), reverse=True)
         best = candidates[0]
         logger.info(f"[{workflow_id}] Quality Gate adopted '{best.strategy}' (Score: {best.total_score:.1f})")
         return best
@@ -112,6 +117,12 @@ class QualityGateEvaluator:
 
         if not events:
             return 0.0, ["No events in candidate"]
+
+        # 0. イベント保持率の検証（重要操作の欠落防止）
+        business_ops = [e for e in events if e.get("raw_action") in ["click", "type_text", "browser_action", "excel_action"]]
+        if not business_ops:
+            score -= 40.0
+            issues.append("No business operations present in workflow")
 
         has_submit = False
         submit_idx = -1

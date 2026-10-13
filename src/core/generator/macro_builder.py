@@ -28,7 +28,9 @@ def build_and_save_macro(
     start_time = integrated_events[0].timestamp if integrated_events else 0
     end_time = integrated_events[-1].timestamp if integrated_events else 0
     
-    screen_size = Size(width=1920, height=1080)
+    max_w = max([e.window.size.width for e in integrated_events if e.window.size.width > 0] or [1920])
+    max_h = max([e.window.size.height for e in integrated_events if e.window.size.height > 0] or [1080])
+    screen_size = Size(width=max_w, height=max_h)
     
     import re
     # Why: Web検索ページ（Google 検索等）がシェル検索窓として誤除外されるのを防止
@@ -54,14 +56,14 @@ def build_and_save_macro(
 
     def get_window_alias(title, rect):
         app_name = extract_app_name(title)
-        app_key = app_name.lower()
-        # Why: 同一アプリのウィンドウ移動時（マルチモニタ間等）もエイリアスを共有し2重起動を防止
-        for (reg_app, reg_rect), alias in window_alias_map.items():
-            if reg_app == app_key:
+        clean_title = (title or "").strip()
+        # Why: 同一アプリでも別ドキュメント・別タブのウィンドウを正しく区別
+        for (reg_title, reg_rect), alias in window_alias_map.items():
+            if reg_title == clean_title:
                 return alias
         app_alias_counters[app_name] = app_alias_counters.get(app_name, 0) + 1
         new_alias = f"{app_name}{app_alias_counters[app_name]}"
-        window_alias_map[(app_key, rect)] = new_alias
+        window_alias_map[(clean_title, rect)] = new_alias
         return new_alias
     
     for info in temp_workflow_info:
@@ -378,7 +380,7 @@ def build_and_save_macro(
             prev_timestamp = current_timestamp
         
         params = step.action.parameters
-        target_id_for_healer = None
+        target_id_for_healer = f"tgt_{step.step_id}"
 
         if cmd_type == "ACTIVATE_WINDOW":
             if params.text:
@@ -429,10 +431,9 @@ def build_and_save_macro(
                 click_x = win_c.x + rel_c.x
                 click_y = win_c.y + rel_c.y
 
-            # Why: ウィンドウ枠外やタイトルバーの無効座標クリックを除外し別ウィンドウ誤操作を完全防止
-            w_y = cur_info.get("win_y", 0)
-            if click_y - w_y <= 45 or click_y < -50:
-                logger.info(f"Omitted off-screen/title bar click at ({click_x}, {click_y}) for event {raw_event_id}")
+            # Why: 画面外の無効座標のみを除外（タブやメニューバーは保護）
+            if click_y < -50 or click_x < -50:
+                logger.info(f"Omitted off-screen click at ({click_x}, {click_y}) for event {raw_event_id}")
                 continue
 
             cmd_args = {
@@ -641,17 +642,15 @@ def build_and_save_macro(
             if last_cmd["method"] == "scroll":
                 l_dx = last_cmd["args"].get("dx", 0.0)
                 l_dy = last_cmd["args"].get("dy", 0.0)
-                # Why: 連続スクロールは逆方向の戻しも合算して正味移動量へ集約
-                if abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 200 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 300:
+                # Why: 同方向スクロールのみ集約し逆方向の意図的操作は相殺せず保護
+                is_same_dir = (l_dy * c_dy >= 0) and (l_dx * c_dx >= 0)
+                if is_same_dir and abs(last_cmd["args"]["x"] - cmd["args"]["x"]) <= 200 and abs(last_cmd["args"]["y"] - cmd["args"]["y"]) <= 300:
                     new_dx = round(l_dx + c_dx, 2)
                     new_dy = round(l_dy + c_dy, 2)
-                    if new_dx == 0.0 and new_dy == 0.0:
-                        commands_data.pop()
-                    else:
-                        last_cmd["args"]["dx"] = new_dx
-                        last_cmd["args"]["dy"] = new_dy
-                        if not last_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
-                            last_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
+                    last_cmd["args"]["dx"] = new_dx
+                    last_cmd["args"]["dy"] = new_dy
+                    if not last_cmd["args"].get("raw_event_id") and cmd["args"].get("raw_event_id"):
+                        last_cmd["args"]["raw_event_id"] = cmd["args"]["raw_event_id"]
                     merged = True
             elif last_cmd["method"] == "wait" and len(commands_data) >= 2:
                 prev_cmd = commands_data[-2]

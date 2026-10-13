@@ -172,6 +172,7 @@ def resolve_variables(data: Any, variables: Dict[str, Any]) -> Any:
                     return str(r_dict[raw_key])
                 if clean_k and clean_k in r_dict:
                     return str(r_dict[clean_k])
+            logger.warning(f"Unresolved macro variable detected: {match.group(0)}")
             return match.group(0)
 
         return pattern.sub(_repl, res)

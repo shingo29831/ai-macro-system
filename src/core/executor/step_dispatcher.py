@@ -301,6 +301,10 @@ class StepDispatcher:
         step_log: Dict[str, Any],
         loop_stack: List[Dict[str, Any]]
     ) -> Tuple[int, bool]:
+        current_win_x, current_win_y, _, _ = self.current_win_rect
+        target_hwnd_for_offset = (self.last_win_args.get("mapped_hwnd") if self.last_win_args else None) or 0
+        off_x, off_y = get_window_offset(target_hwnd_for_offset, current_win_x, current_win_y)
+
         recovered_ok, recovery_info = verify_and_heal_target(
             workflow_id=self.workflow_id,
             target_id=target_id,
@@ -310,6 +314,7 @@ class StepDispatcher:
             last_win_args=self.last_win_args,
             status_callback=self.status_callback,
             check_stop_callback=self.check_stop_callback,
+            window_offset=(off_x, off_y),
         )
         if recovery_info:
             step_log["recovery_info"] = recovery_info
@@ -460,5 +465,5 @@ class StepDispatcher:
             return i + 1, False
 
         else:
-            logger.warning(f"Unknown method: {method}")
-            return i + 1, False
+            logger.error(f"[{self.workflow_id}] Unsupported execution command method: '{method}' at step {i+1}")
+            raise ValueError(f"Unsupported execution command method: '{method}' at step {i+1}")

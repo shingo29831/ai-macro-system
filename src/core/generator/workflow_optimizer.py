@@ -146,18 +146,10 @@ def optimize_workflow_events(
         cy = info.get("cursor_y", info.get("y", 0))
         cx = info.get("cursor_x", info.get("x", 0))
 
-        # Why: ウィンドウ移動・リサイズ・タイトルバー操作は全期間で検知しマクロ操作から完全除外
-        if "drag" in raw_type or raw_act == "drag":
-            logger.info(f"[{workflow_id}] Omitted layout adjustment drag (Event: {info.get('event_id')})")
+        # Why: 業務ドラッグやメニュー・タブ操作を保護し、完全な画面外座標のみ除外
+        if cy < -50 or cx < -50:
+            logger.info(f"[{workflow_id}] Omitted off-screen action (Event: {info.get('event_id')}) at ({cx}, {cy})")
             continue
-
-        # Why: マウス移動・クリックのみタイトルバー誤爆を判定し、キーボード入力やテキスト入力の脱落を完全防止
-        if raw_act in ["click", "move"] and ("drag" in raw_type or raw_act == "drag" or (cy - orig_wy <= 45) or cy < -50):
-            ctx = info.get("app_context") or {}
-            has_valid_web_target = bool(ctx.get("url") and str(ctx.get("url")).startswith("http"))
-            if not has_valid_web_target:
-                logger.info(f"[{workflow_id}] Omitted title bar/off-screen layout action (Event: {info.get('event_id')}) at ({cx}, {cy})")
-                continue
 
         if app in app_final_rect:
             final_x, final_y, final_w, final_h = app_final_rect[app]
@@ -242,7 +234,7 @@ def optimize_workflow_events(
             wy = last_evt.get("win_y", 0)
             prev_events_win = [e.get("window_name", "") for e in temp_workflow_info[:-1] if e.get("window_name")]
             is_new_win = bool(prev_events_win and last_evt.get("window_name") and last_evt.get("window_name") != prev_events_win[0])
-            if (diff < 0.005 or (cy - wy) <= 45) and not is_new_win:
+            if diff < 0.005 and not is_new_win and not last_evt.get("app_context", {}).get("element_name"):
                 temp_workflow_info.pop()
             else:
                 break

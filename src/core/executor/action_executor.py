@@ -68,91 +68,6 @@ def ensure_window_foreground(last_win_args: Optional[Dict[str, Any]], workflow_i
         )
 
 
-def verify_and_heal_target(
-    workflow_id: str,
-    target_id: str,
-    raw_event_id: str,
-    args: Dict[str, Any],
-    target_dir: Path,
-    last_win_args: Optional[Dict[str, Any]],
-    status_callback: Optional[Callable[[str, bool], None]],
-    check_stop_callback: Callable[[], None],
-) -> Tuple[bool, Optional[Dict[str, Any]]]:
-    needs_recovery = False
-    crop_image_path = target_dir / "images" / f"{raw_event_id}_crop.png"
-    recovery_info = None
-
-    try:
-        from core.recorder.screen_capturer import take_screenshot
-        from core.healer.recovery_manager import attempt_recovery
-        import cv2
-
-        current_img_pil, _ = take_screenshot()
-        check_stop_callback()
-
-        if crop_image_path.exists():
-            current_img_cv = cv2.cvtColor(np.array(current_img_pil), cv2.COLOR_RGB2BGR)
-            template_cv = cv2.imread(str(crop_image_path), cv2.IMREAD_COLOR)
-
-            if template_cv is not None:
-                res = cv2.matchTemplate(current_img_cv, template_cv, cv2.TM_CCOEFF_NORMED)
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-
-                if max_val < 0.8:
-                    logger.warning(f"[{workflow_id}] Template match failed (Confidence: {max_val:.2f}). Initiating Healer...")
-                    needs_recovery = True
-                else:
-                    match_center_x = max_loc[0] + template_cv.shape[1] // 2
-                    match_center_y = max_loc[1] + template_cv.shape[0] // 2
-                    expected_x = args.get("x", 0)
-                    expected_y = args.get("y", 0)
-                    dist = ((match_center_x - expected_x) ** 2 + (match_center_y - expected_y) ** 2) ** 0.5
-
-                    if dist > 20:
-                        logger.warning(f"[{workflow_id}] Target UI drifted by {dist:.1f} pixels. Initiating Healer...")
-                        needs_recovery = True
-            else:
-                needs_recovery = True
-        else:
-            logger.warning(f"[{workflow_id}] No crop image available. Initiating Healer...")
-            needs_recovery = True
-
-        if needs_recovery:
-            check_stop_callback()
-            if status_callback:
-                status_callback("自己修復中...", True)
-
-            target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else 0) or 0
-            recovery_result = attempt_recovery(workflow_id, target_id, window_hwnd=target_hwnd, raw_event_id=raw_event_id)
-            check_stop_callback()
-
-            recovery_info = recovery_result
-            if recovery_result.get("success"):
-                new_coords = recovery_result.get("new_coordinates")
-                if new_coords:
-                    args["x"] = new_coords["x"]
-                    args["y"] = new_coords["y"]
-                    logger.info(f"[{workflow_id}] Healer successfully updated coordinates to ({args['x']}, {args['y']}).")
-                    if status_callback:
-                        status_callback("実行中...", False)
-                    return True, recovery_info
-            else:
-                logger.error(f"[{workflow_id}] Healer failed to recover target '{target_id}'.")
-                if status_callback:
-                    status_callback("実行中...", False)
-                return False, recovery_info
-
-        return True, None
-
-    except Exception as e:
-        logger.error(f"[{workflow_id}] Error during image validation/recovery: {e}")
-        if status_callback:
-            status_callback("実行中...", False)
-        if "安全のため" in str(e):
-            raise e
-        return True, None
-
-
 def execute_physical_action(
     method: str,
     args: Dict[str, Any],
@@ -261,6 +176,23 @@ def execute_physical_action(
                     ctypes.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
                     ctypes.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
                 time.sleep(0.55)
+
+    elif method == "drag":
+        sx = args.get("start_x", args.get("x", 0)) + off_x
+        sy = args.get("start_y", args.get("y", 0)) + off_y
+        ex = args.get("end_x", sx) + off_x
+        ey = args.get("end_y", sy) + off_y
+        button_str = args.get("button", "left")
+        btn = Button.right if button_str == "right" else Button.middle if button_str == "middle" else Button.left
+
+        _smooth_move(int(sx), int(sy))
+        time.sleep(0.06)
+        mouse.press(btn)
+        time.sleep(0.06)
+        _smooth_move(int(ex), int(ey), steps=15, duration=0.25)
+        time.sleep(0.06)
+        mouse.release(btn)
+        time.sleep(0.08)
 
     elif method == "scroll":
         try:

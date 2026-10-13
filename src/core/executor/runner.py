@@ -172,7 +172,9 @@ def run_workflow(
         try:
             step_dispatcher.initialize_runtime_environment()
         except Exception as e:
-            logger.warning(f"[{workflow_id}] Failed to initialize runtime environment: {e}")
+            logger.error(f"[{workflow_id}] Critical failure in runtime environment initialization: {e}")
+            update_ui(f"初期化失敗: {e}", is_warning=True)
+            raise RuntimeError(f"Runtime environment initialization failed: {e}") from e
 
         LoopController.preload_excel_variables(commands, target_dir, variables)
 

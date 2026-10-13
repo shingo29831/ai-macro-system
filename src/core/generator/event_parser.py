@@ -93,12 +93,9 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     elif is_move:
         action_type = "move"
     elif is_drag:
-        # Why: ウィンドウ移動・リサイズ等のレイアウト調整ドラッグを検知して完全除外
-        start_coords = content_data.get("start_screen_coordinates") if isinstance(content_data, dict) else {}
-        start_y = start_coords.get("y", cursor_y)
-        drag_dist = float(content_data.get("drag_distance", 0.0)) if isinstance(content_data, dict) else 0.0
-        if (start_y - win_y <= 45) or drag_dist >= 80 or rel_y <= 45 or cursor_y < -50:
-            logger.info(f"[{workflow_id}] Omitted window layout adjustment drag: {event_id} (dist={drag_dist})")
+        # Why: 業務ドラッグや範囲選択を保護し画面外ノイズのみ除外
+        if cursor_y < -50:
+            logger.info(f"[{workflow_id}] Omitted off-screen drag: {event_id}")
             return None
         action_type = "drag"
     elif is_click:
