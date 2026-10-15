@@ -226,6 +226,13 @@ def generate_macro_workflow(
             check_cancel_callback=check_cancel_callback,
             progress_callback=progress_callback
         )
+        if not best_candidate.judgment or best_candidate.judgment.status != "PASS":
+            reason = best_candidate.judgment.reason if best_candidate.judgment else "Missing quality-gate judgment"
+            raise ValueError(
+                f"Quality gate rejected workflow candidate '{best_candidate.strategy}' "
+                f"(score={best_candidate.total_score:.1f}): {reason}"
+            )
+
         temp_workflow_info = best_candidate.events
         variables = best_candidate.variables
         generation_debug_log["stages"].append({

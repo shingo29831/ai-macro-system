@@ -139,6 +139,10 @@ class ActionParameters(BaseModel):
     browser_script: Optional[str] = Field(None, description="実行JavaScript")
     target: Optional[UniversalSelector] = None
     destination: Optional[UniversalSelector] = None
+    drag_start_x: Optional[int] = None
+    drag_start_y: Optional[int] = None
+    drag_end_x: Optional[int] = None
+    drag_end_y: Optional[int] = None
     button: Optional[str] = None
     modifiers: List[str] = Field(default_factory=list)
     key: Optional[str] = None

@@ -78,15 +78,15 @@ class QualityGateEvaluator:
                 variables={},
                 total_score=fallback_score,
                 judgment=QualityGateJudgment(
-                    status="PASS" if fallback_score >= 50.0 else "FAIL",
-                    reason="Fallback candidate used",
-                    confidence=0.5
+                    status="FAIL",
+                    reason="All optimization strategies failed; raw fallback is not approved for execution",
+                    confidence=0.0
                 )
             )
             return fallback
 
-        # スコア降順（実効性スコア優先、同点時はPASSを優先）
-        candidates.sort(key=lambda c: (c.total_score, 1 if c.judgment and c.judgment.status == "PASS" else 0), reverse=True)
+        # A passing candidate must always outrank a failing candidate, regardless of score.
+        candidates.sort(key=lambda c: (1 if c.judgment and c.judgment.status == "PASS" else 0, c.total_score), reverse=True)
         best = candidates[0]
         logger.info(f"[{workflow_id}] Quality Gate adopted '{best.strategy}' (Score: {best.total_score:.1f})")
         return best
@@ -119,7 +119,7 @@ class QualityGateEvaluator:
             return 0.0, ["No events in candidate"]
 
         # 0. イベント保持率の検証（重要操作の欠落防止）
-        business_ops = [e for e in events if e.get("raw_action") in ["click", "type_text", "browser_action", "excel_action"]]
+        business_ops = [e for e in events if e.get("raw_action") in ["click", "drag", "type_text", "browser_action", "excel_action"]]
         if not business_ops:
             score -= 40.0
             issues.append("No business operations present in workflow")
