@@ -80,6 +80,9 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
 
     dx = 0.0
     dy = 0.0
+    drag_content = content_data if isinstance(content_data, dict) else {}
+    drag_start = drag_content.get("start_screen_coordinates") or {}
+    drag_end = drag_content.get("end_screen_coordinates") or {}
 
     if is_scroll:
         action_type = "scroll"
@@ -252,6 +255,11 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         "dy": dy,
         "cursor_x": cursor_x,
         "cursor_y": cursor_y,
+        "drag_start_x": drag_start.get("x", cursor_x) if action_type == "drag" else None,
+        "drag_start_y": drag_start.get("y", cursor_y) if action_type == "drag" else None,
+        "drag_end_x": drag_end.get("x") if action_type == "drag" else None,
+        "drag_end_y": drag_end.get("y") if action_type == "drag" else None,
+        "target_window_name": drag_content.get("target_window_name") if action_type == "drag" else None,
         "pre_img_path": pre_img_path_str,
         "win_x": win_x,
         "win_y": win_y,
