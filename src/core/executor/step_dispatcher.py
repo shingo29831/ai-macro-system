@@ -324,7 +324,20 @@ class StepDispatcher:
                 if loop_stack and loop_stack[-1].get("continue_on_error"):
                     skipped_i = _skip_failed_loop_step(i, self.commands, loop_stack, self.workflow_id, self.update_ui_callback, "UI検出失敗")
                     return skipped_i, True
-                raise RuntimeError("対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。")
+                recovery_reason = recovery_info.get("reason") or recovery_info.get("error") or "no_reason_returned"
+                recovery_stage = recovery_info.get("stage", "not_recovered")
+                recovery_method = recovery_info.get("method", "unknown")
+                logger.error(
+                    f"[{self.workflow_id}] Target recovery failed: target_id={target_id}, "
+                    f"raw_event_id={raw_event_id}, stage={recovery_stage}, "
+                    f"method={recovery_method}, reason={recovery_reason}, details={recovery_info}"
+                )
+                raise RuntimeError(
+                    "対象のUIが見つからず、自己修復にも失敗したためマクロを安全停止しました。"
+                    f" target_id={target_id}, raw_event_id={raw_event_id}, "
+                    f"recovery_stage={recovery_stage}, recovery_method={recovery_method}, "
+                    f"recovery_reason={recovery_reason}"
+                )
         return i + 1, False
 
     def _execute_method(
