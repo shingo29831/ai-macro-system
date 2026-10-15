@@ -189,7 +189,7 @@ def build_and_save_macro(
         )
         
         target_id = None
-        if raw_action in ["click", "move", "type_text", "key_down"]:
+        if raw_action in ["click", "move", "type_text", "key_down", "drag"]:
             target_id = f"tgt_{step_idx}"
             ui_targets_dict[target_id] = {
                 "semantic_role": final_semantic_role,
@@ -225,6 +225,22 @@ def build_and_save_macro(
                 excel_value=info.get("value"),
                 excel_variable_name=info.get("variable_name"),
                 excel_macro_name=info.get("macro_name")
+            )
+        elif raw_action == "drag":
+            start_x = info.get("drag_start_x", info.get("cursor_x"))
+            start_y = info.get("drag_start_y", info.get("cursor_y"))
+            end_x = info.get("drag_end_x")
+            end_y = info.get("drag_end_y")
+            if any(v is None for v in (start_x, start_y, end_x, end_y)) or (start_x == end_x and start_y == end_y):
+                logger.warning("Skipping drag event %s because its start/end coordinates are missing or identical", event_id)
+                continue
+            cmd = "MOUSE_DRAG"
+            intent = "DRAG_UI_ELEMENT"
+            desc = f"Drag from ({start_x}, {start_y}) to ({end_x}, {end_y})."
+            params = ActionParameters(
+                drag_start_x=int(start_x), drag_start_y=int(start_y),
+                drag_end_x=int(end_x), drag_end_y=int(end_y),
+                button=info.get("button") or "left"
             )
         elif raw_action == "click":
             cmd = "MOUSE_CLICK"
@@ -381,6 +397,24 @@ def build_and_save_macro(
         
         params = step.action.parameters
         target_id_for_healer = f"tgt_{step.step_id}"
+
+        if cmd_type == "MOUSE_DRAG":
+            start_x, start_y = params.drag_start_x, params.drag_start_y
+            end_x, end_y = params.drag_end_x, params.drag_end_y
+            if None in (start_x, start_y, end_x, end_y):
+                logger.warning("Skipping drag command for step %s: missing coordinates", step.step_id)
+                continue
+            raw_commands_data.append({
+                "method": "drag",
+                "args": {
+                    "start_x": int(start_x), "start_y": int(start_y),
+                    "end_x": int(end_x), "end_y": int(end_y),
+                    "button": params.button or "left",
+                    "target_id": target_id_for_healer,
+                    "raw_event_id": raw_event_id
+                }
+            })
+            continue
 
         if cmd_type == "ACTIVATE_WINDOW":
             if params.text:
