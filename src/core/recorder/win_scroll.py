@@ -37,6 +37,15 @@ user32.CallNextHookEx.restype = LRESULT
 user32.UnhookWindowsHookEx.argtypes = [HHOOK]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 
+user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+user32.GetMessageW.restype = wintypes.BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.TranslateMessage.restype = wintypes.BOOL
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.restype = LRESULT
+user32.PostThreadMessageW.argtypes = [DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostThreadMessageW.restype = wintypes.BOOL
+
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = DWORD
 
@@ -71,8 +80,8 @@ def native_scroll_hook_worker():
     try:
         state.native_scroll_hook_thread_id = kernel32.GetCurrentThreadId()
         state.native_scroll_hook_callback = LowLevelMouseProc(native_scroll_hook_callback)
-        module_handle = kernel32.GetModuleHandleW(None)
-        state.native_scroll_hook_handle = user32.SetWindowsHookExW(WH_MOUSE_LL, state.native_scroll_hook_callback, module_handle, 0)
+        # Why: WH_MOUSE_LLはDLL不要のためNULL指定がWinAPI標準仕様
+        state.native_scroll_hook_handle = user32.SetWindowsHookExW(WH_MOUSE_LL, state.native_scroll_hook_callback, None, 0)
         
         if not state.native_scroll_hook_handle:
             error_code = ctypes.get_last_error()
@@ -86,7 +95,11 @@ def native_scroll_hook_worker():
         print("Windowsスクロールフックを開始しました")
         
         message = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) != 0:
+        # Why: GetMessageWの戻り値-1(エラー)と0(WM_QUIT)を安全に判定
+        while True:
+            res = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
+            if res <= 0:
+                break
             user32.TranslateMessage(ctypes.byref(message))
             user32.DispatchMessageW(ctypes.byref(message))
     except Exception:
