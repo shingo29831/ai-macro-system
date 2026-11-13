@@ -120,7 +120,7 @@ def execute_physical_action(
             try:
                 from core.executor.browser_controller import BrowserController
                 bc = BrowserController.get_instance()
-                if bc._click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url, x=x, y=y):
+                if bc.click_by_uia_or_selector(selector, last_win_args, timeout=0.6, element_name=elem_name, url=target_url, x=x, y=y):
                     logger.info(f"[{workflow_id}] High-precision browser click succeeded on '{elem_name or selector}'.")
                     skip_physical = True
             except Exception as b_err:
@@ -162,7 +162,7 @@ def execute_physical_action(
                 try:
                     from core.executor.browser_controller import BrowserController
                     bc = BrowserController.get_instance()
-                    if bc._hover_by_uia_or_selector(selector, last_win_args, timeout=0.8, element_name=elem_name, target_x=x, target_y=y):
+                    if bc.hover_by_uia_or_selector(selector, last_win_args, timeout=0.8, element_name=elem_name, target_x=x, target_y=y):
                         logger.info(f"[{workflow_id}] High-precision browser hover succeeded on '{elem_name or selector}'.")
                         hovered = True
                 except Exception as b_err:
@@ -298,7 +298,7 @@ def execute_physical_action(
                 try:
                     from core.executor.browser_controller import BrowserController
                     bc = BrowserController.get_instance()
-                    if bc._type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=0.6, element_name=elem_name):
+                    if bc.type_by_uia_or_selector(selector, text, clear_before, last_win_args, timeout=0.6, element_name=elem_name):
                         logger.info(f"[{workflow_id}] High-precision browser typing succeeded on '{elem_name or selector}'.")
                         skip_physical = True
                 except Exception as b_err:
