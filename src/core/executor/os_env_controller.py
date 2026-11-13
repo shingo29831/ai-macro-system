@@ -63,24 +63,6 @@ def get_wheel_scroll_settings() -> dict:
     except Exception:
         return {"scroll_lines": 3, "scroll_chars": 3, "is_page_scroll": False}
 
-# Why: 待機時(WAIT)・起動時(APPSTARTING)・文字選択(IBEAM)等でのユーザーカーソルチラつきを完全排除
-# Why: 通常矢印・リンク手・作業中を最適化置換し、フック遅延ゼロとチラつき解消を両立
-RUN_RECORD_CURSOR_IDS = [
-    32512,  # OCR_NORMAL
-    32649,  # OCR_HAND
-    32650,  # OCR_APPSTARTING
-]
-
-import queue
-
-_current_cursor_mode: str = "default"
-_cur_cache: dict[str, Path] = {}
-_cursor_lock = threading.RLock()
-_auto_revert_timer: threading.Timer | None = None
-_cursor_queue: queue.Queue = queue.Queue()
-_cursor_worker_thread: threading.Thread | None = None
-_cursor_worker_lock = threading.Lock()
-
 
 def set_dpi_awareness():
     """WindowsプロセスのDPI Awarenessを高DPI対応モードに設定する"""
