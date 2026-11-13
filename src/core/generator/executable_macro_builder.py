@@ -5,6 +5,8 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from models.data_types import IntegratedEvent, WorkflowStep
+from core.generator.command_postprocessor import append_wait_if_needed, merge_scroll_commands
+from core.generator.command_step_converter import NO_IMAGE_MATCH_COMMANDS, convert_step_to_command
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +171,11 @@ def _merge_scroll_commands(raw_commands_data: List[Dict[str, Any]]) -> List[Dict
     return commands_data
 
 
+"""Module: @role: Workflowステップ列から実行エンジン向けのコマンド列を構築するパイプラインオーケストレーター。"""
+
+
+
+
 def build_executable_commands(
     workflow_steps: List[WorkflowStep],
     temp_workflow_info: List[Dict[str, Any]],
@@ -188,189 +195,18 @@ def build_executable_commands(
         integ_evt = next((e for e in integrated_events if e.id in [raw_event_id, base_id]), None)
 
         cmd_type = step.action.command
-        if not integ_evt and cmd_type not in _NO_IMAGE_MATCH_COMMANDS:
+        if not integ_evt and cmd_type not in NO_IMAGE_MATCH_COMMANDS:
             continue
 
         current_timestamp = integ_evt.timestamp if integ_evt else (prev_timestamp or 0)
-        prev_timestamp = _append_wait_if_needed(raw_commands_data, current_timestamp, prev_timestamp)
-
-        params = step.action.parameters
-        target_id_for_healer = f"tgt_{step.step_id}"
-
-        if cmd_type == "MOUSE_DRAG":
-            start_x, start_y = params.drag_start_x, params.drag_start_y
-            end_x, end_y = params.drag_end_x, params.drag_end_y
-            if None in (start_x, start_y, end_x, end_y):
-                logger.warning("Skipping drag command for step %s: missing coordinates", step.step_id)
-                continue
-            raw_commands_data.append(
-                {
-                    "method": "drag",
-                    "args": {
-                        "start_x": int(start_x),
-                        "start_y": int(start_y),
-                        "end_x": int(end_x),
-                        "end_y": int(end_y),
-                        "button": params.button or "left",
-                        "target_id": target_id_for_healer,
-                        "raw_event_id": raw_event_id,
-                    },
-                }
-            )
-            continue
-
-        if cmd_type == "ACTIVATE_WINDOW" and params.text:
-            try:
-                win_info = json.loads(params.text)
-                raw_commands_data.append(
-                    {
-                        "method": "activate_window",
-                        "args": {
-                            "window_title": win_info.get("title", ""),
-                            "x": win_info.get("x", 0),
-                            "y": win_info.get("y", 0),
-                            "width": win_info.get("width", 0),
-                            "height": win_info.get("height", 0),
-                            "launch_cmd": win_info.get("launch_cmd", ""),
-                            "target_id": target_id_for_healer,
-                            "raw_event_id": raw_event_id,
-                            "window_alias": win_info.get("window_alias"),
-                            "is_maximized": win_info.get("is_maximized", False),
-                        },
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to parse ACTIVATE_WINDOW params: {e}")
+        prev_timestamp = append_wait_if_needed(raw_commands_data, current_timestamp, prev_timestamp)
 
         cur_info = next(
             (workflow_info_map[eid] for eid in step.fallback_raw_events if eid in workflow_info_map),
             workflow_info_map.get(raw_event_id, {}),
         )
-        app_ctx = cur_info.get("app_context") or {}
-        elem_name = app_ctx.get("element_name") or cur_info.get("semantic_role") or ""
-        css_sel = app_ctx.get("css_selector")
-        xpath_sel = app_ctx.get("xpath")
-        target_url = app_ctx.get("url")
-        if not target_url or not str(target_url).startswith("http"):
-            cand_url = app_ctx.get("text") or app_ctx.get("value")
-            if cand_url and str(cand_url).startswith("http"):
-                target_url = cand_url
+        cmd_entry = convert_step_to_command(step, cur_info, integ_evt, raw_event_id)
+        if cmd_entry is not None:
+            raw_commands_data.append(cmd_entry)
 
-        if cmd_type == "MOUSE_CLICK":
-            click_x, click_y = _resolve_pointer_coords(cur_info, integ_evt)
-            # Why: 画面外の無効座標のみを除外（タブやメニューバーは保護）
-            if click_y < -50 or click_x < -50:
-                logger.info(f"Omitted off-screen click at ({click_x}, {click_y}) for event {raw_event_id}")
-                continue
-            cmd_args: Dict[str, Any] = {
-                "x": click_x,
-                "y": click_y,
-                "button": params.button or "left",
-                "clicks": 1,
-                "target_id": target_id_for_healer,
-                "raw_event_id": raw_event_id,
-            }
-            if cur_info.get("match_event_id"):
-                cmd_args["match_event_id"] = cur_info["match_event_id"]
-            _attach_selector_metadata(cmd_args, elem_name, css_sel, xpath_sel, target_url, params.excel_dest_cell)
-            raw_commands_data.append({"method": "click", "args": cmd_args})
-        elif cmd_type == "MOUSE_MOVE":
-            move_x, move_y = _resolve_pointer_coords(cur_info, integ_evt)
-            cmd_args = {
-                "x": move_x,
-                "y": move_y,
-                "target_id": target_id_for_healer,
-                "raw_event_id": raw_event_id,
-            }
-            _attach_selector_metadata(cmd_args, elem_name, css_sel, xpath_sel, target_url, params.excel_dest_cell)
-            raw_commands_data.append({"method": "move", "args": cmd_args})
-        elif cmd_type == "MOUSE_SCROLL" and params.text:
-            try:
-                parts = params.text.split(",")
-                dx_val = float(parts[0])
-                dy_val = float(parts[1])
-                x_val = float(parts[2]) if len(parts) > 2 else 0.0
-                y_val = float(parts[3]) if len(parts) > 3 else 0.0
-                if dx_val != 0.0 or dy_val != 0.0:
-                    raw_commands_data.append(
-                        {
-                            "method": "scroll",
-                            "args": {
-                                "dx": dx_val,
-                                "dy": dy_val,
-                                "x": int(x_val),
-                                "y": int(y_val),
-                                "raw_event_id": raw_event_id,
-                            },
-                        }
-                    )
-            except Exception:
-                pass
-        elif cmd_type == "KEYBOARD_SHORTCUT" and params.key:
-            raw_commands_data.append(
-                {
-                    "method": "press_key",
-                    "args": {
-                        "key": params.key,
-                        "target_id": target_id_for_healer,
-                        "raw_event_id": raw_event_id,
-                    },
-                }
-            )
-        elif cmd_type == "TYPE_TEXT" and params.text:
-            cmd_args = {
-                "text": params.text,
-                "target_id": target_id_for_healer,
-                "raw_event_id": raw_event_id,
-            }
-            if params.sequence_value:
-                cmd_args["sequence_value"] = params.sequence_value
-            if params.excel_cell:
-                cmd_args["excel_cell"] = params.excel_cell
-            cx, cy = cur_info.get("cursor_x"), cur_info.get("cursor_y")
-            if cx is not None and cy is not None and (cx > 20 or cy > 20):
-                cmd_args["x"] = cx
-                cmd_args["y"] = cy
-            if elem_name and elem_name != params.text and not elem_name.startswith("{{"):
-                cmd_args["element_name"] = elem_name
-            if css_sel:
-                cmd_args["selector"] = css_sel
-                cmd_args["selector_type"] = "css"
-            elif xpath_sel:
-                cmd_args["selector"] = xpath_sel
-                cmd_args["selector_type"] = "xpath"
-            raw_commands_data.append({"method": "type_text", "args": cmd_args})
-        elif cmd_type == "LOOP_START":
-            raw_commands_data.append(
-                {
-                    "method": "loop_start",
-                    "args": {
-                        "loop_count": params.loop_count or 10,
-                        "loop_variables": params.loop_variables or {},
-                    },
-                }
-            )
-        elif cmd_type == "LOOP_END":
-            raw_commands_data.append({"method": "loop_end", "args": {}})
-        elif cmd_type == "BROWSER_ACTION":
-            raw_commands_data.append(_build_browser_command(params, cur_info, target_id_for_healer, raw_event_id))
-        elif cmd_type == "EXCEL_ACTION":
-            raw_commands_data.append(
-                {
-                    "method": "excel_action",
-                    "args": {
-                        "action": params.excel_action,
-                        "file_path": params.excel_file_path,
-                        "sheet_name": params.excel_sheet,
-                        "cell": params.excel_cell,
-                        "range_address": params.excel_range,
-                        "value": params.excel_value,
-                        "variable_name": params.excel_variable_name,
-                        "macro_name": params.excel_macro_name,
-                        "target_id": target_id_for_healer,
-                        "raw_event_id": raw_event_id,
-                    },
-                }
-            )
-
-    return _merge_scroll_commands(raw_commands_data)
+    return merge_scroll_commands(raw_commands_data)
