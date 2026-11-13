@@ -176,6 +176,11 @@ def _merge_scroll_commands(raw_commands_data: List[Dict[str, Any]]) -> List[Dict
 
 
 
+"""Module: @role: Workflowステップ列から実行エンジン向けのコマンド列を構築するパイプラインオーケストレーター。"""
+
+
+
+
 def build_executable_commands(
     workflow_steps: List[WorkflowStep],
     temp_workflow_info: List[Dict[str, Any]],
