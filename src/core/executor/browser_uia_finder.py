@@ -1,18 +1,13 @@
 """Module: @role: ブラウザ操作におけるUIA要素探索、スクロール可視化、テキスト/属性取得および要素待機を担当する。"""
 
-import ctypes
 import logging
-import platform
-import re
-import threading
 import time
-import urllib.parse
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+
+from core.executor.browser_uia_scroller import SIMPLE_GENERIC_TAGS, scroll_into_view
+from core.executor.browser_uia_searcher import GENERIC_HTML_TAGS, find_uia_element
 
 logger = logging.getLogger(__name__)
-
-GENERIC_HTML_TAGS = {"div", "span", "p", "a", "li", "ul", "ol", "body", "html", "section", "header", "footer"}
-SIMPLE_GENERIC_TAGS = {"div", "span", "p", "a", "li", "ul", "body"}
 
 
 def get_combobox_current_value(ctrl: Any, elem: Any, label_name: str = "") -> str:
