@@ -173,7 +173,7 @@ class StepDispatcher:
         if method == "activate_window":
             self._update_window_rect_from_hwnd(args)
 
-        scroll_browser_element_into_view(
+        browser_located = scroll_browser_element_into_view(
             method or "",
             args,
             self.is_browser_target,
@@ -217,6 +217,7 @@ class StepDispatcher:
                 self.status_callback,
                 self.check_stop_callback,
                 self.update_ui_callback,
+                browser_element_located=browser_located,
             )
             if healed:
                 # Why: コピー辞書への修復結果を元コマンドへ書き戻し永続化と次回実行を一致させる

@@ -10,7 +10,7 @@ from core.executor.excel_handler import skip_failed_loop_step as _skip_failed_lo
 from core.executor.input_helper import get_window_offset, wait_for_screen_settle
 from core.executor.screen_matcher import align_scroll_by_screen_match, wait_for_screen_match
 from core.executor.target_healer import verify_and_heal_target
-from core.shared.window_utils import BROWSER_KEYWORDS, extract_app_name
+from core.shared.window_utils import BROWSER_KEYWORDS, extract_app_name, is_ignored_system_window
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def scroll_browser_element_into_view(
     last_win_args: Optional[Dict[str, Any]],
     current_win_rect: Tuple[int, int, int, int],
     workflow_id: str,
-) -> None:
+) -> bool:
     """ブラウザ操作対象がビューポート外にある場合、要素をスクロールして座標を再取得する。"""
     cur_sel = str(args.get("selector") or "").strip().lower()
     is_generic = cur_sel in ["div", "span", "p", "a", "li", "ul", "body"]
@@ -114,15 +114,21 @@ def scroll_browser_element_into_view(
         and not is_generic
         and not is_coords_visible
     ):
-        return
+        return False
 
     try:
         from core.executor.browser_controller import BrowserController
 
         bc = BrowserController.get_instance()
-        target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or (
-            ctypes.windll.user32.GetForegroundWindow() if platform.system() == "Windows" else None
-        )
+        target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or 0
+        if not target_hwnd_for_offset and platform.system() == "Windows":
+            fg = ctypes.windll.user32.GetForegroundWindow() or 0
+            if fg:
+                ln = ctypes.windll.user32.GetWindowTextLengthW(fg)
+                buf = ctypes.create_unicode_buffer(ln + 1)
+                ctypes.windll.user32.GetWindowTextW(fg, buf, ln + 1)
+                if not is_ignored_system_window(buf.value):
+                    target_hwnd_for_offset = fg
         cur_x, cur_y, _, _ = current_win_rect
         pre_off_x, pre_off_y = get_window_offset(target_hwnd_for_offset, cur_x, cur_y)
         new_coords = bc.scroll_into_view(
@@ -141,8 +147,10 @@ def scroll_browser_element_into_view(
             logger.info(
                 f"[{workflow_id}] Element scrolled into view. Updated coords to ({new_coords[0]}, {new_coords[1]})"
             )
+            return True
     except Exception as sc_err:
         logger.debug(f"[{workflow_id}] Auto scroll_into_view bypassed: {sc_err}")
+    return False
 
 
 def perform_screen_matching(
@@ -200,8 +208,13 @@ def heal_target_or_skip(
     status_callback: Optional[Callable[[str, bool], None]],
     check_stop_callback: Callable[[], None],
     update_ui_callback: Callable[[str, bool], None],
+    browser_element_located: bool = False,
 ) -> Tuple[int, bool, bool]:
     """UIターゲットの検証・自己修復を行い、(next_i, aborted_for_skip, healed) を返す。"""
+    # Why: Excelセル直接選択やブラウザスクロール特定済み時は静的画像検証の誤爆と座標永続上書きを回避
+    if args.get("excel_dest_cell") or browser_element_located:
+        return step_index + 1, False, False
+
     current_win_x, current_win_y, _, _ = current_win_rect
     target_hwnd_for_offset = (last_win_args.get("mapped_hwnd") if last_win_args else None) or 0
     off_x, off_y = get_window_offset(target_hwnd_for_offset, current_win_x, current_win_y)
