@@ -254,7 +254,7 @@ def convert_step_to_command(
         return {
             "method": "loop_start",
             "args": {
-                "loop_count": params.loop_count or 10,
+                "loop_count": params.loop_count if params.loop_count is not None else 10,
                 "loop_variables": params.loop_variables or {},
             },
         }

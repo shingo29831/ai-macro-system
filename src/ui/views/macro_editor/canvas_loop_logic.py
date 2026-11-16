@@ -86,12 +86,12 @@ def ensure_loop_ids(commands: List[Dict[str, Any]]) -> None:
     for cmd in commands:
         method = cmd.get("method")
         if method == "loop_start":
-            if "loop_id" not in cmd:
+            if not cmd.get("loop_id"):
                 cmd["loop_id"] = f"loop_{loop_counter}"
                 loop_counter += 1
             stack.append(cmd["loop_id"])
         elif method == "loop_end":
-            if "loop_id" not in cmd:
+            if not cmd.get("loop_id"):
                 if stack:
                     cmd["loop_id"] = stack.pop()
                 else:

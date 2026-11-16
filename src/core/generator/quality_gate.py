@@ -145,7 +145,10 @@ class QualityGateEvaluator:
                 issues.append(f"Empty typing at step {idx}")
 
             # 3. 画面外無効座標の検知
-            cx, cy = evt.get("cursor_x", evt.get("x", 0)), evt.get("cursor_y", evt.get("y", 0))
+            raw_cx = evt.get("cursor_x") if evt.get("cursor_x") is not None else evt.get("x")
+            raw_cy = evt.get("cursor_y") if evt.get("cursor_y") is not None else evt.get("y")
+            cx = 0 if raw_cx is None else raw_cx
+            cy = 0 if raw_cy is None else raw_cy
             if act in ["click", "move"] and (cx < -50 or cy < -50):
                 score -= 10.0
                 issues.append(f"Offscreen coordinates at step {idx}")

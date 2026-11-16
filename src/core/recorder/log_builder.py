@@ -39,7 +39,7 @@ def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy:
     elif dx > 0: direction = "right"
     elif dx < 0: direction = "left"
 
-    from core.executor.os_env_controller import get_wheel_scroll_settings
+    # Why: 先頭でcore.shared.os_envから取得済みのため存在しない旧モジュール参照を除去
     scroll_settings = get_wheel_scroll_settings()
 
     return {

@@ -73,7 +73,8 @@ class BrowserController:
             value = self._resolve_template(value, variables)
         attr_name = args.get("attribute_name", "")
         var_name = args.get("variable_name")
-        timeout_sec = float(args.get("timeout_sec", 10.0))
+        raw_timeout = args.get("timeout_sec")
+        timeout_sec = float(10.0 if raw_timeout is None else raw_timeout)
         clear_before = bool(args.get("clear_before_typing", True))
 
         logger.info(f"[{workflow_id}] Browser RPA executing action: {action} on selector: '{selector}'")

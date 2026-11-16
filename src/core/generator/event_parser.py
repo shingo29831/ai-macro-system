@@ -153,7 +153,7 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     semantic_role = input_val
     context_components = []
     
-    images_data = log_entry.get("Images", {})
+    images_data = log_entry.get("Images") or {}
     crop_path_str = images_data.get("Crop")
     pre_img_path_str = images_data.get("Pre")
 

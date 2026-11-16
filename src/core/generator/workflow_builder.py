@@ -106,7 +106,7 @@ def _build_action_command(
                 xpath=app_ctx.get("xpath"),
                 url_pattern=app_ctx.get("url"),
             ),
-            button=info["button"],
+            button=info.get("button") or "left",
         )
         return "MOUSE_CLICK", "CLICK_UI_ELEMENT", f"Click on the {final_semantic_role} element.", params
 
@@ -129,10 +129,12 @@ def _build_action_command(
         return "TYPE_TEXT", "INPUT_TEXT", f"Type the text: '{final_semantic_role}'", params
 
     if raw_action == "scroll":
-        cursor_x = info.get("cursor_x", 0)
-        cursor_y = info.get("cursor_y", 0)
-        params = ActionParameters(text=f"{info['dx']},{info['dy']},{cursor_x},{cursor_y}")
-        return "MOUSE_SCROLL", "SCROLL_WINDOW", f"Scroll window (dx: {info['dx']}, dy: {info['dy']})", params
+        cursor_x = 0 if info.get("cursor_x") is None else info.get("cursor_x")
+        cursor_y = 0 if info.get("cursor_y") is None else info.get("cursor_y")
+        dx_val = 0.0 if info.get("dx") is None else info.get("dx")
+        dy_val = 0.0 if info.get("dy") is None else info.get("dy")
+        params = ActionParameters(text=f"{dx_val},{dy_val},{cursor_x},{cursor_y}")
+        return "MOUSE_SCROLL", "SCROLL_WINDOW", f"Scroll window (dx: {dx_val}, dy: {dy_val})", params
 
     role_lower = final_semantic_role.lower() if final_semantic_role else ""
     is_special_key = False
@@ -184,13 +186,13 @@ def build_workflow_model(
         if check_cancel_callback and check_cancel_callback():
             raise InterruptedError("Generation cancelled by user")
 
-        raw_action = info["raw_action"]
-        raw_type = info["raw_type"].lower()
+        raw_action = info.get("raw_action", "")
+        raw_type = str(info.get("raw_type", "")).lower()
         if raw_action in ["unknown", "uia_scan"] or "recording" in raw_type:
             continue
 
         event_id = info["event_id"]
-        fallback_evts = info.get("fallback_events", [event_id])
+        fallback_evts = info.get("fallback_events") or [event_id]
         current_window = next(
             (e.window.name for e in integrated_events if e.id == event_id or e.id in fallback_evts),
             info.get("window_name", "Unknown"),
@@ -282,16 +284,17 @@ def build_workflow_model(
                 prev_window_name = current_window
 
         final_semantic_role = info.get("semantic_role") or info.get("element_name") or info.get("text") or ""
+        built = _build_action_command(info, raw_action, raw_type, final_semantic_role, event_id)
+        if built is None:
+            continue
+        cmd, intent, desc, params = built
+
+        # Why: コマンド生成成功後のみui_targetsへ登録しスキップ時のステップ番号ズレを防止
         if raw_action in ["click", "move", "type_text", "key_down", "drag"]:
             ui_targets_dict[f"tgt_{step_idx}"] = {
                 "semantic_role": final_semantic_role,
                 "ui_type": info.get("ui_type", "unknown"),
             }
-
-        built = _build_action_command(info, raw_action, raw_type, final_semantic_role, event_id)
-        if built is None:
-            continue
-        cmd, intent, desc, params = built
 
         if "excel_cell" in info:
             params.excel_cell = info["excel_cell"]

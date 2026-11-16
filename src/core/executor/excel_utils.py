@@ -95,5 +95,15 @@ def is_completed_record(row_dict: Dict[str, Any], status_col: Optional[str]) -> 
     # Why: 中断・再テスト時のスタックを防ぐため「処理中」は未完了扱いで再実行
     if not status_col:
         return False
-    cur_status = str(row_dict.get(status_col.upper(), "")).strip()
+    key = status_col.strip()
+    raw_val = row_dict.get(key)
+    if raw_val is None:
+        raw_val = row_dict.get(key.upper())
+    if raw_val is None:
+        key_lower = key.lower()
+        for k, v in row_dict.items():
+            if str(k).lower() == key_lower:
+                raw_val = v
+                break
+    cur_status = str(raw_val or "").strip()
     return cur_status in COMPLETED_STATUSES

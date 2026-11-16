@@ -190,6 +190,7 @@ class TypingSessionAggregator:
             output_list.extend(trailing_events)
             return
 
+        session_window = session[0].get("window_name")
         fallback_text = build_fallback_text(session)
         has_suggest_selection = any(
             item.get("raw_action") in ["key_down", "key_press"]
@@ -236,7 +237,7 @@ class TypingSessionAggregator:
                 # Why: サジェスト選択後や画面遷移を促す確定Enterは検索実行キーとして確実に保護
                 if role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "return"]):
                     has_future_nav = bool(
-                        future_events and any(f.get("window_name") != session[0].get("window_name") for f in future_events[:8])
+                        future_events and any(f.get("window_name") != session_window for f in future_events[:8])
                     )
                     if not (has_suggest_selection or has_future_nav) and (any_ime_active or e.get("ime_active")):
                         continue
@@ -256,7 +257,6 @@ class TypingSessionAggregator:
 
         prev_text = str(output_list[-1].get("semantic_role", ""))
         if prev_text == final_text:
-            session.clear()
             return True
 
         prev_text_lower = prev_text.lower()
@@ -275,11 +275,12 @@ class TypingSessionAggregator:
         if same_target and prev_text and final_text and not is_suffix_or_sub:
             if not prev_text.endswith(final_text) and final_text not in prev_text:
                 output_list[-1]["semantic_role"] = prev_text + final_text
-                output_list[-1]["fallback_events"].extend([item.get("event_id") for item in session if item.get("event_id")])
-                session.clear()
+                # Why: 単一イベント由来のtype_textではfallback_events未初期化のため安全に追記
+                output_list[-1].setdefault("fallback_events", []).extend(
+                    [item.get("event_id") for item in session if item.get("event_id")]
+                )
                 return True
 
         if is_suffix_or_sub:
-            session.clear()
             return True
         return False

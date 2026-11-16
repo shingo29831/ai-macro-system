@@ -86,28 +86,32 @@ def normalize_window_layout(
             if role not in ["win", "cmd"]:
                 is_business = True
         elif raw_act == "click" and "drag" not in raw_tp:
-            cy = info.get("cursor_y", 0)
-            wy = info.get("win_y", 0)
+            raw_cy = info.get("cursor_y") if info.get("cursor_y") is not None else info.get("y")
+            raw_wy = info.get("win_y")
+            cy = 0 if raw_cy is None else raw_cy
+            wy = 0 if raw_wy is None else raw_wy
             if cy - wy > 45 or info.get("excel_cell") or info.get("excel_dest_cell"):
                 is_business = True
 
         if is_business and app not in app_first_business_op:
             app_first_business_op[app] = i
 
-        wx = info.get("win_x", 0)
-        wy = info.get("win_y", 0)
-        ww = info.get("win_w", 0)
-        wh = info.get("win_h", 0)
+        wx = 0 if info.get("win_x") is None else info.get("win_x")
+        wy = 0 if info.get("win_y") is None else info.get("win_y")
+        ww = 0 if info.get("win_w") is None else info.get("win_w")
+        wh = 0 if info.get("win_h") is None else info.get("win_h")
         if ww > 0 and wh > 0:
             app_final_rect[app] = (wx, wy, ww, wh)
 
     layout_cleaned: List[Dict[str, Any]] = []
     for info in temp_workflow_info:
         app = extract_app_name(info.get("window_name", ""))
-        orig_wx = info.get("win_x", 0)
-        orig_wy = info.get("win_y", 0)
-        cy = info.get("cursor_y", info.get("y", 0))
-        cx = info.get("cursor_x", info.get("x", 0))
+        orig_wx = 0 if info.get("win_x") is None else info.get("win_x")
+        orig_wy = 0 if info.get("win_y") is None else info.get("win_y")
+        raw_cy = info.get("cursor_y") if info.get("cursor_y") is not None else info.get("y")
+        raw_cx = info.get("cursor_x") if info.get("cursor_x") is not None else info.get("x")
+        cy = 0 if raw_cy is None else raw_cy
+        cx = 0 if raw_cx is None else raw_cx
 
         # Why: 業務ドラッグやメニュー・タブ操作を保護し、完全な画面外座標のみ除外
         if cy < -50 or cx < -50:
@@ -140,7 +144,7 @@ def trim_boundary_noise(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[s
         first_evt = temp_workflow_info[0]
         if first_evt.get("raw_action") == "move":
             diff = first_evt.get("diff_val", 0.0)
-            elem = first_evt.get("app_context", {}).get("element_name")
+            elem = (first_evt.get("app_context") or {}).get("element_name")
             if diff < 0.005 and not elem:
                 temp_workflow_info.pop(0)
             else:
@@ -159,7 +163,7 @@ def trim_boundary_noise(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[s
             is_new_win = bool(
                 prev_events_win and last_evt.get("window_name") and last_evt.get("window_name") != prev_events_win[0]
             )
-            if diff < 0.005 and not is_new_win and not last_evt.get("app_context", {}).get("element_name"):
+            if diff < 0.005 and not is_new_win and not (last_evt.get("app_context") or {}).get("element_name"):
                 temp_workflow_info.pop()
             else:
                 break

@@ -141,7 +141,7 @@ def resolve_session_final_text(
 
     for item in reversed(session + trailing_events):
         if item.get("raw_action") == "uia_scan":
-            uia_info = item.get("content", {}).get("uia_info", {})
+            uia_info = (item.get("content") or {}).get("uia_info") or {}
             val = uia_info.get("value") or uia_info.get("name")
             candidates = uia_info.get("candidates") or []
             if candidates and has_suggest_selection and not val:

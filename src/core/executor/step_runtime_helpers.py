@@ -98,7 +98,8 @@ def execute_wait_step(
         logger.info(f"[{workflow_id}] Skipping fixed wait in favor of screen matching for the next action.")
         return
 
-    duration = float(args.get("duration", 0.0))
+    raw_duration = args.get("duration")
+    duration = float(0.0 if raw_duration is None else raw_duration)
     # Why: 0.6秒以上の待機時は画面描画収束を検知して無駄な待機時間を適応短縮
     if duration >= 0.6 and prev_method in ["click", "type_text", "press_key", "browser_action"]:
         settled = wait_for_screen_settle(timeout=min(duration, 3.0), settle_threshold=0.003)

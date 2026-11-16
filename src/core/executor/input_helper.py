@@ -121,9 +121,6 @@ def resolve_variables(data: Any, variables: Dict[str, Any]) -> Any:
     if not variables:
         return data
     if isinstance(data, str):
-        res = data
-        for k, v in variables.items():
-            res = res.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
         var_lower_map = {str(k).strip().lower(): v for k, v in variables.items()}
         pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{([^{}]+?)\}")
 
@@ -132,21 +129,41 @@ def resolve_variables(data: Any, variables: Dict[str, Any]) -> Any:
             if cur is None and root_key.lower() in var_lower_map:
                 cur = var_lower_map[root_key.lower()]
             for p in sub_path:
-                if isinstance(cur, dict):
-                    val = cur.get(p)
-                    if val is not None:
-                        return val
-                    val = cur.get(p.lower())
-                    if val is not None:
-                        return val
-                    # Why: 「列A」「A列」等のUI表示名を正規の列名「A」へ相互解決
-                    clean_col = re.sub(r"[列\s]", "", p).upper()
-                    if clean_col and clean_col in cur:
-                        return cur[clean_col]
+                if not isinstance(cur, dict):
+                    return None
+                val = cur.get(p)
+                if val is not None:
+                    cur = val
+                    continue
+                p_lower = p.lower()
+                matched_dv = None
+                for dk, dv in cur.items():
+                    if str(dk).lower() == p_lower and dv is not None:
+                        matched_dv = dv
+                        break
+                if matched_dv is not None:
+                    cur = matched_dv
+                    continue
+                # Why: 「列A」「A列」等のUI表示名を正規の列名「A」へ相互解決
+                clean_col = re.sub(r"[列\s]", "", p).upper()
+                if clean_col and clean_col in cur:
+                    cur = cur[clean_col]
+                elif clean_col:
+                    clean_lower = clean_col.lower()
+                    matched_col = next((dv for dk, dv in cur.items() if str(dk).lower() == clean_lower), None)
+                    if matched_col is not None:
+                        cur = matched_col
+                        continue
                     if f"列{p}" in cur:
-                        return cur[f"列{p}"]
-                    if f"{p}列" in cur:
-                        return cur[f"{p}列"]
+                        cur = cur[f"列{p}"]
+                    elif f"{p}列" in cur:
+                        cur = cur[f"{p}列"]
+                    else:
+                        return None
+                elif f"列{p}" in cur:
+                    cur = cur[f"列{p}"]
+                elif f"{p}列" in cur:
+                    cur = cur[f"{p}列"]
                 else:
                     return None
             return cur
@@ -162,20 +179,28 @@ def resolve_variables(data: Any, variables: Dict[str, Any]) -> Any:
                 return str(variables[raw_key])
             if raw_key.lower() in var_lower_map:
                 return str(var_lower_map[raw_key.lower()])
-            # Why: ネストなし「{{列A}}」等も列文字「A」やrow辞書から包括解決
+            # Why: ネストなし「{{列A}}」等も列文字「A」やrow辞書から大小文字不問で包括解決
             clean_k = re.sub(r"[列\s]", "", raw_key).upper()
-            if clean_k and clean_k in variables:
-                return str(variables[clean_k])
+            if clean_k:
+                if clean_k in variables:
+                    return str(variables[clean_k])
+                if clean_k.lower() in var_lower_map:
+                    return str(var_lower_map[clean_k.lower()])
             if "row" in variables and isinstance(variables["row"], dict):
                 r_dict = variables["row"]
                 if raw_key in r_dict:
                     return str(r_dict[raw_key])
-                if clean_k and clean_k in r_dict:
-                    return str(r_dict[clean_k])
+                raw_lower = raw_key.lower()
+                clean_lower = clean_k.lower() if clean_k else ""
+                for rk, rv in r_dict.items():
+                    rk_lower = str(rk).lower()
+                    if rk_lower == raw_lower or (clean_lower and rk_lower == clean_lower):
+                        return str(rv)
             logger.warning(f"Unresolved macro variable detected: {match.group(0)}")
             return match.group(0)
 
-        return pattern.sub(_repl, res)
+        # Why: 単一パス置換により変数値内のテンプレート文字列への二重展開を防止
+        return pattern.sub(_repl, data)
     elif isinstance(data, dict):
         return {k: resolve_variables(v, variables) for k, v in data.items()}
     elif isinstance(data, list):

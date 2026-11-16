@@ -7,7 +7,8 @@
 import json
 import os
 import logging
-from pydantic import ValidationError
+from typing import Any
+from pydantic import SecretStr, ValidationError
 from models.data_types import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -34,13 +35,24 @@ class ConfigManager:
             logger.critical(f"予期せぬエラーが発生しました: {e}")
             raise
 
+    @staticmethod
+    def _unwrap_secrets(value: Any) -> Any:
+        # Why: SecretStrのjson.dump時TypeErrorを防ぎフィールド追加に依存せず永続化
+        if isinstance(value, SecretStr) or hasattr(value, "get_secret_value"):
+            return value.get_secret_value()
+        if isinstance(value, dict):
+            return {k: ConfigManager._unwrap_secrets(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [ConfigManager._unwrap_secrets(item) for item in value]
+        return value
+
     @classmethod
     def save_config(cls, config: AppConfig) -> None:
         """検証済みのAppConfigモデルをJSONとしてファイルに永続化する。"""
         try:
+            data = cls._unwrap_secrets(config.model_dump())
             with open(cls.CONFIG_PATH, 'w', encoding='utf-8') as f:
-                # model_dump()で辞書化し、人間が読みやすい形式(indent=4)で保存
-                json.dump(config.model_dump(), f, indent=4, ensure_ascii=False)
+                json.dump(data, f, indent=4, ensure_ascii=False)
             logger.info("システム設定を config.json に保存しました。")
         except Exception as e:
             logger.error(f"設定の保存処理に失敗しました: {e}")

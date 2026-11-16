@@ -51,8 +51,9 @@ def execute_excel_action(args: Dict[str, Any], variables: Dict[str, Any], excel_
     close_save = args.get("close_save", True)
 
     if isinstance(value, str):
-        for k, v in variables.items():
-            value = value.replace(f"{{{{{k}}}}}", str(v)).replace(f"${{{k}}}", str(v))
+        from core.executor.input_helper import resolve_variables
+
+        value = resolve_variables(value, variables)
 
     if excel_app is None:
         target_hwnd = (last_win_args.get("mapped_hwnd") if last_win_args else None) or win32gui.GetForegroundWindow()

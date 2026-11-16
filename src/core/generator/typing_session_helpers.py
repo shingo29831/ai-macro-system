@@ -96,7 +96,7 @@ def collect_global_uia_texts(raw_events: List[Dict[str, Any]]) -> Dict[str, str]
                 val_str = val.strip()
                 global_uia_texts_map[val_str.lower()] = val_str
 
-        uia_info = event.get("content", {}).get("uia_info", {})
+        uia_info = (event.get("content") or {}).get("uia_info") or {}
         if isinstance(uia_info, dict):
             val = uia_info.get("value") or uia_info.get("name")
             if val and isinstance(val, str):

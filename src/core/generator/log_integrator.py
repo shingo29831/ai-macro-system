@@ -78,10 +78,14 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
             fut_type = str(next_non_move.get("Type", "")).lower()
 
             if "click" in fut_type or "drag" in fut_type:
-                m_coords = entry.get("Content", {}).get("screen_coordinates") or entry.get("CursorCoordinates") or {}
-                c_coords = next_non_move.get("Content", {}).get("screen_coordinates") or next_non_move.get("CursorCoordinates") or {}
-                mx, my = m_coords.get("x", 0), m_coords.get("y", 0)
-                cx, cy = c_coords.get("x", 0), c_coords.get("y", 0)
+                m_content = entry.get("Content") if isinstance(entry.get("Content"), dict) else {}
+                c_content = next_non_move.get("Content") if isinstance(next_non_move.get("Content"), dict) else {}
+                m_coords = m_content.get("screen_coordinates") or entry.get("CursorCoordinates") or {}
+                c_coords = c_content.get("screen_coordinates") or next_non_move.get("CursorCoordinates") or {}
+                mx = m_coords.get("x") if m_coords.get("x") is not None else 0
+                my = m_coords.get("y") if m_coords.get("y") is not None else 0
+                cx = c_coords.get("x") if c_coords.get("x") is not None else 0
+                cy = c_coords.get("y") if c_coords.get("y") is not None else 0
                 dist = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
 
                 # Why: クリック対象への近傍移動(<=35px)はクリック側に委譲して完全除外
@@ -94,7 +98,7 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 prev_type = str(prev_entry.get("Type", "")).lower()
                 is_start_of_moves = not ("move" in prev_type or "hover" in prev_type)
 
-                diff_str = entry.get("Images", {}).get("Diff", "0.0%")
+                diff_str = (entry.get("Images") or {}).get("Diff", "0.0%")
                 diff_val = 0.0
                 try:
                     diff_val = float(str(diff_str).replace("%", ""))
