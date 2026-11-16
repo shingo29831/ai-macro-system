@@ -183,13 +183,11 @@ class MainViewModel(QObject):
     @Slot(list)
     def run_selected_macro(self, temp_commands: Optional[List[Dict[str, Any]]] = None) -> None:
         if not self._selected_macro:
-            logger.warning("Run requested but no macro is selected.")
-            return
+            raise ValueError("実行対象のマクロが選択されていません。")
 
         workflow_id = self._macro_id_map.get(self._selected_macro)
         if not workflow_id:
-            logger.error(f"Failed to match workflow_id for the selected macro name: {self._selected_macro}")
-            return
+            raise ValueError(f"選択されたマクロのIDが見つかりません: {self._selected_macro}")
 
         try:
             logger.info(f"Executing macro: {self._selected_macro} (Resolved ID: {workflow_id})")

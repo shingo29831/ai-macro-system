@@ -136,7 +136,8 @@ class LoopConfigPanel(QWidget):
 
         self.form_layout.addRow(self.excel_widget)
         self._sync_visibility()
-        self.refresh_columns_preview()
+        if self.mode_combo.currentIndex() == 1:
+            self.refresh_columns_preview()
 
     def _sync_visibility(self) -> None:
         is_excel = self.mode_combo.currentIndex() == 1
@@ -151,11 +152,12 @@ class LoopConfigPanel(QWidget):
     def _on_mode_changed(self, idx: int) -> None:
         mode = "excel" if idx == 1 else "static"
         self._sync_visibility()
-        if mode == "excel":
-            self.refresh_columns_preview()
         if self._commit_on_change:
-            self.args["data_source"] = mode
+            # Why: UI表示上のデフォルト値とargs辞書の不整合を防ぐため切替時に現在値を同期
+            self.apply_to_args()
             self.config_changed.emit()
+        elif mode == "excel":
+            self.refresh_columns_preview()
 
     def _on_file_changed(self, value: str) -> None:
         if self._commit_on_change:

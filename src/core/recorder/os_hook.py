@@ -35,6 +35,8 @@ def get_current_workflow_id() -> str | None:
 
 def toggle_loop_recording() -> bool:
     """繰り返し記録モードを切り替え、メタログを追記して新しい状態を返す。"""
+    if not state.is_recording:
+        return False
     state.is_loop_recording = not state.is_loop_recording
     event_no = state.get_next_event_no()
     dt = now_datetime()
