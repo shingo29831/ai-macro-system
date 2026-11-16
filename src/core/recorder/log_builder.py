@@ -1,9 +1,14 @@
 # @role: アクションログ（JSON）の構造構築と、記録終了時の最終データ保存処理を担う。
 
 import json
+import logging
 from datetime import datetime
-from core.recorder import process_monitor, screen_capturer
+from core.recorder import macro_path_manager, process_monitor, screen_capturer
 from core.recorder.state import state
+from core.shared.os_env import get_wheel_scroll_settings
+from core.shared.screen_capture import calculate_diff_percent, take_screenshot
+
+logger = logging.getLogger(__name__)
 
 def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict | None, window_info: dict, cursor_x: int | None = None, cursor_y: int | None = None, app_specific_context: dict | None = None) -> dict:
     window_fields = process_monitor.build_recording_window_fields(window_info, cursor_x=cursor_x, cursor_y=cursor_y)
@@ -84,7 +89,7 @@ def event_no_sort_key(log: dict):
     except (TypeError, ValueError): return 999999998
 
 def save_input_logs():
-    temp_dir = screen_capturer.get_temp_dir()
+    temp_dir = macro_path_manager.get_temp_dir()
     json_path = temp_dir / "input_logs.json"
 
     with state.input_logs_lock:
@@ -99,4 +104,17 @@ def save_input_logs():
     with open(json_path, "w", encoding="utf-8") as file:
         json.dump(output, file, ensure_ascii=False, indent=2, default=str)
 
-    print(f"input_logs.json 保存: {json_path}")
+    logger.info(f"Saved input_logs.json: {json_path}")
+
+
+def finalize_recording_logs() -> None:
+    """録画終了時のスクリーンショット撮影・Endログ追記・input_logs.json永続化を実行する。"""
+    end_img, _ = take_screenshot()
+    end_ref = screen_capturer.save_pre_image_from_pil(event_no="End", img=end_img)
+    diff_str = "100%"
+    with state.previous_screenshot_lock:
+        if state.previous_screenshot_img is not None:
+            diff_str = calculate_diff_percent(state.previous_screenshot_img, end_img)
+
+    state.append_log(create_end_log(diff_str, end_ref))
+    save_input_logs()

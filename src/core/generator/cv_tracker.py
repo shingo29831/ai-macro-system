@@ -142,10 +142,7 @@ def track_text_field_by_scoring(
     一連のタイピング中の複数フレームを分析し、入力バッファと文字列が継続的に一致する
     座標(BoundingBox)を追跡・スコアリングして、最も確からしいテキストフィールドを特定する。
     """
-    try:
-        from core.recorder.romaji_converter import to_hiragana
-    except ImportError:
-        to_hiragana = lambda x: x
+    from core.shared.romaji import to_hiragana
 
     field_candidates: List[Dict[str, Any]] = []
     current_buffer = ""

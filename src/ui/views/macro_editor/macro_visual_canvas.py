@@ -11,6 +11,7 @@ from .canvas_loop_logic import (
     analyze_loops,
     ensure_loop_ids,
     find_default_excel_columns,
+    generate_unique_loop_id,
     get_action_template,
     resolve_loop_excel_columns,
     validate_loops,
@@ -129,9 +130,10 @@ class MacroVisualCanvas(QWidget):
         # Why: ループ解除ボタン押下時にloop_startとloop_endのペアを安全に除去
         if 0 <= loop_start_idx < len(self.commands):
             target_id = self.commands[loop_start_idx].get("loop_id")
-            self.commands = [c for c in self.commands if not (c.get("method") in ["loop_start", "loop_end"] and c.get("loop_id") == target_id)]
-            self.commands_changed.emit()
-            self.rebuild()
+            if target_id:
+                self.commands = [c for c in self.commands if not (c.get("method") in ["loop_start", "loop_end"] and c.get("loop_id") == target_id)]
+                self.commands_changed.emit()
+                self.rebuild()
 
     def _on_loop_settings_changed(self, loop_start_idx: int):
         # Why: ループ設定変更時にExcel列情報を配下ブロックへ動的再配布
@@ -244,8 +246,8 @@ class MacroVisualCanvas(QWidget):
         elif mime_text.startswith("new_action:"):
             action_type = mime_text.split(":")[1]
             if action_type == "loop":
-                # Why: ループ配置時はloop_startとloop_endをペアで生成し整合性を保証
-                new_id = f"loop_{len(self.loops) + 1}"
+                # Why: ループ配置時はloop_startとloop_endをペアで生成し一意IDで衝突を防止
+                new_id = generate_unique_loop_id(self.commands)
                 start_cmd = {"method": "loop_start", "loop_id": new_id, "args": {"loop_count": 10, "data_source": "static"}}
                 end_cmd = {"method": "loop_end", "loop_id": new_id, "args": {}}
                 ins_start = max(0, min(target_idx, len(self.commands)))

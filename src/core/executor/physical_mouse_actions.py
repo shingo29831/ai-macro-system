@@ -14,12 +14,10 @@ from core.executor.input_helper import (
     smooth_move as _smooth_move,
     wait_for_screen_settle as _wait_for_screen_settle,
 )
+from core.shared.os_env import get_wheel_scroll_settings
+from core.shared.win32_constants import MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, WHEEL_DELTA
 
 logger = logging.getLogger(__name__)
-
-MOUSEEVENTF_WHEEL = 0x0800
-MOUSEEVENTF_HWHEEL = 0x1000
-WHEEL_DELTA = 120
 
 
 def _try_select_excel_dest_cell(
@@ -205,8 +203,6 @@ def execute_scroll_action(
     time.sleep(0.05)
 
     if platform.system() == "Windows":
-        from core.executor.os_env_controller import get_wheel_scroll_settings
-
         settings = get_wheel_scroll_settings()
         is_page = settings.get("is_page_scroll", False)
 

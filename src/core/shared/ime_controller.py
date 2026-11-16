@@ -94,7 +94,8 @@ def get_focused_hwnd() -> int:
         if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gui_info)) and gui_info.hwndFocus:
             return int(gui_info.hwndFocus)
         return fg_hwnd
-    except Exception:
+    except Exception as e:
+        logger.debug(f"get_focused_hwnd fallback: {e}")
         return ctypes.windll.user32.GetForegroundWindow() if platform.system() == "Windows" else 0
 
 
@@ -143,25 +144,24 @@ def ensure_ime_state(target_state: bool, timeout: float = 0.5) -> bool:
             default_ime = imm32.ImmGetDefaultIMEWnd(hwnd)
             if default_ime:
                 ctypes.windll.user32.SendMessageW(default_ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1 if target_state else 0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"IME state update failed: {e}")
 
         time.sleep(0.04)
         if get_ime_state(hwnd) == target_state:
             return True
 
-    # タイムアウト時にキーボード送信による強制反転フォールバック
     hwnd = get_focused_hwnd()
     if get_ime_state(hwnd) != target_state:
         try:
             user32 = ctypes.windll.user32
-            key_code = 0x1D if not target_state else 0x1C  # 無変換(0x1D) / 変換(0x1C)
+            key_code = 0x1D if not target_state else 0x1C
             user32.keybd_event(key_code, 0, 0, 0)
             time.sleep(0.02)
             user32.keybd_event(key_code, 0, 2, 0)
             time.sleep(0.04)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"IME fallback keybd_event failed: {e}")
 
     return get_ime_state(hwnd) == target_state
 

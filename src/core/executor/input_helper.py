@@ -234,7 +234,7 @@ def get_window_offset(hwnd: int, rec_x: int, rec_y: int) -> Tuple[int, int]:
 
 def wait_for_screen_settle(timeout: float = 6.0, settle_threshold: float = 0.003) -> bool:
     # Why: スピナー回転やページロードが完了し画面が静止するまで動的適応待機
-    from core.recorder.screen_capturer import take_screenshot
+    from core.shared.screen_capture import take_screenshot
     start_t = time.time()
     last_img, _ = take_screenshot()
     time.sleep(0.15)

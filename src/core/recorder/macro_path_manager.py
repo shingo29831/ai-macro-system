@@ -2,22 +2,11 @@
 
 from pathlib import Path
 
-# =========================
-# 状態管理
-# =========================
+from core.shared.macro_paths import get_macros_root, to_macro_relative_path
 
 _current_macro_dir: Path | None = None
 _temp_dir: Path | None = None
 _images_dir: Path | None = None
-
-
-# =========================
-# パス管理・解決
-# =========================
-
-def get_macros_root() -> Path:
-    """プロジェクト直下の macros ディレクトリの絶対パスを返す"""
-    return (Path(__file__).resolve().parent / "../../../macros").resolve()
 
 
 def make_directory() -> dict:

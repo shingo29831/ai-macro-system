@@ -27,11 +27,6 @@ __all__ = [
     "WindowThumbnailWidget",
 ]
 
-try:
-    from src.core.recorder.macro_path_manager import get_macros_root
-except ImportError:
-    from core.recorder.macro_path_manager import get_macros_root
-
 
 class MainWindow(FluentWindow):
     def __init__(self, viewmodel: MainViewModel) -> None:
@@ -94,7 +89,7 @@ class MainWindow(FluentWindow):
 
     @Slot()
     def _on_delete_selected_clicked(self) -> None:
-        selected_macro_name = self.viewmodel._selected_macro
+        selected_macro_name = self.viewmodel.selected_macro
         if not selected_macro_name:
             return
         if self.dialog_manager.confirm_delete_single(selected_macro_name):
@@ -128,7 +123,7 @@ class MainWindow(FluentWindow):
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     def open_macro_editor_for_edit(self) -> None:
-        macro_name = self.viewmodel._selected_macro
+        macro_name = self.viewmodel.selected_macro
         if not macro_name:
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
@@ -139,7 +134,7 @@ class MainWindow(FluentWindow):
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
 
     def open_macro_editor_for_run(self) -> None:
-        macro_name = self.viewmodel._selected_macro
+        macro_name = self.viewmodel.selected_macro
         if not macro_name:
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
@@ -222,7 +217,7 @@ class MainWindow(FluentWindow):
             return
 
         # Why: 記録完了後に対話的なステップ精査・取捨選択エディタへシームレスに誘導
-        target_name = macro_name or self.viewmodel._selected_macro
+        target_name = macro_name or self.viewmodel.selected_macro
         if target_name:
             self.open_macro_editor_for_review(target_name)
 

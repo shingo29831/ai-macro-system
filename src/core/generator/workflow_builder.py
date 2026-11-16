@@ -2,9 +2,15 @@
 
 import json
 import logging
-import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.shared.window_utils import (
+    BROWSER_KEYWORDS,
+    GENERATOR_SYSTEM_CONTAINS,
+    SYSTEM_EXACT_WINDOWS,
+    extract_app_name,
+    is_system_shell_window,
+)
 from models.data_types import (
     ActionParameters,
     IntegratedEvent,
@@ -19,15 +25,8 @@ from models.data_types import (
 
 logger = logging.getLogger(__name__)
 
-# Why: Web検索ページ（Google 検索等）がシェル検索窓として誤除外されるのを防止
-SYSTEM_EXACT_WINDOWS = [
-    "検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト",
-]
-SYSTEM_WINDOW_KEYWORDS = [
-    "python", "unknown window", "マクロ生成中", "aiマクロ生成中",
-    "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け",
-]
-BROWSER_WINDOW_KEYWORDS = ["firefox", "chrome", "edge", "brave", "opera"]
+SYSTEM_WINDOW_KEYWORDS = GENERATOR_SYSTEM_CONTAINS
+BROWSER_WINDOW_KEYWORDS = list(BROWSER_KEYWORDS)
 SPECIAL_KEY_NAMES = {
     "enter", "space", "tab", "esc", "backspace", "delete", "shift",
     "ctrl", "alt", "cmd", "win", "windows", "up", "down", "left", "right",
@@ -35,19 +34,11 @@ SPECIAL_KEY_NAMES = {
 
 
 def _extract_app_name(title: str) -> str:
-    if not title:
-        return "App"
-    parts = re.split(r"[\-—–―]", title)
-    app = parts[-1].strip()
-    return app if app else title.strip()
+    return extract_app_name(title, default="App")
 
 
 def _should_skip_system_window(current_window: str) -> bool:
-    cw_lower = current_window.lower().strip()
-    is_browser_win = any(b in cw_lower for b in BROWSER_WINDOW_KEYWORDS)
-    if not is_browser_win:
-        return cw_lower in SYSTEM_EXACT_WINDOWS or any(sw in cw_lower for sw in SYSTEM_WINDOW_KEYWORDS)
-    return any(sw in cw_lower for sw in SYSTEM_WINDOW_KEYWORDS)
+    return is_system_shell_window(current_window, check_keywords_for_browser=True)
 
 
 def _build_action_command(

@@ -11,12 +11,13 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
 import re
 from difflib import SequenceMatcher
-from core.recorder.screen_capturer import take_screenshot, get_macros_root
+from core.shared.macro_paths import get_macros_root
+from core.shared.screen_capture import take_screenshot
 from engines.ocr.reader import read_text_from_image
 
 logger = logging.getLogger(__name__)
@@ -224,8 +225,8 @@ def attempt_recovery(workflow_id: str, target_id: str, window_hwnd: int = 0, raw
         if temp_img_path.exists():
             try:
                 temp_img_path.unlink()
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                logger.debug(f"[{workflow_id}] Failed to remove temp recovery image: {cleanup_err}")
 
     logger.warning(f"[{workflow_id}] All recovery stages exhausted for '{target_id}'.")
     return {"success": False, "reason": "element_not_found"}

@@ -26,7 +26,7 @@ def verify_and_heal_target(
     recovery_info = None
 
     try:
-        from core.recorder.screen_capturer import take_screenshot
+        from core.shared.screen_capture import take_screenshot
         from core.healer.recovery_manager import attempt_recovery
 
         current_img_pil, monitor_info = take_screenshot()

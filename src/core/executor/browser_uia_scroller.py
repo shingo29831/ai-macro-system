@@ -1,33 +1,18 @@
 """Module: @role: ブラウザ操作対象UIA要素のビューポート可視領域判定およびスクロール可視化を担当する。"""
 
 import ctypes
+import logging
 import platform
 import time
 from typing import Any, Dict, Optional, Tuple
 
 from core.executor.browser_uia_searcher import find_uia_element
+from core.shared.win32_constants import MOUSEEVENTF_WHEEL, WHEEL_DELTA
+from core.shared.window_utils import get_window_bounds
+
+logger = logging.getLogger(__name__)
 
 SIMPLE_GENERIC_TAGS = {"div", "span", "p", "a", "li", "ul", "body"}
-
-
-def _get_window_rect(hwnd: Optional[int]) -> Optional[Tuple[int, int, int, int]]:
-    if not hwnd or platform.system() != "Windows":
-        return None
-    try:
-        class _RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long),
-            ]
-
-        rect = _RECT()
-        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return (rect.left, rect.top, rect.right, rect.bottom)
-    except Exception:
-        pass
-    return None
 
 
 def scroll_into_view(
@@ -53,7 +38,7 @@ def scroll_into_view(
     if not target_hwnd and platform.system() == "Windows":
         target_hwnd = ctypes.windll.user32.GetForegroundWindow()
 
-    win_rect_pre = _get_window_rect(target_hwnd)
+    win_rect_pre = get_window_bounds(target_hwnd)
     if win_rect_pre and x is not None and y is not None:
         w_l, w_t, w_r, w_b = win_rect_pre
         if w_l <= x <= w_r and (w_t + 80) <= y <= (w_b - 40):
@@ -78,8 +63,8 @@ def scroll_into_view(
     ctrl = None
     try:
         ctrl = auto.ControlFromElement(elem.element_info._element)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ControlFromElement failed: {e}")
 
     scrolled_via_pattern = False
     if ctrl and ctrl.Exists(0, 0):
@@ -89,8 +74,8 @@ def scroll_into_view(
                 scroll_item.ScrollIntoView()
                 time.sleep(0.12)
                 scrolled_via_pattern = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ScrollItemPattern.ScrollIntoView failed: {e}")
 
     if not scrolled_via_pattern:
         try:
@@ -98,10 +83,10 @@ def scroll_into_view(
                 elem.scroll_into_view()
                 time.sleep(0.12)
                 scrolled_via_pattern = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"elem.scroll_into_view failed: {e}")
 
-    win_rect = _get_window_rect(target_hwnd)
+    win_rect = get_window_bounds(target_hwnd)
     for _ in range(4):
         rect = elem.rectangle()
         cx = (rect.left + rect.right) // 2
@@ -123,7 +108,6 @@ def scroll_into_view(
             if cy < vp_top or cy > vp_bottom or cx < w_left or cx > w_right:
                 scroll_center_x = (w_left + w_right) // 2
                 scroll_center_y = (w_top + w_bottom) // 2
-                from core.executor.action_executor import MOUSEEVENTF_WHEEL, WHEEL_DELTA
                 from core.executor.input_helper import smooth_move
 
                 smooth_move(scroll_center_x, scroll_center_y, duration=0.05)

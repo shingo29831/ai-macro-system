@@ -26,7 +26,7 @@ from core.executor.screen_match_evaluator import (
     save_timeout_masked_image,
 )
 from core.executor.scroll_aligner import align_scroll_by_screen_match
-from core.recorder.screen_capturer import take_screenshot
+from core.shared.screen_capture import take_screenshot
 
 logger = logging.getLogger(__name__)
 

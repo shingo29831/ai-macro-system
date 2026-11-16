@@ -29,6 +29,21 @@ def get_action_template(action_type: str) -> Dict[str, Any]:
     return templates.get(action_type, {"method": action_type, "args": {}})
 
 
+def generate_unique_loop_id(commands: List[Dict[str, Any]]) -> str:
+    """既存コマンドと絶対に衝突しない一意なループIDを生成する。"""
+    existing_ids = {str(cmd.get("loop_id")) for cmd in commands if cmd.get("loop_id")}
+    max_num = 0
+    for lid in existing_ids:
+        if lid.startswith("loop_"):
+            parts = lid.split("_")
+            if len(parts) >= 2 and parts[1].isdigit():
+                max_num = max(max_num, int(parts[1]))
+    candidate_num = max_num + 1
+    while f"loop_{candidate_num}" in existing_ids:
+        candidate_num += 1
+    return f"loop_{candidate_num}"
+
+
 def validate_loops(commands: List[Dict[str, Any]]) -> bool:
     loop_dict: Dict[str, Dict[str, int]] = {}
     for i, cmd in enumerate(commands):

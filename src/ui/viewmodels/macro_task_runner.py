@@ -30,7 +30,7 @@ class MacroTaskRunner:
 
                 if not workflow_id:
                     try:
-                        from core.recorder.screen_capturer import get_macros_root
+                        from core.shared.macro_paths import get_macros_root
                         macros_root = get_macros_root()
                         wf_dirs = sorted([d for d in macros_root.glob("wf_*") if d.is_dir()], key=lambda x: x.stat().st_mtime)
                         if wf_dirs:
@@ -109,8 +109,12 @@ class MacroTaskRunner:
                 logger.info(f"Macro execution finished successfully for ID: {workflow_id}")
             except runner.WorkflowStoppedException as stop_err:
                 logger.warning(f"Macro execution stopped by user: {stop_err}")
-            except runner.WorkflowFreezeException:
-                pass
+                status_callback("停止しました", False)
+            except runner.WorkflowFreezeException as freeze_err:
+                if not freeze_handled.is_set():
+                    freeze_handled.set()
+                    status_callback("フリーズ検知により強制終了", True)
+                    on_error(str(freeze_err))
             except Exception as exec_err:
                 if not freeze_handled.is_set():
                     tb_str = traceback.format_exc()

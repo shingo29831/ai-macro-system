@@ -18,6 +18,7 @@ from core.recorder.utils import (
     calculate_distance,
     now_datetime,
 )
+from core.shared.screen_capture import take_screenshot
 
 DOUBLE_CLICK_INTERVAL_SEC = 0.35
 DOUBLE_CLICK_MAX_DISTANCE = 8
@@ -88,7 +89,7 @@ def handle_mouse_event(evt: Dict[str, Any]) -> None:
                 return
 
             event_no, dt = state.get_next_event_no(), now_datetime()
-            pre_full_img, pre_monitor = screen_capturer.take_screenshot()
+            pre_full_img, pre_monitor = take_screenshot()
             pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
 
             with state.latest_mouse_down_lock:
@@ -190,6 +191,25 @@ def start_mouse_event_worker() -> None:
     state.mouse_worker_stop_event.clear()
     state.mouse_worker_thread = threading.Thread(target=mouse_event_worker, daemon=True)
     state.mouse_worker_thread.start()
+
+
+def flush_incomplete_clicks_on_stop() -> None:
+    """録画停止時に未確定の保留クリック・押下中クリックを同期記録して欠落を防止する。"""
+    with state.pending_click_lock:
+        if state.pending_click_timer:
+            state.pending_click_timer.cancel()
+        pending_event = state.pending_click_event
+        state.pending_click_timer = None
+        state.pending_click_event = None
+
+    if pending_event is not None:
+        process_click_event(pending_event, input_type="mouse_click", click_count=1)
+
+    with state.latest_mouse_down_lock:
+        down_evt = state.latest_mouse_down_event
+        state.latest_mouse_down_event = None
+    if down_evt is not None:
+        process_click_event(down_evt, input_type="mouse_click", click_count=1)
 
 
 def stop_mouse_event_worker() -> None:

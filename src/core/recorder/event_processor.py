@@ -1,15 +1,19 @@
 # Role: キューに積まれたキーボード入力・UIA・Officeイベントの非同期処理と、全体のワーカー起動・停止管理を担当する。
 
+import logging
 import threading
 import traceback
 import queue
-from pathlib import Path
 
 from core.recorder import screen_capturer, window_inspector
+from core.recorder.ime_detector import is_ime_active
 from core.recorder.state import state
 from core.recorder.utils import now_datetime, make_combo_text
 from core.recorder.log_builder import build_base_log
 from core.recorder.app_inspectors.inspector_factory import InspectorFactory
+from core.shared.screen_capture import take_screenshot
+
+logger = logging.getLogger(__name__)
 
 # マウスイベント処理系を re-export して既存の外部参照互換性を完全保証
 from core.recorder.mouse_event_handler import (
@@ -74,6 +78,16 @@ def _get_app_context(window_info: dict, x: int | None = None, y: int | None = No
     return context
 
 
+def flush_typing_buffer(trigger_reason: str) -> None:
+    """未確定のタイピングバッファを確定メタイベントとして投入する。"""
+    if not getattr(state, "typing_buffer", ""):
+        return
+    ime_on = is_ime_active()
+    enqueue_key_event("text_candidate_confirm", "", capture_now=True, ime_active=ime_on)
+    state.typing_buffer = ""
+    logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
+
+
 def enqueue_key_event(
     input_type: str,
     key_text: str,
@@ -93,7 +107,7 @@ def enqueue_key_event(
 
     pre_img, pre_monitor = None, None
     if capture_now:
-        pre_img, pre_monitor = screen_capturer.take_screenshot()
+        pre_img, pre_monitor = take_screenshot()
 
     state.key_event_queue.put({
         "event_no": event_no,
@@ -146,7 +160,7 @@ def process_key_event(event: dict):
         if not pre_ref:
             pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
     else:
-        pre_img, _ = screen_capturer.take_screenshot()
+        pre_img, _ = take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_img)
 
     diff_str = calculate_and_update_diff(pre_img)
@@ -160,8 +174,7 @@ def process_key_event(event: dict):
     if getattr(state, "typing_buffer", "") and input_type not in ["text_field_search", "text_candidate_confirm"]:
         diff_val = float(diff_str.replace("%", "")) if diff_str.replace("%", "").replace(".", "").isdigit() else 0.0
         if diff_val > 5.0:
-            from core.recorder.input_listener import _flush_typing_buffer
-            _flush_typing_buffer("diff_exceeded")
+            flush_typing_buffer("diff_exceeded")
 
 
 def process_uia_event(info: dict):

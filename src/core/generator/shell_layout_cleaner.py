@@ -1,10 +1,10 @@
 """Module: @role: OSシェル操作ノイズ除去、ウィンドウ移動に伴う座標系正規化、および先頭・末尾の不要移動イベント除去を担当する。"""
 
 import logging
-import re
 from typing import Any, Callable, Dict, List, Tuple
 
-from core.generator.form_optimizer import is_system_ui_event
+from core.generator.system_ui_filter import is_system_ui_event
+from core.shared.window_utils import extract_app_name as _extract_app_name, is_system_shell_window
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,7 @@ def is_business_action(evt: Dict[str, Any]) -> bool:
 
 
 def extract_app_name(title: str) -> str:
-    if not title:
-        return ""
-    parts = re.split(r"[\-—–―]", title)
-    return parts[-1].strip().lower()
+    return _extract_app_name(title).lower()
 
 
 def remove_os_shell_noise(
@@ -45,24 +42,7 @@ def remove_os_shell_noise(
 
         if skip_until_new_window:
             # Why: Google検索などのWebタイトルを誤判定せずOSシェルウィンドウのみスキップ
-            wn_lower = win_name.lower().strip()
-            is_browser_w = any(b in wn_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
-            sys_exact = ["検索", "スタート", "start", "search", "taskbar", "タスクバー", "cortana", "ジャンプ リスト"]
-            sys_contains = [
-                "python",
-                "unknown window",
-                "マクロ生成中",
-                "aiマクロ生成中",
-                "ai macro system",
-                "記録中",
-                "停止中",
-                "実行中",
-                "設定",
-                "ウィンドウの紐付け",
-            ]
-            is_system = not wn_lower or (
-                not is_browser_w and (wn_lower in sys_exact or any(sw in wn_lower for sw in sys_contains))
-            )
+            is_system = is_system_shell_window(win_name, check_keywords_for_browser=False)
 
             # Why: 業務アクション開始または新ウィンドウ出現時にシェルスキップを即時解除
             if is_business_action(info) or (not is_system and win_name != win_key_window_name):

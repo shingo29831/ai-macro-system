@@ -1,30 +1,28 @@
 """Module: @role: 生成されたExecutable Macro (executable_macro.json) を読み込み、ローカルで自律実行する実行エンジン。"""
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 import json
 import logging
 import threading
-import time
 
-from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener
+from pynput.keyboard import Controller as KeyboardController
 from pynput.mouse import Controller as MouseController
 
+from core.executor.execution_log_writer import create_execution_log, save_execution_log
 from core.executor.input_helper import resolve_variables
 from core.executor.loop_controller import LoopController
-from core.executor.os_env_controller import restore_system_cursor, set_system_cursor
 from core.executor.step_dispatcher import StepDispatcher
+from core.executor.stop_shortcut_monitor import EmergencyStopMonitor
 from core.executor.watchdog import ExecutionWatchdog, WorkflowFreezeException, WorkflowStoppedException
-from core.executor.window_manager import reset_browser_activation_flag, set_dpi_awareness
+from core.shared.macro_paths import get_macros_root
+from core.shared.os_env import restore_system_cursor, set_dpi_awareness, set_system_cursor
 from models.data_types import AppConfig
 
 logger = logging.getLogger(__name__)
 
 _is_running = False
 _stop_requested = False
-
-set_dpi_awareness()
 
 
 def run_workflow(
@@ -35,23 +33,24 @@ def run_workflow(
     on_freeze_callback: Optional[Callable[[str, float, str], None]] = None,
 ) -> None:
     global _is_running, _stop_requested
+    set_dpi_awareness()
     _is_running = True
     _stop_requested = False
-    reset_browser_activation_flag()
     set_system_cursor("run_idle")
 
     logger.info(f"[{workflow_id}] Starting executable macro execution...")
     exec_thread_id = threading.get_ident()
+    target_dir: Optional[Path] = None
+    execution_log: Dict[str, Any] = create_execution_log(workflow_id)
+    loop_stack: List[Dict[str, Any]] = []
 
     def update_ui(text: str, is_warning: bool = False) -> None:
         if status_callback:
             status_callback(text, is_warning)
+        elif is_warning:
+            logger.warning(f"[{workflow_id}] {text}")
         else:
-            try:
-                from ui.views.running_dialog import RunningDialog
-                RunningDialog.set_status(text, is_warning)
-            except Exception:
-                pass
+            logger.info(f"[{workflow_id}] {text}")
 
     def on_freeze(step_info: str, elapsed: float, stack_trace: str) -> None:
         stop_workflow()
@@ -73,53 +72,12 @@ def run_workflow(
         if _stop_requested:
             raise WorkflowStoppedException("Execution aborted by user emergency stop.")
 
-    _pressed_keys_for_stop = set()
-
-    def on_press(key: Any) -> Optional[bool]:
-        try:
-            if hasattr(key, "char") and key.char is not None:
-                key_name = str(key.char).lower()
-            else:
-                key_name = str(key).replace("Key.", "").lower()
-
-            _pressed_keys_for_stop.add(key_name)
-            has_ctrl = any(k in {"ctrl", "ctrl_l", "ctrl_r"} for k in _pressed_keys_for_stop)
-            vk = getattr(key, "vk", None)
-            is_backslash = key_name in {"\\", "¥", "yen", "\x1c"} or vk in {220, 226}
-
-            if has_ctrl and is_backslash:
-                logger.warning("Emergency stop shortcut (Ctrl+\\) triggered.")
-                stop_workflow()
-                return False
-        except Exception:
-            pass
-        return None
-
-    def on_release(key: Any) -> None:
-        try:
-            if hasattr(key, "char") and key.char is not None:
-                key_name = str(key.char).lower()
-            else:
-                key_name = str(key).replace("Key.", "").lower()
-            _pressed_keys_for_stop.discard(key_name)
-        except Exception:
-            pass
-
-    listener = KeyboardListener(on_press=on_press, on_release=on_release)
-    listener.start()
+    stop_monitor = EmergencyStopMonitor(on_stop_triggered=stop_workflow)
+    stop_monitor.start()
 
     try:
-        from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
         target_dir = macros_root / workflow_id
-
-        execution_log: Dict[str, Any] = {
-            "workflow_id": workflow_id,
-            "start_time": datetime.now().isoformat(),
-            "start_step": 0,
-            "steps": [],
-            "status": "running"
-        }
 
         executable_macro_path = target_dir / "executable_macro.json"
         variables_path = target_dir / "variables.json"
@@ -163,8 +121,6 @@ def run_workflow(
         LoopController.preload_excel_variables(commands, target_dir, variables)
 
         i = 0
-        loop_stack: List[Dict[str, Any]] = []
-
         while i < len(commands):
             _check_stop()
             cmd = commands[i]
@@ -198,6 +154,7 @@ def run_workflow(
 
         if step_dispatcher.macro_needs_save and temp_commands is None:
             try:
+                macro_data["commands"] = commands
                 with open(executable_macro_path, "w", encoding="utf-8") as f:
                     json.dump(macro_data, f, indent=4, ensure_ascii=False)
                 logger.info(f"[{workflow_id}] Successfully saved healed coordinates to executable_macro.json for future runs.")
@@ -210,15 +167,16 @@ def run_workflow(
     except WorkflowStoppedException as e:
         execution_log["status"] = "stopped"
         logger.warning(f"[{workflow_id}] {e}")
+        raise
     except WorkflowFreezeException as e:
         execution_log["status"] = "frozen_aborted"
         err_msg = f"マクロの無応答（フリーズ）を検知したため強制終了しました (30秒タイムアウト)。\n発生箇所: {watchdog.current_step_info}"
         execution_log["error"] = err_msg
         logger.error(f"[{workflow_id}] {err_msg}")
         update_ui("フリーズ検知により強制終了しました", is_warning=True)
-        raise RuntimeError(err_msg) from e
+        raise WorkflowFreezeException(err_msg) from e
     except Exception as e:
-        if "loop_stack" in locals() and loop_stack:
+        if loop_stack:
             LoopController.mark_current_iteration_error(loop_stack, str(e))
         execution_log["status"] = "failed"
         execution_log["error"] = str(e)
@@ -228,17 +186,9 @@ def run_workflow(
     finally:
         watchdog.stop()
         restore_system_cursor(force=True)
-        try:
-            execution_log["end_time"] = datetime.now().isoformat()
-            log_dir = target_dir / "execution_logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = log_dir / f"run_log_{int(time.time())}.json"
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(execution_log, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Failed to save execution log: {e}")
-
-        listener.stop()
+        if target_dir is not None:
+            save_execution_log(target_dir, execution_log)
+        stop_monitor.stop()
         _is_running = False
         _stop_requested = False
 

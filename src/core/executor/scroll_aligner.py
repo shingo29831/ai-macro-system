@@ -11,7 +11,8 @@ import cv2
 import numpy as np
 
 from core.executor.screen_comparison import is_screen_match, notify_execution_status
-from core.recorder.screen_capturer import take_screenshot
+from core.shared.screen_capture import take_screenshot
+from core.shared.win32_constants import MOUSEEVENTF_WHEEL, WHEEL_DELTA
 
 logger = logging.getLogger(__name__)
 

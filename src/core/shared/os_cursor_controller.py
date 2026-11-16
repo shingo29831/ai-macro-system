@@ -18,7 +18,6 @@ SPIF_UPDATEINIFILE = 0x0001
 SPIF_SENDCHANGE = 0x0002
 
 # Why: 待機時(WAIT)・起動時(APPSTARTING)・文字選択(IBEAM)等でのユーザーカーソルチラつきを完全排除
-# Why: 通常矢印・リンク手・作業中を最適化置換し、フック遅延ゼロとチラつき解消を両立
 RUN_RECORD_CURSOR_IDS = [
     32512,  # OCR_NORMAL
     32649,  # OCR_HAND
@@ -153,8 +152,8 @@ def _force_cursor_update():
         pt = POINT()
         if user32.GetCursorPos(ctypes.byref(pt)):
             user32.SetCursorPos(pt.x, pt.y)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Force cursor update failed: {e}")
 
 
 def restore_system_cursor(force: bool = True):
@@ -168,7 +167,7 @@ def restore_system_cursor(force: bool = True):
         while not _cursor_queue.empty():
             try:
                 _cursor_queue.get_nowait()
-            except Exception:
+            except queue.Empty:
                 break
         if _auto_revert_timer is not None:
             _auto_revert_timer.cancel()
@@ -226,7 +225,6 @@ def _cursor_update_worker():
             mode = _cursor_queue.get()
             if mode is None:
                 break
-            # Why: 連続するカーソル更新要求を間引き最新の要求のみを適用
             while not _cursor_queue.empty():
                 try:
                     mode = _cursor_queue.get_nowait()
@@ -254,6 +252,4 @@ def set_system_cursor(mode: str = "default", async_exec: bool = False):
     _cursor_queue.put(mode)
 
 
-# Why: 起動時に前回の異常終了等で残った青カーソルを即座にOS標準白矢印へ強制リセット
-restore_system_cursor(force=True)
 atexit.register(lambda: restore_system_cursor(force=True))

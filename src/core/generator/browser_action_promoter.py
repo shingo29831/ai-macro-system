@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List
 
-from core.executor.os_env_controller import is_link_or_url, normalize_text_width
+from core.shared.os_env import is_link_or_url, normalize_text_width
 
 
 def inherit_click_context_before_form(temp_workflow_info: List[Dict[str, Any]]) -> None:

@@ -35,6 +35,11 @@ class MainViewModel(QObject):
 
     _internal_shortcut_signal = Signal()
     _internal_status_signal = Signal(str, bool)  # 自己修復UI通知用シグナル
+    _internal_generation_progress = Signal(int, str)
+    _internal_generation_finished = Signal(bool, str, str)
+    _internal_generation_error = Signal(str)
+    _internal_execution_finished = Signal()
+    _internal_execution_error = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -45,7 +50,16 @@ class MainViewModel(QObject):
 
         self._internal_shortcut_signal.connect(self._on_internal_shortcut, Qt.QueuedConnection)
         self._internal_status_signal.connect(self._on_internal_status, Qt.QueuedConnection)
+        self._internal_generation_progress.connect(self._on_internal_generation_progress, Qt.QueuedConnection)
+        self._internal_generation_finished.connect(self._on_internal_generation_finished, Qt.QueuedConnection)
+        self._internal_generation_error.connect(self._on_internal_generation_error, Qt.QueuedConnection)
+        self._internal_execution_finished.connect(self._on_internal_execution_finished, Qt.QueuedConnection)
+        self._internal_execution_error.connect(self._on_internal_execution_error, Qt.QueuedConnection)
         os_hook.set_shortcut_stop_callback(self._trigger_shortcut_signal)
+
+    @property
+    def selected_macro(self) -> Optional[str]:
+        return self._selected_macro
 
     def _trigger_shortcut_signal(self) -> None:
         self._internal_shortcut_signal.emit()
@@ -58,12 +72,45 @@ class MainViewModel(QObject):
     def _on_internal_status(self, text: str, is_healing: bool) -> None:
         self.execution_status_updated.emit(text, is_healing)
 
+    @Slot(int, str)
+    def _on_internal_generation_progress(self, progress: int, message: str) -> None:
+        self.generation_progress.emit(progress, message)
+
+    @Slot(bool, str, str)
+    def _on_internal_generation_finished(self, success: bool, err_msg: str, workflow_id: str) -> None:
+        self._is_stopping = False
+        self.load_macros()
+        if success and workflow_id:
+            # Why: 生成直後のステップ精査・レビューUIを自動起動するためマクロ名を解決して通知
+            resolved_name = next(
+                (name for name, wid in self._macro_id_map.items() if wid == workflow_id),
+                f"マクロ {workflow_id}",
+            )
+            self._selected_macro = resolved_name
+            self.generation_finished.emit(True, "", resolved_name)
+        else:
+            self.generation_finished.emit(False, err_msg, "")
+
+    @Slot(str)
+    def _on_internal_generation_error(self, detail_err: str) -> None:
+        self._is_stopping = False
+        self.recording_error.emit(detail_err)
+
+    @Slot()
+    def _on_internal_execution_finished(self) -> None:
+        self.load_macros()
+        self.execution_finished.emit()
+
+    @Slot(str)
+    def _on_internal_execution_error(self, err_msg: str) -> None:
+        self.execution_error.emit(err_msg)
+
     def get_macro_dir(self, macro_name: str) -> Path:
         workflow_id = self._macro_id_map.get(macro_name) or macro_name
         return get_workflow_dir(workflow_id)
 
     def get_open_windows_info(self) -> List[Dict[str, Any]]:
-        from core.executor.window_manager import get_open_windows_info
+        from core.executor.open_windows_provider import get_open_windows_info
         return get_open_windows_info()
 
     def toggle_loop_recording(self) -> bool:
@@ -137,29 +184,11 @@ class MainViewModel(QObject):
             self._cancel_requested = False
             logger.info("Stopping macro recording (Running in background thread to prevent UI freeze)...")
 
-            def on_finished(success: bool, err_msg: str, workflow_id: str) -> None:
-                self._is_stopping = False
-                self.load_macros()
-                if success and workflow_id:
-                    # Why: 生成直後のステップ精査・レビューUIを自動起動するためマクロ名を解決して通知
-                    resolved_name = next(
-                        (name for name, wid in self._macro_id_map.items() if wid == workflow_id),
-                        f"マクロ {workflow_id}"
-                    )
-                    self._selected_macro = resolved_name
-                    self.generation_finished.emit(True, "", resolved_name)
-                else:
-                    self.generation_finished.emit(False, err_msg, "")
-
-            def on_error(detail_err: str) -> None:
-                self._is_stopping = False
-                self.recording_error.emit(detail_err)
-
             MacroTaskRunner.start_generation_task(
                 is_cancel_requested=lambda: self._cancel_requested,
-                on_progress=lambda prog, msg: self.generation_progress.emit(prog, msg),
-                on_finished=on_finished,
-                on_error=on_error,
+                on_progress=lambda prog, msg: self._internal_generation_progress.emit(prog, msg),
+                on_finished=lambda s, e, wid: self._internal_generation_finished.emit(s, e, wid),
+                on_error=lambda detail_err: self._internal_generation_error.emit(detail_err),
             )
 
         except Exception as e:
@@ -192,16 +221,12 @@ class MainViewModel(QObject):
         try:
             logger.info(f"Executing macro: {self._selected_macro} (Resolved ID: {workflow_id})")
 
-            def on_finished() -> None:
-                self.load_macros()
-                self.execution_finished.emit()
-
             MacroTaskRunner.start_execution_task(
                 workflow_id=workflow_id,
                 commands=temp_commands,
                 status_callback=lambda text, is_healing: self._internal_status_signal.emit(text, is_healing),
-                on_finished=on_finished,
-                on_error=lambda err_msg: self.execution_error.emit(err_msg),
+                on_finished=lambda: self._internal_execution_finished.emit(),
+                on_error=lambda err_msg: self._internal_execution_error.emit(err_msg),
             )
 
         except Exception as e:

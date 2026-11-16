@@ -32,7 +32,7 @@ def execute_type_text_action(
     keyboard: KeyboardController,
 ) -> Any:
     """テキスト入力（Excel COM書込・ブラウザ高精度入力・IME監視付物理タイピング）を実行する。"""
-    from core.executor.os_env_controller import (
+    from core.shared.os_env import (
         ensure_ime_state,
         is_link_or_url,
         normalize_text_width,

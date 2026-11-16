@@ -14,12 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_macros_root_path() -> Path:
-    try:
-        from core.recorder.screen_capturer import get_macros_root
-        return get_macros_root()
-    except Exception as e:
-        logger.warning(f"Failed to call get_macros_root, falling back to relative path: {e}")
-        return Path(__file__).resolve().parent / "../../../macros"
+    from core.shared.macro_paths import get_macros_root
+    return get_macros_root()
 
 
 def get_workflow_dir(workflow_id: str) -> Path:

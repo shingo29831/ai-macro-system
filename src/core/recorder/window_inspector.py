@@ -3,25 +3,19 @@
 import ctypes
 from ctypes import wintypes
 
+from core.shared.window_utils import IGNORED_SYSTEM_WINDOW_TITLES, is_ignored_system_window
+
 try:
     import psutil
 except ImportError:
     psutil = None
 
-IGNORED_WINDOW_TITLES = [
-    '記録中', '停止中', 'AI Macro System', '設定', 'AIマクロ生成中...', 'AIマクロ生成中', 'マクロ生成中', '実行中', '実行中...', 'ウィンドウの紐付け',
-    'スナップ アシスト', 'スナップ', 'snap assist'
-]
+IGNORED_WINDOW_TITLES = IGNORED_SYSTEM_WINDOW_TITLES + ["スナップ アシスト", "スナップ", "snap assist"]
+
 
 def should_ignore_window(title: str | None) -> bool:
     """システム自身の操作・設定ウィンドウかどうかを判定して除外対象とする"""
-    if not title:
-        return False
-    title_lower = title.lower()
-    for ignored in IGNORED_WINDOW_TITLES:
-        if ignored.lower() in title_lower:
-            return True
-    return False
+    return is_ignored_system_window(title)
 
 def _empty_window_info(error: str) -> dict:
     return {

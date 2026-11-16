@@ -19,16 +19,14 @@ def get_app_context(event: Dict[str, Any]) -> Dict[str, Any]:
 def _convert_romaji_chunk(chunk: str) -> str:
     if not chunk:
         return chunk
-    try:
-        from core.recorder.romaji_converter import to_hiragana
-        # Why: アルファベット末尾を含む入力(kaisaA等)をひらがなと大文字英字に適切分離
-        alpha_tail = re.search(r"[A-Za-z]+$", chunk)
-        if alpha_tail:
-            tail_idx = alpha_tail.start()
-            return to_hiragana(chunk[:tail_idx]) + chunk[tail_idx:]
-        return to_hiragana(chunk)
-    except ImportError:
-        return chunk
+    from core.shared.romaji import to_hiragana
+
+    # Why: アルファベット末尾を含む入力(kaisaA等)をひらがなと大文字英字に適切分離
+    alpha_tail = re.search(r"[A-Za-z]+$", chunk)
+    if alpha_tail:
+        tail_idx = alpha_tail.start()
+        return to_hiragana(chunk[:tail_idx]) + chunk[tail_idx:]
+    return to_hiragana(chunk)
 
 
 def build_fallback_text(session: List[Dict[str, Any]]) -> str:

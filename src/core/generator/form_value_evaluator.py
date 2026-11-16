@@ -2,27 +2,11 @@
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
+from core.generator.system_ui_filter import is_system_ui_event
 
 logger = logging.getLogger(__name__)
-
-
-def is_system_ui_event(evt: Dict[str, Any]) -> bool:
-    ctx = evt.get("app_context") or {}
-    elem_name = str(ctx.get("element_name", "")).lower()
-    elem_text = str(ctx.get("text", "")).lower()
-    role = str(evt.get("semantic_role", "")).lower()
-    css = str(ctx.get("css_selector", "")).lower()
-    c_type = str(ctx.get("control_type", "")).lower()
-    system_terms = [
-        "記録を終了", "記録中", "停止中", "実行中", "ai macro system", "マクロ生成中",
-        "qapplication.qwidget", "windows 入力エクスペリエンス", "textinputhost",
-        "corewindow", "windows.ui.core"
-    ]
-    return any(
-        term in elem_name or term in elem_text or term in role or term in css or term in c_type
-        for term in system_terms
-    )
 
 
 def select_candidate_with_llm(candidates: List[str], elem_name: str, config: Optional[Any] = None) -> Optional[str]:

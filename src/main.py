@@ -9,7 +9,7 @@ from engines.manager import LocalServerManager
 
 def main():
     # Why: Windows環境での高DPIスケーリングによる画面キャプチャ・座標のズレを完全防止
-    from core.executor.os_env_controller import set_dpi_awareness
+    from core.shared.os_env import set_dpi_awareness
     set_dpi_awareness()
 
     app = QApplication(sys.argv)

@@ -10,10 +10,9 @@ from core.executor.excel_handler import skip_failed_loop_step as _skip_failed_lo
 from core.executor.input_helper import get_window_offset, wait_for_screen_settle
 from core.executor.screen_matcher import align_scroll_by_screen_match, wait_for_screen_match
 from core.executor.target_healer import verify_and_heal_target
+from core.shared.window_utils import BROWSER_KEYWORDS, extract_app_name
 
 logger = logging.getLogger(__name__)
-
-BROWSER_KEYWORDS = ("firefox", "chrome", "edge", "brave", "opera")
 
 
 def detect_browser_target(commands: List[Dict[str, Any]]) -> bool:
@@ -35,7 +34,7 @@ def propagate_mapped_hwnd(
     if not activated_hwnd:
         return
     window_title = first_args.get("window_title", "")
-    app_name = window_title.split("—")[-1].split("-")[-1].strip().lower()
+    app_name = extract_app_name(window_title).lower()
     first_alias = first_args.get("window_alias")
 
     # Why: ループ毎新規起動指定時は初回HWNDでコマンド引数を固定せず都度起動を保証
@@ -46,7 +45,7 @@ def propagate_mapped_hwnd(
         if cmd.get("method") != "activate_window":
             continue
         cmd_args = cmd.setdefault("args", {})
-        cmd_app = cmd_args.get("window_title", "").split("—")[-1].split("-")[-1].strip().lower()
+        cmd_app = extract_app_name(cmd_args.get("window_title", "")).lower()
         if cmd_app == app_name or (first_alias and cmd_args.get("window_alias") == first_alias):
             if not cmd_args.get("loop_launch_each_time"):
                 cmd_args["mapped_hwnd"] = activated_hwnd

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from pynput.keyboard import Controller as KeyboardController, Key
 from pynput.mouse import Button, Controller as MouseController
 
-from core.executor.os_env_controller import set_system_cursor
+from core.shared.os_env import set_system_cursor
 
 
 class BrowserInputDriver:
@@ -87,7 +87,7 @@ class BrowserInputDriver:
             time.sleep(0.04)
 
         from core.executor.input_helper import send_unicode_string, set_clipboard_text
-        from core.executor.os_env_controller import ensure_ime_state, normalize_text_width
+        from core.shared.os_env import ensure_ime_state, normalize_text_width
 
         norm_text = normalize_text_width(text)
         # Why: クリップボード貼付直前はIMEを半角OFFにしてローマ字誤変換を完全根絶
@@ -112,7 +112,7 @@ class BrowserInputDriver:
         if not url:
             return
         from core.executor.input_helper import set_clipboard_text
-        from core.executor.os_env_controller import ensure_ime_state, normalize_text_width
+        from core.shared.os_env import ensure_ime_state, normalize_text_width
 
         norm_url = normalize_text_width(url)
         # Why: IME状況を監視し半角状態を確認してからアドレスバーへ遷移

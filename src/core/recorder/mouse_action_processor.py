@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 
-from core.recorder import screen_capturer, window_inspector
+from core.recorder import screen_capturer, ui_cropper, window_inspector
 from core.recorder.app_inspectors.inspector_factory import InspectorFactory
 from core.recorder.log_builder import build_base_log, build_scroll_log
 from core.recorder.state import state
@@ -15,6 +15,8 @@ from core.recorder.utils import (
     now_datetime,
     serialize_ui_rect,
 )
+from core.shared.macro_paths import get_macros_root
+from core.shared.screen_capture import calculate_diff_percent, take_screenshot
 
 _last_scroll_time = 0.0
 _last_scroll_info = None
@@ -63,7 +65,7 @@ def calculate_and_update_diff(current_img: Any) -> str:
         if state.previous_screenshot_img is None:
             diff = "100%"
         else:
-            diff = screen_capturer.calculate_diff_percent(state.previous_screenshot_img, current_img)
+            diff = calculate_diff_percent(state.previous_screenshot_img, current_img)
         state.previous_screenshot_img = current_img.copy()
     return diff
 
@@ -85,7 +87,7 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
         dt = now_datetime()
         x, y = int(event["x"]), int(event["y"])
 
-        pre_full_img, pre_monitor = screen_capturer.take_screenshot()
+        pre_full_img, pre_monitor = take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
 
         app_context = get_app_context(window_info, x=x, y=y)
@@ -100,7 +102,7 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
         )
         # Why: UI要素情報を持つホバーは微小差分でも破棄せず保護
         is_meaningless = (diff_val < 0.02) and not has_ui
-        macros_root = screen_capturer.get_macros_root()
+        macros_root = get_macros_root()
 
         if is_meaningless:
             old_path = macros_root / pre_ref
@@ -121,11 +123,11 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
         )
 
         if ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(
+            crop = ui_cropper.save_ui_crop_by_rect(
                 event_no=event_no, rect=ui_rect, full_img=pre_full_img, monitor=pre_monitor
             )
         else:
-            crop = screen_capturer.save_ui_crop(
+            crop = ui_cropper.save_ui_crop(
                 event_no=event_no, click_x=x, click_y=y, full_img=pre_full_img, monitor=pre_monitor
             )
 
@@ -186,11 +188,11 @@ def process_click_event(event: Dict[str, Any], input_type: str, click_count: int
         try:
             ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
             if ui_rect is not None:
-                crop = screen_capturer.save_ui_crop_by_rect(
+                crop = ui_cropper.save_ui_crop_by_rect(
                     event_no=event_no, rect=ui_rect, full_img=pre_img, monitor=pre_monitor
                 )
             else:
-                crop = screen_capturer.save_ui_crop(
+                crop = ui_cropper.save_ui_crop(
                     event_no=event_no, click_x=x, click_y=y, full_img=pre_img, monitor=pre_monitor
                 )
             crop_ref = crop.get("ui_image_ref") or "切り抜き失敗"
@@ -275,11 +277,11 @@ def process_drag_event(event: Dict[str, Any]) -> None:
         )
 
         if source_ui_rect is not None:
-            crop = screen_capturer.save_ui_crop_by_rect(
+            crop = ui_cropper.save_ui_crop_by_rect(
                 event_no=event_no, rect=source_ui_rect, full_img=pre_img, monitor=pre_monitor
             )
         else:
-            crop = screen_capturer.save_ui_crop(
+            crop = ui_cropper.save_ui_crop(
                 event_no=event_no, click_x=start_x, click_y=start_y, full_img=pre_img, monitor=pre_monitor
             )
 

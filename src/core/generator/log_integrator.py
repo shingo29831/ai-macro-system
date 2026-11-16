@@ -4,15 +4,18 @@
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 
 from models.data_types import AppConfig
 from core.generator.event_parser import parse_raw_event
 from core.generator.typing_aggregator import TypingSessionAggregator
-from core.generator.workflow_optimizer import optimize_workflow_events
 from core.generator.macro_builder import build_and_save_macro
+from core.shared.macro_paths import get_macros_root
+from core.shared.window_utils import is_system_shell_window
 
 logger = logging.getLogger(__name__)
+
 
 def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """マクロで実行・再現する可能性のないノイズログ（過渡マウス移動、クリック直前移動、孤立制御キー、システムUI等）を完全排除する。"""
@@ -20,8 +23,6 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
         return []
 
     valid_candidates: List[Dict[str, Any]] = []
-    system_exact = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
-    system_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
 
     for entry in raw_logs:
         if not isinstance(entry, dict):
@@ -42,8 +43,7 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                     w_lower = win_name.lower().strip()
                     break
 
-        is_browser = any(b in w_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
-        if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
+        if is_system_shell_window(win_name, check_keywords_for_browser=False):
             continue
 
         content = entry.get("Content") or {}
@@ -98,8 +98,8 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                 diff_val = 0.0
                 try:
                     diff_val = float(str(diff_str).replace("%", ""))
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as diff_err:
+                    logger.debug(f"Failed to parse diff string '{diff_str}': {diff_err}")
 
                 m_ctx = entry.get("AppSpecificContext") or {}
                 c_ctx = next_non_move.get("AppSpecificContext") or {}
@@ -148,13 +148,13 @@ def generate_macro_workflow(
         "stages": [],
         "errors": []
     }
-    
+    target_dir: Optional[Path] = None
+
     try:
         if progress_callback:
             progress_callback(0, "初期化中... ワークフローディレクトリの確認")
         generation_debug_log["stages"].append({"name": "Initialization", "status": "started"})
 
-        from core.recorder.screen_capturer import get_macros_root
         macros_root = get_macros_root()
         target_dir = macros_root / workflow_id
         temp_dir = target_dir / "temp"
@@ -253,8 +253,8 @@ def generate_macro_workflow(
         try:
             with open(target_dir / "generation_log.json", 'w', encoding='utf-8') as f:
                 json.dump(generation_debug_log, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as log_err:
+            logger.warning(f"[{workflow_id}] Failed to write generation_log.json: {log_err}")
 
         if progress_callback:
             progress_callback(100, "完了")
@@ -262,10 +262,11 @@ def generate_macro_workflow(
     except Exception as e:
         generation_debug_log["errors"].append(str(e))
         generation_debug_log["status"] = "failed"
-        try:
-            with open(target_dir / "generation_log.json", 'w', encoding='utf-8') as f:
-                json.dump(generation_debug_log, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
+        if target_dir is not None and target_dir.exists():
+            try:
+                with open(target_dir / "generation_log.json", 'w', encoding='utf-8') as f:
+                    json.dump(generation_debug_log, f, indent=4, ensure_ascii=False)
+            except Exception as log_err:
+                logger.warning(f"[{workflow_id}] Failed to write failure generation_log.json: {log_err}")
         logger.error(f"[{workflow_id}] Failed to generate macro workflow: {e}")
         raise

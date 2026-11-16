@@ -6,10 +6,9 @@ import threading
 import logging
 from core.recorder.state import state
 from core.recorder.utils import key_to_string, sorted_combo_keys, make_combo_text, should_record_key_combo, MODIFIER_KEYS
-from core.recorder.event_processor import enqueue_key_event
+from core.recorder.event_processor import enqueue_key_event, flush_typing_buffer
 from core.recorder.ime_detector import is_ime_active
-from core.recorder.romaji_converter import to_hiragana
-from core.executor.os_env_controller import set_system_cursor
+from core.shared.romaji import to_hiragana
 
 logger = logging.getLogger(__name__)
 
@@ -45,15 +44,6 @@ def _trigger_field_search(trigger_reason: str):
     enqueue_key_event("text_field_search", target_text, capture_now=True, ime_active=ime_on)
     logger.debug("テキストフィールド探索イベントを発火しました [%s]: %s (IME: %s)", trigger_reason, target_text, ime_on)
 
-def _flush_typing_buffer(trigger_reason: str):
-    if not getattr(state, "typing_buffer", ""):
-        return
-
-    ime_on = is_ime_active()
-    # 背景: IME状態をイベントプロセッサに伝達する
-    enqueue_key_event("text_candidate_confirm", "", capture_now=True, ime_active=ime_on)
-    state.typing_buffer = ""
-    logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
 
 def on_move(x, y):
     if not state.is_recording or state.is_stopping: return
@@ -92,7 +82,7 @@ def on_click(x, y, button, pressed):
 
     # Why: フックコールバック内の同期処理をゼロにし、マウスアップ消失による照準固定を根絶
     if pressed:
-        _flush_typing_buffer("mouse_clicked")
+        flush_typing_buffer("mouse_clicked")
 
     state.mouse_event_queue.put({"type": "click", "x": x, "y": y, "button": button, "pressed": pressed})
 
@@ -131,11 +121,9 @@ def on_press(key):
                 state.is_stopping = True
                 logger.info("input_listener: Ctrl + \\ detected. Triggering safe stop.")
                 
-                if state.shortcut_stop_callback:
-                    threading.Thread(target=state.shortcut_stop_callback, daemon=True).start()
-                else:
-                    import core.recorder.os_hook as hook
-                    threading.Thread(target=hook.stop_recording, daemon=True).start()
+                stop_cb = state.shortcut_stop_callback or getattr(state, "default_stop_callback", None)
+                if stop_cb:
+                    threading.Thread(target=stop_cb, daemon=True).start()
             return False 
 
     ime_on = is_ime_active()
@@ -147,7 +135,7 @@ def on_press(key):
     # 追加: タイピングバッファの管理と、サーチ・確定メタイベントの発火
     if is_text_input:
         if key_text in ("enter", "tab"):
-            _flush_typing_buffer(f"{key_text}_pressed")
+            flush_typing_buffer(f"{key_text}_pressed")
         else:
             if not getattr(state, "typing_buffer", ""):
                 _trigger_field_search("typing_started")

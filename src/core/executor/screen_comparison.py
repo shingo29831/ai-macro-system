@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
-from core.executor.window_manager import get_system_window_rects
+from core.shared.window_utils import get_system_window_rects
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +19,10 @@ def notify_execution_status(
 ) -> None:
     if status_callback:
         status_callback(text, is_warning)
-        return
-    try:
-        from ui.views.running_dialog import RunningDialog
-        RunningDialog.set_status(text, is_warning)
-    except Exception:
-        pass
+    elif is_warning:
+        logger.warning(text)
+    else:
+        logger.info(text)
 
 
 def crop_window_region(

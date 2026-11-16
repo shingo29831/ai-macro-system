@@ -12,7 +12,7 @@ import numpy as np
 
 from core.executor.input_helper import wait_for_screen_settle
 from core.executor.window_manager import activate_and_restore_window
-from core.recorder.screen_capturer import take_screenshot
+from core.shared.screen_capture import take_screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -49,27 +49,6 @@ def compute_dynamic_region_mask(
         mask[static_edges_dilated == 255] = 0
 
     return mask
-
-
-def get_window_rect_by_hwnd(hwnd: int) -> Optional[Tuple[int, int, int, int]]:
-    """指定HWNDのウィンドウ矩形 (x, y, width, height) を取得する。"""
-    if not hwnd or platform.system() != "Windows":
-        return None
-    try:
-        class _Rect(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long),
-            ]
-
-        rect = _Rect()
-        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
-    except Exception:
-        pass
-    return None
 
 
 def ensure_browser_window_foreground(
