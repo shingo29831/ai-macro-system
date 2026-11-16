@@ -264,27 +264,11 @@ class MainScreen(QWidget):
         self._apply_filter_and_sort()
         self.btn_delete_selected.setEnabled(len(self._all_macros) > 0)
 
-    def _natural_sort_key(self, text: str) -> list:
-        return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", str(text))]
-
     @Slot()
     def _apply_filter_and_sort(self) -> None:
         query = self.search_box.text().strip().lower()
-        items = [m for m in self._all_macros if query in m.name.lower()]
-
         sort_type = self.sort_combo.currentText()
-        if sort_type == "更新が新しい順":
-            items.sort(key=lambda m: m.updated_timestamp, reverse=True)
-        elif sort_type == "更新が古い順":
-            items.sort(key=lambda m: m.updated_timestamp, reverse=False)
-        elif sort_type == "作成が新しい順":
-            items.sort(key=lambda m: m.created_timestamp, reverse=True)
-        elif sort_type == "作成が古い順":
-            items.sort(key=lambda m: m.created_timestamp, reverse=False)
-        elif sort_type == "マクロ名順":
-            items.sort(key=lambda m: self._natural_sort_key(m.name), reverse=False)
-        elif sort_type == "マクロ名順（降順）":
-            items.sort(key=lambda m: self._natural_sort_key(m.name), reverse=True)
+        items = self.viewmodel.filter_and_sort_macros(self._all_macros, query, sort_type)
 
         total_count = len(self._all_macros)
         if query:

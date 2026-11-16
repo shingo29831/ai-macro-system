@@ -1,5 +1,6 @@
 """Module: @role: メインウィンドウのUI状態を管理し、非同期スレッドを用いてビューからのアクションをビジネスロジック(Core層)へ安全に中継・結合するViewModel層。"""
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import logging
 
@@ -7,10 +8,13 @@ from PySide6.QtCore import QObject, Qt, Signal, Slot
 
 from core.executor import runner
 from core.recorder import os_hook
+from models.data_types import MacroSummary
 from ui.viewmodels.macro_storage import (
     delete_macro_folders,
+    get_workflow_dir,
     list_macro_summaries,
     load_executable_commands,
+    natural_sort_key,
     save_executable_commands,
 )
 from ui.viewmodels.macro_task_runner import MacroTaskRunner
@@ -27,6 +31,7 @@ class MainViewModel(QObject):
     recording_stopped_by_shortcut = Signal()
     recording_error = Signal(str)
     execution_error = Signal(str)
+    execution_status_updated = Signal(str, bool)
 
     _internal_shortcut_signal = Signal()
     _internal_status_signal = Signal(str, bool)  # 自己修復UI通知用シグナル
@@ -51,11 +56,38 @@ class MainViewModel(QObject):
 
     @Slot(str, bool)
     def _on_internal_status(self, text: str, is_healing: bool) -> None:
-        try:
-            from ui.views.running_dialog import RunningDialog
-            RunningDialog.set_status(text, is_healing)
-        except Exception as e:
-            logger.error(f"Failed to update running dialog status: {e}")
+        self.execution_status_updated.emit(text, is_healing)
+
+    def get_macro_dir(self, macro_name: str) -> Path:
+        workflow_id = self._macro_id_map.get(macro_name) or macro_name
+        return get_workflow_dir(workflow_id)
+
+    def get_open_windows_info(self) -> List[Dict[str, Any]]:
+        from core.executor.window_manager import get_open_windows_info
+        return get_open_windows_info()
+
+    def toggle_loop_recording(self) -> bool:
+        return os_hook.toggle_loop_recording()
+
+    def filter_and_sort_macros(
+        self, macros: List[MacroSummary], query: str, sort_type: str
+    ) -> List[MacroSummary]:
+        clean_query = query.strip().lower()
+        items = [m for m in macros if clean_query in m.name.lower()]
+
+        if sort_type == "更新が新しい順":
+            items.sort(key=lambda m: m.updated_timestamp, reverse=True)
+        elif sort_type == "更新が古い順":
+            items.sort(key=lambda m: m.updated_timestamp, reverse=False)
+        elif sort_type == "作成が新しい順":
+            items.sort(key=lambda m: m.created_timestamp, reverse=True)
+        elif sort_type == "作成が古い順":
+            items.sort(key=lambda m: m.created_timestamp, reverse=False)
+        elif sort_type == "マクロ名順":
+            items.sort(key=lambda m: natural_sort_key(m.name), reverse=False)
+        elif sort_type == "マクロ名順（降順）":
+            items.sort(key=lambda m: natural_sort_key(m.name), reverse=True)
+        return items
 
     def load_macros(self) -> None:
         try:

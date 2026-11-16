@@ -157,6 +157,154 @@ def _consume_following_selector_events(
     return j
 
 
+def _resolve_element_metadata(
+    info: Dict[str, Any],
+    state: FormSnapshotContext,
+) -> Tuple[str, Dict[str, Any], str, str, str, Dict[str, Any]]:
+    act = info.get("raw_action", "")
+    ctx = info.get("app_context") or {}
+    sel = ctx.get("css_selector") or info.get("selector") or ""
+    c_type = str(ctx.get("control_type", "")).lower()
+    elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
+
+    # Why: ページスキャン情報(scanned_elements_map)から真の要素型と要素名を動的補正
+    scanned_elem = state.scanned_elements_map.get(sel) or state.scanned_elements_map.get(f"name:{elem_name}") or {}
+    if scanned_elem.get("control_type"):
+        c_type = str(scanned_elem["control_type"]).lower()
+    scanned_name = str(scanned_elem.get("element_name", "")).strip()
+    if scanned_name and (not elem_name or elem_name in ["left_click", "move"]):
+        elem_name = scanned_name
+    elif not elem_name and sel in state.selector_names:
+        elem_name = state.selector_names[sel]
+
+    return act, ctx, sel, c_type, elem_name, scanned_elem
+
+
+def _is_redundant_container_click(
+    info: Dict[str, Any],
+    act: str,
+    sel: str,
+    c_type: str,
+    elem_name: str,
+    ctx: Dict[str, Any],
+    processed_selectors: Set[str],
+) -> bool:
+    # Why: div等のモダンWeb要素(Group型)のクリックをフォーム枠誤認で消失させない
+    cx = info.get("cursor_x", info.get("x", 0))
+    cy = info.get("cursor_y", info.get("y", 0))
+    is_valid_screen_click = cx > 20 and cy > 45
+    return act == "click" and not is_valid_screen_click and (
+        sel in processed_selectors
+        or sel.lower() in ["#entryform", "form"]
+        or sel.startswith("div:has-text")
+        or (c_type in ["pane", "window"] and not elem_name and not ctx.get("css_selector"))
+    )
+
+
+def _is_submit_button_event(act: str, c_type: str, sel: str, elem_name: str) -> bool:
+    return act == "click" and (
+        "button" in c_type
+        or any(k in sel.lower() for k in ["submit", "btn", "button"])
+        or any(k in elem_name.lower() for k in ["登録", "送信", "保存", "submit", "save", "ログイン"])
+    )
+
+
+def _convert_to_submit_action(info: Dict[str, Any], sel: str, elem_name: str) -> None:
+    info["raw_action"] = "browser_action"
+    info["raw_type"] = "browser_action"
+    info["action"] = "click_element"
+    info["selector"] = sel or "button[type='submit']"
+    info["selector_type"] = "css"
+    info["element_name"] = elem_name or "登録する"
+    info["semantic_role"] = elem_name or "登録する"
+
+
+def _convert_to_checkbox_action(
+    info: Dict[str, Any],
+    act: str,
+    sel: str,
+    elem_name: str,
+    state: FormSnapshotContext,
+) -> None:
+    chk_raw = str(
+        state.element_final_values.get(sel)
+        or state.global_form_snapshot.get(sel)
+        or state.global_form_snapshot.get(f"name:{elem_name}")
+        or info.get("value")
+        or ""
+    ).strip().lower()
+    is_checked = chk_raw in ["true", "1", "checked"] if chk_raw else (act == "click")
+    info["raw_action"] = "browser_action"
+    info["raw_type"] = "browser_action"
+    info["action"] = "set_checkbox"
+    info["selector"] = sel
+    info["value"] = is_checked
+    info["element_name"] = elem_name or "チェックボックス"
+
+
+def _resolve_missing_input_selector(
+    sel: str,
+    c_type: str,
+    elem_name: str,
+    state: FormSnapshotContext,
+) -> Tuple[str, str]:
+    if sel:
+        return sel, c_type
+    for s_k, s_d in state.scanned_elements_map.items():
+        if s_d.get("control_type") in ["Edit", "Spinner"] and (
+            s_d.get("element_name") == elem_name or f"name:{elem_name}" == s_k
+        ):
+            return s_d.get("selector") or s_k, str(s_d.get("control_type", "")).lower()
+    return sel, c_type
+
+
+def _try_convert_to_input_action(
+    info: Dict[str, Any],
+    act: str,
+    sel: str,
+    elem_name: str,
+    state: FormSnapshotContext,
+    result: List[Dict[str, Any]],
+) -> str:
+    """戻り値: 'converted' | 'skip' | 'passthrough'"""
+    clean_txt, scanned_item = _resolve_input_field_value(info, act, sel, elem_name, state)
+    if not clean_txt or clean_txt == elem_name:
+        return "passthrough"
+
+    # Why: 既存の正当な完全長文テキストを未確定の1文字等の短縮ゴミ値で上書き破壊しない
+    if result:
+        prev_text = str(result[-1].get("semantic_role") or result[-1].get("text") or "").strip()
+        if len(prev_text) > len(clean_txt) and (prev_text.startswith(clean_txt) or clean_txt in prev_text):
+            return "skip"
+
+    while result:
+        prev_item = result[-1]
+        p_act = prev_item.get("raw_action", "")
+        p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
+        if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (
+            (p_sel and p_sel == sel) or (not p_sel and not sel.startswith("#submit"))
+        ):
+            result.pop()
+        else:
+            break
+
+    target_x = scanned_item.get("x") or (state.selector_coords[sel][0] if sel in state.selector_coords else None)
+    target_y = scanned_item.get("y") or (state.selector_coords[sel][1] if sel in state.selector_coords else None)
+    if target_x and target_y and target_x > 20 and target_y > 20:
+        info["cursor_x"], info["cursor_y"] = target_x, target_y
+        info["x"], info["y"] = target_x, target_y
+
+    info["raw_action"] = "browser_action"
+    info["raw_type"] = "browser_action"
+    info["action"] = "type_text"
+    info["selector"] = sel
+    info["text"] = clean_txt
+    info["semantic_role"] = clean_txt
+    info["element_name"] = elem_name or "入力項目"
+    result.append(info)
+    return "converted"
+
+
 def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], config: Optional[Any] = None) -> List[Dict[str, Any]]:
     # Why: ハードコードを完全排除しコントロール種別と最新確定値に基づく普遍的なフォーム最適化
     if not temp_workflow_info:
@@ -170,21 +318,7 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
 
     while i < n:
         info = temp_workflow_info[i]
-        act = info.get("raw_action", "")
-        ctx = info.get("app_context") or {}
-        sel = ctx.get("css_selector") or info.get("selector") or ""
-        c_type = str(ctx.get("control_type", "")).lower()
-        elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()
-
-        # Why: ページスキャン情報(scanned_elements_map)から真の要素型と要素名を動的補正
-        scanned_elem = state.scanned_elements_map.get(sel) or state.scanned_elements_map.get(f"name:{elem_name}") or {}
-        if scanned_elem.get("control_type"):
-            c_type = str(scanned_elem["control_type"]).lower()
-        scanned_name = str(scanned_elem.get("element_name", "")).strip()
-        if scanned_name and (not elem_name or elem_name in ["left_click", "move"]):
-            elem_name = scanned_name
-        elif not elem_name and sel in state.selector_names:
-            elem_name = state.selector_names[sel]
+        act, ctx, sel, c_type, elem_name, scanned_elem = _resolve_element_metadata(info, state)
 
         if is_system_ui_event(info) or (sel and sel in processed_selectors):
             i += 1
@@ -206,33 +340,12 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
             i += 1
             continue
 
-        # Why: div等のモダンWeb要素(Group型)のクリックをフォーム枠誤認で消失させない
-        cx = info.get("cursor_x", info.get("x", 0))
-        cy = info.get("cursor_y", info.get("y", 0))
-        is_valid_screen_click = cx > 20 and cy > 45
-        is_redundant_input_click = act == "click" and not is_valid_screen_click and (
-            sel in processed_selectors
-            or sel.lower() in ["#entryform", "form"]
-            or sel.startswith("div:has-text")
-            or (c_type in ["pane", "window"] and not elem_name and not ctx.get("css_selector"))
-        )
-        if is_redundant_input_click:
+        if _is_redundant_container_click(info, act, sel, c_type, elem_name, ctx, processed_selectors):
             i += 1
             continue
 
-        is_submit_btn = act == "click" and (
-            "button" in c_type
-            or any(k in sel.lower() for k in ["submit", "btn", "button"])
-            or any(k in elem_name.lower() for k in ["登録", "送信", "保存", "submit", "save", "ログイン"])
-        )
-        if is_submit_btn:
-            info["raw_action"] = "browser_action"
-            info["raw_type"] = "browser_action"
-            info["action"] = "click_element"
-            info["selector"] = sel or "button[type='submit']"
-            info["selector_type"] = "css"
-            info["element_name"] = elem_name or "登録する"
-            info["semantic_role"] = elem_name or "登録する"
+        if _is_submit_button_event(act, c_type, sel, elem_name):
+            _convert_to_submit_action(info, sel, elem_name)
             result.append(info)
             processed_selectors.add(sel)
             i += 1
@@ -258,31 +371,14 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
 
         is_checkbox = "checkbox" in c_type or "check" in sel.lower()
         if is_checkbox and act in ["click", "browser_action"]:
-            chk_raw = str(
-                state.element_final_values.get(sel)
-                or state.global_form_snapshot.get(sel)
-                or state.global_form_snapshot.get(f"name:{elem_name}")
-                or info.get("value")
-                or ""
-            ).strip().lower()
-            is_checked = chk_raw in ["true", "1", "checked"] if chk_raw else (act == "click")
-            info["raw_action"] = "browser_action"
-            info["raw_type"] = "browser_action"
-            info["action"] = "set_checkbox"
-            info["selector"] = sel
-            info["value"] = is_checked
-            info["element_name"] = elem_name or "チェックボックス"
+            _convert_to_checkbox_action(info, act, sel, elem_name, state)
             result.append(info)
             processed_selectors.add(sel)
             i += 1
             continue
 
         if act == "type_text" and not sel:
-            for s_k, s_d in state.scanned_elements_map.items():
-                if s_d.get("control_type") in ["Edit", "Spinner"] and (s_d.get("element_name") == elem_name or f"name:{elem_name}" == s_k):
-                    sel = s_d.get("selector") or s_k
-                    c_type = str(s_d.get("control_type", "")).lower()
-                    break
+            sel, c_type = _resolve_missing_input_selector(sel, c_type, elem_name, state)
 
         is_input_control = any(t in c_type for t in ["edit", "spinner"]) or any(tag in sel.lower() for tag in ["input", "textarea"])
         is_container_id = any(k in sel.lower() for k in ["root", "app", "main", "container", "wrapper", "content", "body"])
@@ -294,40 +390,11 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
             and not sel.lower().endswith("newsletter")
         )
         if is_input_field:
-            clean_txt, scanned_item = _resolve_input_field_value(info, act, sel, elem_name, state)
-            if clean_txt and clean_txt != elem_name:
-                # Why: 既存の正当な完全長文テキストを未確定の1文字等の短縮ゴミ値で上書き破壊しない
-                if result:
-                    prev_text = str(result[-1].get("semantic_role") or result[-1].get("text") or "").strip()
-                    if len(prev_text) > len(clean_txt) and (prev_text.startswith(clean_txt) or clean_txt in prev_text):
-                        i += 1
-                        continue
-
-                while result:
-                    prev_item = result[-1]
-                    p_act = prev_item.get("raw_action", "")
-                    p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
-                    if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (
-                        (p_sel and p_sel == sel) or (not p_sel and not sel.startswith("#submit"))
-                    ):
-                        result.pop()
-                    else:
-                        break
-
-                target_x = scanned_item.get("x") or (state.selector_coords[sel][0] if sel in state.selector_coords else None)
-                target_y = scanned_item.get("y") or (state.selector_coords[sel][1] if sel in state.selector_coords else None)
-                if target_x and target_y and target_x > 20 and target_y > 20:
-                    info["cursor_x"], info["cursor_y"] = target_x, target_y
-                    info["x"], info["y"] = target_x, target_y
-
-                info["raw_action"] = "browser_action"
-                info["raw_type"] = "browser_action"
-                info["action"] = "type_text"
-                info["selector"] = sel
-                info["text"] = clean_txt
-                info["semantic_role"] = clean_txt
-                info["element_name"] = elem_name or "入力項目"
-                result.append(info)
+            status = _try_convert_to_input_action(info, act, sel, elem_name, state, result)
+            if status == "skip":
+                i += 1
+                continue
+            if status == "converted":
                 processed_selectors.add(sel)
                 i = _consume_following_selector_events(temp_workflow_info, i, sel, elem_name)
                 continue

@@ -19,12 +19,13 @@ from .action_form_fields import (
     build_browser_fields,
     build_coordinate_fields,
     build_excel_fields,
-    build_loop_start_fields,
     build_scroll_fields,
     build_type_text_fields,
     build_wait_fields,
     populate_var_combo,
 )
+from .excel_column_scanner import get_excel_columns_map
+from .loop_config_panel import LoopConfigPanel
 
 
 class ActionBlockEditForm(QWidget):
@@ -62,15 +63,24 @@ class ActionBlockEditForm(QWidget):
         for combo in self._var_combos:
             self._populate_var_combo_widget(combo)
 
-    def _emit_arg_update(self, key: str, value: Any) -> None:
+    def update_arg(self, key: str, value: Any) -> None:
+        """引数を更新してarg_updatedシグナルを発行する。"""
         self.args[key] = value
         self.arg_updated.emit()
 
-    def _update_seq_var(self, target_key: str, param_key: str, value: Any) -> None:
+    def update_seq_var(self, target_key: str, param_key: str, value: Any) -> None:
+        """ループ差分パラメータを更新してarg_updatedシグナルを発行する。"""
         seq_vars = self.args.setdefault("seq_vars", {})
         target_seq = seq_vars.setdefault(target_key, {})
         target_seq[param_key] = value
         self.arg_updated.emit()
+
+    def add_field_row(self, label: str, widget_or_layout: Any) -> None:
+        """フォームレイアウトへラベルとフィールドを追加する。"""
+        if label:
+            self.edit_layout.addRow(label, widget_or_layout)
+        else:
+            self.edit_layout.addRow(widget_or_layout)
 
     def _build_form(self) -> None:
         self.args.setdefault("seq_vars", {})
@@ -80,18 +90,27 @@ class ActionBlockEditForm(QWidget):
         elif self.method == "type_text":
             build_type_text_fields(self)
         elif self.method == "loop_start":
-            build_loop_start_fields(self)
+            self.loop_config_panel = LoopConfigPanel(
+                self.args,
+                self.workflow_dir,
+                commit_on_change=True,
+                show_static_count=True,
+                show_columns_preview=False,
+                parent=self,
+            )
+            self.loop_config_panel.config_changed.connect(self.arg_updated.emit)
+            self.edit_layout.addRow(self.loop_config_panel)
         elif self.method == "wait":
             build_wait_fields(self)
         elif self.method == "scroll":
             build_scroll_fields(self)
         elif self.method == "press_key":
             self.key_edit = QLineEdit(self.args.get("key", ""))
-            self.key_edit.textChanged.connect(lambda v: self._emit_arg_update("key", v))
+            self.key_edit.textChanged.connect(lambda v: self.update_arg("key", v))
             self.edit_layout.addRow("キー名:", self.key_edit)
         elif self.method == "activate_window":
             self.win_edit = QLineEdit(self.args.get("window_title", ""))
-            self.win_edit.textChanged.connect(lambda v: self._emit_arg_update("window_title", v))
+            self.win_edit.textChanged.connect(lambda v: self.update_arg("window_title", v))
             self.edit_layout.addRow("ウィンドウ名:", self.win_edit)
         elif self.method == "browser_action":
             build_browser_fields(self)
@@ -103,8 +122,8 @@ class ActionBlockEditForm(QWidget):
         delete_btn.clicked.connect(self.delete_clicked.emit)
         self.edit_layout.addRow("", delete_btn)
 
-    def _create_var_input_row(self, line_edit: QLineEdit) -> QHBoxLayout:
-        # Why: 入力欄・変数選択コンボ・参照ボタンを水平統合し統一的UIを提供
+    def create_var_input_row(self, line_edit: QLineEdit) -> QHBoxLayout:
+        """入力欄・変数選択コンボ・Excel参照ボタンを水平統合したレイアウトを生成する。"""
         row = QHBoxLayout()
         row.setSpacing(4)
         row.addWidget(line_edit)
@@ -128,8 +147,6 @@ class ActionBlockEditForm(QWidget):
         populate_var_combo(combo, self.available_vars)
 
     def _open_excel_column_picker(self) -> None:
-        # Why: 循環インポート回避のため選択時のみloop_widgetsを参照
-        from .loop_widgets import get_excel_columns_map
 
         fp, _ = QFileDialog.getOpenFileName(
             self,
@@ -160,7 +177,8 @@ class ActionBlockEditForm(QWidget):
             target_edit.setFocus()
         combo.setCurrentIndex(0)
 
-    def _browse_excel_into(self, target_edit: QLineEdit) -> None:
+    def browse_excel_into(self, target_edit: QLineEdit) -> None:
+        """Excelファイル選択ダイアログを開き、選択パスをtarget_editとargsへ反映する。"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Excelファイルを選択",
@@ -169,4 +187,4 @@ class ActionBlockEditForm(QWidget):
         )
         if file_path:
             target_edit.setText(file_path)
-            self._emit_arg_update("file_path", file_path)
+            self.update_arg("file_path", file_path)

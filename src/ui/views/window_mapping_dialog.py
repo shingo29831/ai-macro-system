@@ -1,5 +1,7 @@
 """Module: @role: マクロ実行前に対象ウィンドウを現在開いているウィンドウ（または新規起動）へ紐付けるマッピングダイアログおよびサムネイルウィジェット。"""
 
+from typing import Any, Dict, List, Optional
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -13,8 +15,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from qfluentwidgets import BodyLabel, CheckBox, PrimaryPushButton, PushButton, SubtitleLabel
-
-from core.executor.window_manager import get_open_windows_info
 
 
 class WindowThumbnailWidget(QFrame):
@@ -100,8 +100,16 @@ class WindowThumbnailWidget(QFrame):
 
 
 class WindowMappingDialog(QDialog):
-    def __init__(self, target_titles, has_loop: bool = False, parent=None):
+    def __init__(
+        self,
+        target_titles,
+        has_loop: bool = False,
+        parent=None,
+        open_windows: Optional[List[Dict[str, Any]]] = None,
+    ):
         super().__init__(parent)
+        if open_windows is None:
+            raise ValueError("open_windows must be provided via dependency injection")
         self.has_loop = has_loop
         self.setWindowTitle("ウィンドウの紐付け")
         self.resize(800, 600)
@@ -112,6 +120,7 @@ class WindowMappingDialog(QDialog):
         self.target_titles = target_titles
         self.current_title_index = 0
         self.mapping = {}
+        self.loop_launch_mapping: Dict[str, bool] = {}
         self.confirmed_hwnds = set()
         self.current_selected_hwnd = None
 
@@ -120,7 +129,7 @@ class WindowMappingDialog(QDialog):
             "実行中", "設定", "ウィンドウの紐付け", "program manager", "taskbar"
         ]
         filtered_open_windows = [
-            w for w in get_open_windows_info()
+            w for w in open_windows
             if not any(kw in w.get("title", "").lower() for kw in ignored_system_kw)
         ]
         self.all_windows = [{"hwnd": -1, "title": "新規起動", "thumbnail": None}] + filtered_open_windows
@@ -290,6 +299,13 @@ class WindowMappingDialog(QDialog):
 
         current_title = self.target_titles[self.current_title_index]
         self.mapping[current_title] = self.current_selected_hwnd
+        # Why: 複数ウィンドウ紐付け時に次画面の選択変化で前画面のループ毎起動設定が上書きされないよう個別保存
+        self.loop_launch_mapping[current_title] = bool(
+            self.current_selected_hwnd == -1
+            and self.loop_launch_checkbox
+            and self.loop_launch_checkbox.isVisible()
+            and self.loop_launch_checkbox.isChecked()
+        )
 
         if self.current_selected_hwnd != -1:
             self.confirmed_hwnds.add(self.current_selected_hwnd)
@@ -300,18 +316,17 @@ class WindowMappingDialog(QDialog):
             self.accept()
         else:
             self.current_selected_hwnd = None
+            if self.loop_launch_checkbox:
+                self.loop_launch_checkbox.setChecked(False)
+                self.loop_launch_checkbox.setVisible(False)
             self.ok_btn.setEnabled(False)
             self.update_ui_state()
 
     def get_mapping(self):
         return self.mapping
 
-    def get_loop_launch_each_time(self) -> bool:
-        if self.loop_launch_checkbox and self.loop_launch_checkbox.isVisible():
-            return self.loop_launch_checkbox.isChecked()
-        return False
+    def get_loop_launch_mapping(self) -> Dict[str, bool]:
+        return self.loop_launch_mapping
 
     def get_loop_launch_each_time(self) -> bool:
-        if self.loop_launch_checkbox:
-            return self.loop_launch_checkbox.isChecked()
-        return False
+        return any(self.loop_launch_mapping.values())

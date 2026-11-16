@@ -145,7 +145,7 @@ def resolve_loop_excel_columns(loop_cmd: Dict[str, Any], workflow_dir: Path) -> 
     args = loop_cmd.setdefault("args", {})
     cols = args.get("columns_map")
     if not cols and args.get("data_source") == "excel" and args.get("file_path"):
-        from .loop_widgets import get_excel_columns_map
+        from .excel_column_scanner import get_excel_columns_map
 
         cols = get_excel_columns_map(args.get("file_path"), args.get("sheet_name"), workflow_dir)
         args["columns_map"] = cols

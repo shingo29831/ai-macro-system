@@ -4,17 +4,15 @@
 from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QFrame
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
-from core.recorder.state import state
-from core.recorder.utils import now_datetime
-from core.recorder.log_builder import build_base_log
-from core.recorder import process_monitor
+
 
 class RecordDialog:
     """超小型記録ウィジェットのUI表示、タイマーバインド、およびクローズ動作を制御するクラス"""
-    
-    def __init__(self, parent=None, on_stop_callback=None):
+
+    def __init__(self, parent=None, on_stop_callback=None, on_loop_toggle_callback=None):
         self.parent = parent
         self.on_stop_callback = on_stop_callback
+        self.on_loop_toggle_callback = on_loop_toggle_callback
         
         self.dialog = QWidget()
         self.dialog.setWindowTitle("記録中")
@@ -82,18 +80,9 @@ class RecordDialog:
             self.btn_loop.clicked.connect(self._on_loop_toggle_clicked)
 
     def _on_loop_toggle_clicked(self):
-        """繰り返し作業の開始・終了を切り替え、メタログを記録する"""
-        state.is_loop_recording = not state.is_loop_recording
-        
-        event_no = state.get_next_event_no()
-        dt = now_datetime()
-        
-        window_info = {
-            "title": "System_Meta",
-            "rect": {"x": 0, "y": 0, "width": 0, "height": 0}
-        }
-        
-        if state.is_loop_recording:
+        """繰り返し作業の開始・終了UIを切り替える"""
+        is_loop_active = self.on_loop_toggle_callback() if self.on_loop_toggle_callback else False
+        if is_loop_active:
             self.btn_loop.setText("⏹ 繰り返し終了")
             self.btn_loop.setStyleSheet("""
                 QPushButton {
@@ -108,7 +97,6 @@ class RecordDialog:
                     background-color: #b45309;
                 }
             """)
-            input_type = "meta_loop_start"
         else:
             self.btn_loop.setText("🔁 繰り返し作業")
             self.btn_loop.setStyleSheet("""
@@ -123,17 +111,7 @@ class RecordDialog:
                 QPushButton:hover {
                     background-color: #6b7280;
                 }
-            """) 
-            input_type = "meta_loop_end"
-            
-        log = build_base_log(
-            event_no=event_no, 
-            dt=dt, 
-            input_type=input_type, 
-            content={"status": "active" if state.is_loop_recording else "inactive"}, 
-            window_info=window_info
-        )
-        state.append_log(log)
+            """)
 
     def _on_stop_clicked(self):
         if self.on_stop_callback:

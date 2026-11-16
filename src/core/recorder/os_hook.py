@@ -9,15 +9,12 @@ from core.recorder.event_processor import start_key_event_worker, start_mouse_ev
 
 from core.recorder.win_scroll import start_native_scroll_hook, stop_native_scroll_hook
 from core.recorder.input_listener import on_move, on_click, on_scroll, on_press, on_release
-from core.recorder.log_builder import create_end_log, save_input_logs
+from core.recorder.log_builder import build_base_log, create_end_log, save_input_logs
+from core.recorder.utils import now_datetime
 
 from core.recorder.key_hook import KeyHookManager
 from core.recorder.office_monitor import OfficeMonitorManager
 from core.executor.os_env_controller import set_system_cursor, restore_system_cursor
-
-_mouse_listener = None
-_keyboard_listener = None
-_key_hook_manager = None
 
 from . import macro_path_manager
 
@@ -34,6 +31,27 @@ def get_current_workflow_id() -> str | None:
     if state.recording_dirs and "macro_name" in state.recording_dirs:
         return state.recording_dirs["macro_name"]
     return None
+
+
+def toggle_loop_recording() -> bool:
+    """繰り返し記録モードを切り替え、メタログを追記して新しい状態を返す。"""
+    state.is_loop_recording = not state.is_loop_recording
+    event_no = state.get_next_event_no()
+    dt = now_datetime()
+    window_info = {
+        "title": "System_Meta",
+        "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+    }
+    input_type = "meta_loop_start" if state.is_loop_recording else "meta_loop_end"
+    log = build_base_log(
+        event_no=event_no,
+        dt=dt,
+        input_type=input_type,
+        content={"status": "active" if state.is_loop_recording else "inactive"},
+        window_info=window_info,
+    )
+    state.append_log(log)
+    return state.is_loop_recording
 
 def start_recording():
     global _mouse_listener, _keyboard_listener, _key_hook_manager, _office_monitor_manager
@@ -54,6 +72,8 @@ def start_recording():
         state.latest_mouse_down_event = None
         state.is_stopping = False
         state.is_click_processing = False
+        # Why: 前回録画のループ状態をリセットし、次回録画初回トグルの誤記録を防止
+        state.is_loop_recording = False
 
         process_monitor.start_process_monitors()
         state.is_recording = True

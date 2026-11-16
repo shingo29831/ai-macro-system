@@ -121,8 +121,7 @@ class MainWindow(FluentWindow):
     def open_macro_editor_for_review(self, macro_name: str) -> None:
         self.viewmodel.select_macro(macro_name)
         commands = self.viewmodel.load_macro_commands(macro_name)
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
-        workflow_dir = get_macros_root() / workflow_id
+        workflow_dir = self.viewmodel.get_macro_dir(macro_name)
 
         self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False, is_review=True)
         self.navigationInterface.hide()
@@ -133,8 +132,7 @@ class MainWindow(FluentWindow):
         if not macro_name:
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
-        workflow_dir = get_macros_root() / workflow_id
+        workflow_dir = self.viewmodel.get_macro_dir(macro_name)
 
         self.macro_editor_screen.load_macro(macro_name, commands, workflow_dir, is_temporary=False)
         self.navigationInterface.hide()
@@ -145,14 +143,14 @@ class MainWindow(FluentWindow):
         if not macro_name:
             return
         commands = self.viewmodel.load_macro_commands(macro_name)
-        workflow_id = self.viewmodel._macro_id_map.get(macro_name) or macro_name
-        workflow_dir = get_macros_root() / workflow_id
+        workflow_dir = self.viewmodel.get_macro_dir(macro_name)
 
         self.navigationInterface.hide()
         self.stackedWidget.setCurrentWidget(self.macro_editor_screen)
         QApplication.processEvents()
 
-        if not resolve_window_mapping(self, commands):
+        open_windows = self.viewmodel.get_open_windows_info()
+        if not resolve_window_mapping(self, commands, open_windows=open_windows):
             self._on_macro_edit_canceled()
             return
 

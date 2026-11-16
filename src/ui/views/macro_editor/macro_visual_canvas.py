@@ -16,7 +16,8 @@ from .canvas_loop_logic import (
     validate_loops,
 )
 from .canvas_painter import hit_test_loop_handle, paint_canvas_flows
-from .loop_widgets import LoopCountWidget, WarningWidget
+from .loop_warning_widget import WarningWidget
+from .loop_widgets import LoopCountWidget
 
 
 class MacroVisualCanvas(QWidget):

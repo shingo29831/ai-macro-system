@@ -2,16 +2,10 @@
 
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QFileDialog,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -19,7 +13,9 @@ from PySide6.QtWidgets import (
 )
 
 from .excel_column_scanner import get_excel_columns_map
+from .loop_config_panel import LoopConfigPanel
 from .loop_setting_dialog import LoopSettingDialog
+from .loop_warning_widget import WarningWidget
 
 __all__ = [
     "WarningWidget",
@@ -27,32 +23,6 @@ __all__ = [
     "LoopSettingDialog",
     "get_excel_columns_map",
 ]
-
-
-class WarningWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(24, 24)
-        self.setToolTip("ループの開始と終了が逆転しています。\n矢印線が逆転しないように注意してください。")
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        path = QPainterPath()
-        path.moveTo(12, 2)
-        path.lineTo(22, 20)
-        path.lineTo(2, 20)
-        path.closeSubpath()
-
-        painter.setBrush(QColor("#ffcc00"))
-        painter.setPen(QPen(QColor("#d13438"), 2))
-        painter.drawPath(path)
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#d13438"))
-        painter.drawRect(11, 8, 2, 6)
-        painter.drawRect(11, 16, 2, 2)
 
 
 class LoopCountWidget(QFrame):
@@ -92,7 +62,7 @@ class LoopCountWidget(QFrame):
         # Why: 十分な幅と右パディングを確保し上下矢印が数値テキストに重なるのを完全防止
         self.spin_box = QSpinBox()
         self.spin_box.setRange(1, 99999)
-        self.spin_box.setValue(self.args.get("loop_count", 10))
+        self.spin_box.setValue(int(self.args.get("loop_count") or 10))
         self.spin_box.setFixedWidth(70)
         self.spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.spin_box.setStyleSheet("""
@@ -158,176 +128,57 @@ class LoopCountWidget(QFrame):
 
         # 2. インライン詳細設定パネル（展開式）
         self.detail_panel = QWidget()
-        self.detail_layout = QFormLayout(self.detail_panel)
-        self.detail_layout.setContentsMargins(4, 8, 4, 4)
-        self.detail_layout.setSpacing(8)
+        detail_container_layout = QVBoxLayout(self.detail_panel)
+        detail_container_layout.setContentsMargins(4, 8, 4, 4)
         self.detail_panel.setStyleSheet("""
-            QLabel {
-                font-size: 12px;
-                color: #2b2b2b;
-            }
+            QLabel { font-size: 12px; color: #2b2b2b; }
             QLineEdit {
-                font-size: 12px;
-                padding: 4px 6px;
-                border: 1px solid #c7c7c7;
-                border-radius: 4px;
-                background-color: #ffffff;
-                color: #1f2937;
+                font-size: 12px; padding: 4px 6px; border: 1px solid #c7c7c7;
+                border-radius: 4px; background-color: #ffffff; color: #1f2937;
             }
-            QLineEdit:focus {
-                border: 1px solid #0078d4;
-            }
+            QLineEdit:focus { border: 1px solid #0078d4; }
             QSpinBox {
-                font-size: 12px;
-                padding: 3px 22px 3px 6px;
-                border: 1px solid #c7c7c7;
-                border-radius: 4px;
-                background-color: #ffffff;
-                color: #1f2937;
+                font-size: 12px; padding: 3px 22px 3px 6px; border: 1px solid #c7c7c7;
+                border-radius: 4px; background-color: #ffffff; color: #1f2937;
             }
-            QSpinBox:focus {
-                border: 1px solid #0078d4;
-            }
+            QSpinBox:focus { border: 1px solid #0078d4; }
             QComboBox {
-                font-size: 12px;
-                padding: 4px 8px;
-                border: 1px solid #c7c7c7;
-                border-radius: 4px;
-                background-color: #ffffff;
-                color: #1f2937;
+                font-size: 12px; padding: 4px 8px; border: 1px solid #c7c7c7;
+                border-radius: 4px; background-color: #ffffff; color: #1f2937;
             }
-            QComboBox:hover {
-                border: 1px solid #0078d4;
-            }
+            QComboBox:hover { border: 1px solid #0078d4; }
             QComboBox QAbstractItemView {
-                background-color: #ffffff;
-                color: #1f2937;
-                selection-background-color: #0078d4;
-                selection-color: #ffffff;
-                border: 1px solid #c7c7c7;
-                outline: none;
+                background-color: #ffffff; color: #1f2937;
+                selection-background-color: #0078d4; selection-color: #ffffff;
+                border: 1px solid #c7c7c7; outline: none;
             }
-            QCheckBox {
-                font-size: 12px;
-                color: #2b2b2b;
-            }
+            QCheckBox { font-size: 12px; color: #2b2b2b; }
             QPushButton {
-                font-size: 12px;
-                color: #2b2b2b;
-                background-color: #f3f2f1;
-                border: 1px solid #c7c7c7;
-                border-radius: 4px;
-                padding: 3px 8px;
+                font-size: 12px; color: #2b2b2b; background-color: #f3f2f1;
+                border: 1px solid #c7c7c7; border-radius: 4px; padding: 3px 8px;
             }
-            QPushButton:hover {
-                background-color: #e1dfdd;
-                color: #0078d4;
-            }
+            QPushButton:hover { background-color: #e1dfdd; color: #0078d4; }
         """)
+        self.config_panel = LoopConfigPanel(
+            self.args,
+            self.workflow_dir,
+            commit_on_change=True,
+            show_static_count=False,
+            show_columns_preview=True,
+            parent=self.detail_panel,
+        )
+        self.config_panel.config_changed.connect(self._on_panel_config_changed)
+        detail_container_layout.addWidget(self.config_panel)
 
-        # モード選択
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("固定回数ループ", "static")
-        self.mode_combo.addItem("Excelデータ連携ループ", "excel")
-        cur_mode = self.args.get("data_source", "static")
-        self.mode_combo.setCurrentIndex(1 if cur_mode == "excel" else 0)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        self.detail_layout.addRow("種別:", self.mode_combo)
-
-        # Excelグループ
-        self.excel_group = QWidget()
-        eg_layout = QFormLayout(self.excel_group)
-        eg_layout.setContentsMargins(0, 0, 0, 0)
-        eg_layout.setSpacing(7)
-
-        file_box = QHBoxLayout()
-        self.file_edit = QLineEdit(self.args.get("file_path", ""))
-        self.file_edit.setPlaceholderText("Excelファイル...")
-        self.file_edit.textChanged.connect(self._on_file_changed)
-        file_box.addWidget(self.file_edit)
-
-        browse_btn = QPushButton("参照")
-        browse_btn.setFixedWidth(50)
-        browse_btn.clicked.connect(self._browse_excel_file)
-        file_box.addWidget(browse_btn)
-        eg_layout.addRow("ファイル:", file_box)
-
-        self.sheet_edit = QLineEdit(self.args.get("sheet_name", ""))
-        self.sheet_edit.setPlaceholderText("空欄でアクティブシート")
-        self.sheet_edit.textChanged.connect(self._on_sheet_changed)
-        eg_layout.addRow("シート:", self.sheet_edit)
-
-        # 検出列変数プレビュー
-        self.cols_preview_label = QLabel()
-        self.cols_preview_label.setWordWrap(True)
-        self.cols_preview_label.setStyleSheet("font-size: 11px; color: #107c41; background: #eaf6ee; padding: 6px; border-radius: 4px;")
-        eg_layout.addRow("検出列変数:", self.cols_preview_label)
-
-        # Why: 1行詰め込み過密を解消し開始行と終了行を独立行にしてスピン矢印の被りを根本撲滅
-        self.st_row_spin = QSpinBox()
-        self.st_row_spin.setRange(1, 99999)
-        self.st_row_spin.setValue(self.args.get("start_row", 2))
-        self.st_row_spin.setFixedWidth(110)
-        self.st_row_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.st_row_spin.valueChanged.connect(lambda v: self._update_field("start_row", v))
-        eg_layout.addRow("開始行:", self.st_row_spin)
-
-        self.ed_row_spin = QSpinBox()
-        self.ed_row_spin.setRange(0, 99999)
-        self.ed_row_spin.setValue(self.args.get("end_row") or 0)
-        self.ed_row_spin.setSpecialValueText("末尾まで")
-        self.ed_row_spin.setFixedWidth(110)
-        self.ed_row_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.ed_row_spin.valueChanged.connect(lambda v: self._update_field("end_row", v if v > 0 else None))
-        eg_layout.addRow("終了行:", self.ed_row_spin)
-
-        self.status_col_edit = QLineEdit(self.args.get("status_column", ""))
-        self.status_col_edit.setPlaceholderText("空欄で書込無 (例: F)")
-        self.status_col_edit.setFixedWidth(110)
-        self.status_col_edit.textChanged.connect(lambda v: self._update_field("status_column", v.upper()))
-        eg_layout.addRow("ステータス列:", self.status_col_edit)
-
-        self.skip_check = QCheckBox("完了行をスキップ")
-        self.skip_check.setChecked(bool(self.args.get("skip_completed", True)))
-        self.skip_check.toggled.connect(lambda v: self._update_field("skip_completed", v))
-        eg_layout.addRow("", self.skip_check)
-
-        self.cont_check = QCheckBox("エラー時次行継続")
-        self.cont_check.setChecked(bool(self.args.get("continue_on_error", False)))
-        self.cont_check.toggled.connect(lambda v: self._update_field("continue_on_error", v))
-        eg_layout.addRow("", self.cont_check)
-
-        self.detail_layout.addRow(self.excel_group)
         self.detail_panel.hide()
         self.main_layout.addWidget(self.detail_panel)
 
-        self._refresh_columns_preview()
-
-    def _refresh_columns_preview(self):
-        f_path = self.args.get("file_path", "")
-        s_name = self.args.get("sheet_name")
-        cols_map = get_excel_columns_map(f_path, s_name, self.workflow_dir)
-        self.args["columns_map"] = cols_map
-        preview_texts = [f"{col}列:{name}" for col, name in list(cols_map.items())[:6]]
-        if len(cols_map) > 6:
-            preview_texts.append(f"...他{len(cols_map)-6}列")
-        self.cols_preview_label.setText(" | ".join(preview_texts) if preview_texts else "列未検出")
-
-    def _on_file_changed(self, v):
-        self.args["file_path"] = v
-        self._refresh_columns_preview()
-        self._update_appearance()
-        self.settings_changed.emit()
-
-    def _on_sheet_changed(self, v):
-        self.args["sheet_name"] = v
-        self._refresh_columns_preview()
+    def _on_panel_config_changed(self) -> None:
         self._update_appearance()
         self.settings_changed.emit()
 
     def _update_appearance(self):
         is_excel = self.args.get("data_source") == "excel"
-        self.excel_group.setVisible(is_excel)
 
         if is_excel:
             self.icon_label.setText("📊")

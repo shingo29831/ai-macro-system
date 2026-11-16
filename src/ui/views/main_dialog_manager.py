@@ -21,11 +21,20 @@ class MainDialogManager:
         self.running_dialog: Optional[RunningDialog] = None
         self.progress_dialog: Optional[ProgressDialog] = None
         self.settings_dialog: Optional[SettingsDialog] = None
+        self.viewmodel.execution_status_updated.connect(self._on_running_status_updated)
+
+    def _on_running_status_updated(self, text: str, is_warning: bool) -> None:
+        if self.running_dialog and self.running_dialog.dialog.isVisible():
+            self.running_dialog.update_status(text, is_warning)
 
     def open_record_dialog(self, on_stop_callback: Callable[[], None]) -> None:
         try:
             self.viewmodel.start_recording()
-            self.record_dialog = RecordDialog(self.main_window, on_stop_callback=on_stop_callback)
+            self.record_dialog = RecordDialog(
+                self.main_window,
+                on_stop_callback=on_stop_callback,
+                on_loop_toggle_callback=self.viewmodel.toggle_loop_recording,
+            )
             self.record_dialog.show()
             self.main_window.hide()
         except Exception as error:
@@ -56,11 +65,14 @@ class MainDialogManager:
         on_emergency_stop: Callable[[], None]
     ) -> None:
         try:
-            self.viewmodel.run_selected_macro(temp_commands)
+            # Why: ワーカースレッド起動前にダイアログを生成・表示し初期ステータス通知の取りこぼしを防止
             self.running_dialog = RunningDialog(self.main_window, on_stop_callback=on_emergency_stop)
             self.running_dialog.show()
             self.main_window.hide()
+            self.viewmodel.run_selected_macro(temp_commands)
         except Exception as error:
+            self.close_running_dialog_if_open()
+            self.restore_main_window()
             QMessageBox.critical(self.main_window, "エラー", f"実行の開始に失敗しました:\n{error}")
 
     def close_running_dialog_if_open(self) -> None:

@@ -79,9 +79,10 @@ def align_scroll_by_screen_match(
         cy = win_y + win_h // 2 if win_h > 100 else 540
 
         from pynput.mouse import Controller as MouseController
-        from core.executor.runner import MOUSEEVENTF_WHEEL, WHEEL_DELTA, _smooth_move
+        from core.executor.input_helper import smooth_move
+        from core.executor.physical_mouse_actions import MOUSEEVENTF_WHEEL, WHEEL_DELTA
 
-        _smooth_move(cx, cy, duration=0.06)
+        smooth_move(cx, cy, duration=0.06)
         time.sleep(0.04)
 
         mouse_ctrl = MouseController()

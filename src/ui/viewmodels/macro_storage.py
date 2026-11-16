@@ -22,6 +22,10 @@ def get_macros_root_path() -> Path:
         return Path(__file__).resolve().parent / "../../../macros"
 
 
+def get_workflow_dir(workflow_id: str) -> Path:
+    return get_macros_root_path() / workflow_id
+
+
 def natural_sort_key(s: str) -> List[Any]:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(s))]
 

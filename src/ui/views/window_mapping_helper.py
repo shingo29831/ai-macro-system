@@ -1,6 +1,6 @@
 """Module: @role: マクロ実行前の対象ウィンドウ抽出・グループ化およびWindowMappingDialogを通じたHWND解決を担当する。"""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import re
 from PySide6.QtWidgets import QDialog, QWidget
 
@@ -18,8 +18,14 @@ def _extract_app(t: str) -> str:
     return app if app else t.strip()
 
 
-def resolve_window_mapping(parent: QWidget, commands: List[Dict[str, Any]]) -> bool:
+def resolve_window_mapping(
+    parent: QWidget,
+    commands: List[Dict[str, Any]],
+    open_windows: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
     """コマンドリストから対象ウィンドウを抽出し、WindowMappingDialogを通じてHWNDと起動オプションを各コマンドへ反映する"""
+    if open_windows is None:
+        raise ValueError("open_windows must be provided via dependency injection")
     groups: Dict[str, Dict[str, Any]] = {}
 
     for cmd in commands:
@@ -52,17 +58,18 @@ def resolve_window_mapping(parent: QWidget, commands: List[Dict[str, Any]]) -> b
     if not unique_titles:
         return True
 
-    dialog = WindowMappingDialog(unique_titles, has_loop=has_loop, parent=parent)
+    dialog = WindowMappingDialog(unique_titles, has_loop=has_loop, parent=parent, open_windows=open_windows)
     if dialog.exec() != QDialog.Accepted:
         return False
 
     mapping = dialog.get_mapping()
-    loop_launch_each_time = dialog.get_loop_launch_each_time()
+    loop_launch_mapping = dialog.get_loop_launch_mapping()
 
     for grp in groups.values():
         disp = grp["display_title"]
         if disp in mapping:
             mapped_hwnd = mapping[disp]
+            should_launch_each_time = bool(mapped_hwnd == -1 and loop_launch_mapping.get(disp, False))
             for cmd in commands:
                 if cmd.get("method") == "activate_window":
                     c_args = cmd.get("args", {})
@@ -70,12 +77,7 @@ def resolve_window_mapping(parent: QWidget, commands: List[Dict[str, Any]]) -> b
                     c_alias = c_args.get("window_alias", "")
                     if c_title in grp["titles"] or (c_alias and c_alias in grp["aliases"]):
                         c_args["mapped_hwnd"] = mapped_hwnd
-                        # Why: 新規起動(-1)かつユーザーが希望した場合のみループ毎起動フラグを付与
-                        if mapped_hwnd == -1 and loop_launch_each_time:
-                            c_args["loop_launch_each_time"] = True
-                        else:
-                            c_args["loop_launch_each_time"] = False
-                        if loop_launch_each_time:
-                            c_args["loop_launch_each_time"] = True
+                        # Why: 新規起動(-1)かつ対象グループでユーザーが希望した場合のみループ毎起動フラグを付与
+                        c_args["loop_launch_each_time"] = should_launch_each_time
 
     return True
