@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from core.generator.system_ui_filter import is_system_ui_event
 
