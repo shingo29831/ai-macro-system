@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Set, Tuple
 
 from core.generator.form_snapshot_collector import FormSnapshotContext
+from core.shared.app_log_profile import AppProfile, detect_app_profile
 
 _INTERNAL_UI_KEYWORDS = [
     "contentselectdropdown", "select-popup", "datalist", "popup", "moz-", "chrome://",
@@ -38,14 +39,21 @@ def _resolve_snapshot_coords(
     return coords or (0, 0)
 
 
+def _get_last_browser_event(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for evt in reversed(events):
+        if detect_app_profile(evt) == AppProfile.BROWSER:
+            return evt
+    return events[-1] if events else {}
+
+
 def restore_missing_snapshot_elements(
     result: List[Dict[str, Any]],
     temp_workflow_info: List[Dict[str, Any]],
     state: FormSnapshotContext,
     processed_selectors: Set[str],
 ) -> List[Dict[str, Any]]:
-    # Why: フォーム末尾のイベントを参照して下部座標と正しい送信コンテキストを継承
-    ref_evt = temp_workflow_info[-1] if temp_workflow_info else {}
+    # Why: ブラウザフォーム末尾のイベントを参照して下部座標と正しいブラウザウィンドウ情報を継承
+    ref_evt = _get_last_browser_event(temp_workflow_info)
     ref_eid = ref_evt.get("event_id", "evt_auto")
     ref_win = ref_evt.get("window_name", "")
 
@@ -77,6 +85,10 @@ def restore_missing_snapshot_elements(
         snapshot_items.append((k, v_str))
 
     insert_pos = len(result)
+    for r_idx in range(len(result) - 1, -1, -1):
+        if detect_app_profile(result[r_idx]) == AppProfile.BROWSER:
+            insert_pos = r_idx + 1
+            break
     for r_idx, r_item in enumerate(result):
         if r_item.get("action") == "click_element" and any(
             b in str(r_item.get("selector", "")).lower() for b in ["submit", "btn", "button"]
@@ -161,35 +173,46 @@ def restore_missing_snapshot_elements(
     return finalize_form_order(result, temp_workflow_info, state)
 
 
+def _sort_form_inputs(inputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    indexed_inputs = list(enumerate(inputs))
+    indexed_inputs.sort(key=lambda pair: (
+        pair[1].get("cursor_y", pair[1].get("y", 0))
+        if pair[1].get("cursor_y", pair[1].get("y", 0)) > 45
+        else (10000 + pair[0])
+    ))
+    return [item for _, item in indexed_inputs]
+
+
 def finalize_form_order(
     result: List[Dict[str, Any]],
     temp_workflow_info: List[Dict[str, Any]],
     state: FormSnapshotContext,
 ) -> List[Dict[str, Any]]:
-    ref_evt = temp_workflow_info[-1] if temp_workflow_info else {}
+    ref_evt = _get_last_browser_event(temp_workflow_info)
     ref_eid = ref_evt.get("event_id", "evt_auto")
     ref_win = ref_evt.get("window_name", "")
 
-    form_inputs: List[Dict[str, Any]] = []
-    submit_buttons: List[Dict[str, Any]] = []
-    other_actions: List[Dict[str, Any]] = []
-
+    # Why: 非ブラウザイベントの前後・中間の時系列位置を完全保持しつつ、ブラウザ区間内のみを整流化
+    runs: List[Tuple[bool, List[Dict[str, Any]]]] = []
     for item in result:
-        act = item.get("action")
-        sel = str(item.get("selector", "")).lower()
-        if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
-            submit_buttons.append(item)
-        elif item.get("raw_action") == "browser_action" and act in ["type_text", "select_option", "set_checkbox"]:
-            form_inputs.append(item)
+        is_br = detect_app_profile(item) == AppProfile.BROWSER
+        if runs and runs[-1][0] == is_br:
+            runs[-1][1].append(item)
         else:
-            other_actions.append(item)
+            runs.append((is_br, [item]))
 
-    has_submit_btn = any(
-        r.get("action") == "click_element"
-        and any(k in str(r.get("selector", "")).lower() for k in ["submit", "btn"])
-        for r in result
-    )
-    if not has_submit_btn:
+    submit_buttons: List[Dict[str, Any]] = []
+    last_browser_run_idx = -1
+    for r_idx, (is_br, items) in enumerate(runs):
+        if is_br:
+            last_browser_run_idx = r_idx
+            for item in items:
+                act = item.get("action")
+                sel = str(item.get("selector", "")).lower()
+                if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
+                    submit_buttons.append(item)
+
+    if not submit_buttons and last_browser_run_idx >= 0:
         for s_key, s_data in state.scanned_elements_map.items():
             s_sel = str(s_data.get("selector", "")).lower()
             s_name = str(s_data.get("element_name", "")).lower()
@@ -226,15 +249,25 @@ def finalize_form_order(
                 })
                 break
 
-    if form_inputs:
-        # Why: 辞書検索index()を完全排除しタプルインデックスで安全かつ安定に整流化
-        indexed_inputs = list(enumerate(form_inputs))
-        indexed_inputs.sort(key=lambda pair: (
-            pair[1].get("cursor_y", pair[1].get("y", 0))
-            if pair[1].get("cursor_y", pair[1].get("y", 0)) > 45
-            else (10000 + pair[0])
-        ))
-        form_inputs = [item for _, item in indexed_inputs]
+    ordered_output: List[Dict[str, Any]] = []
+    for r_idx, (is_br, items) in enumerate(runs):
+        if not is_br:
+            ordered_output.extend(items)
+            continue
+        run_inputs: List[Dict[str, Any]] = []
+        run_others: List[Dict[str, Any]] = []
+        for item in items:
+            act = item.get("action")
+            sel = str(item.get("selector", "")).lower()
+            if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
+                continue
+            elif item.get("raw_action") == "browser_action" and act in ["type_text", "select_option", "set_checkbox"]:
+                run_inputs.append(item)
+            else:
+                run_others.append(item)
+        ordered_output.extend(run_others)
+        ordered_output.extend(_sort_form_inputs(run_inputs))
+        if r_idx == last_browser_run_idx:
+            ordered_output.extend(submit_buttons)
 
-    # Why: form_inputsの有無に関わらず末尾送信ボタンを常に結合保証
-    return other_actions + form_inputs + submit_buttons
+    return ordered_output

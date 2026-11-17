@@ -4,6 +4,13 @@ import re
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.shared.app_log_profile import (
+    AppProfile,
+    detect_app_profile,
+    get_app_log_policy,
+    has_explicit_app_identity,
+)
+
 IGNORE_EXACT_KEYS = {
     "tab", "enter", "delete", "esc", "shift", "ctrl", "alt",
     "win", "cmd", "left_click", "right_click", "middle_click",
@@ -136,6 +143,17 @@ def resolve_session_final_text(
     has_suggest_selection: bool,
     any_ime_active: bool,
 ) -> str:
+    session_profile = AppProfile.DESKTOP
+    session_source: Optional[Dict[str, Any]] = None
+    session_has_identity = False
+    for s_item in session:
+        if has_explicit_app_identity(s_item):
+            session_profile = detect_app_profile(s_item)
+            session_source = s_item
+            session_has_identity = True
+            break
+    policy = get_app_log_policy(session_profile, source=session_source)
+
     confirmed_queries: List[str] = []
     latest_uia_text = ""
 
@@ -147,44 +165,56 @@ def resolve_session_final_text(
             if candidates and has_suggest_selection and not val:
                 val = candidates[0]
             if val and str(val).strip():
+                # Why: 非ブラウザでもextract_search_queryを通すことでクエリ無しURL・ドメイン文字列の誤採用を防止
                 extracted, is_url_query = extract_search_query(str(val).strip())
                 if extracted:
-                    if is_url_query and extracted not in confirmed_queries:
-                        confirmed_queries.append(extracted)
-                    elif not is_url_query and not latest_uia_text:
+                    if is_url_query:
+                        if policy.use_search_query_inference and extracted not in confirmed_queries:
+                            confirmed_queries.append(extracted)
+                    elif not latest_uia_text:
                         latest_uia_text = extracted
 
         app_ctx = get_app_context(item)
         if app_ctx:
-            title_q = extract_query_from_title(str(app_ctx.get("element_name") or ""))
-            if title_q and title_q not in confirmed_queries:
-                confirmed_queries.append(title_q)
+            if policy.use_search_query_inference:
+                title_q = extract_query_from_title(str(app_ctx.get("element_name") or ""))
+                if title_q and title_q not in confirmed_queries:
+                    confirmed_queries.append(title_q)
 
             ctrl_type = str(app_ctx.get("control_type", "")).lower()
             if any(t in ctrl_type for t in ["button", "window", "listitem"]):
                 continue
 
-            val = app_ctx.get("value") or app_ctx.get("text") or app_ctx.get("url")
+            val = app_ctx.get("value") or app_ctx.get("text") or (app_ctx.get("url") if policy.use_search_query_inference else None)
             if val and str(val).strip():
                 extracted, is_url_query = extract_search_query(str(val).strip())
                 if extracted:
-                    if is_url_query and extracted not in confirmed_queries:
-                        confirmed_queries.insert(0, extracted)
-                    elif not is_url_query and not latest_uia_text:
+                    if is_url_query:
+                        if policy.use_search_query_inference and extracted not in confirmed_queries:
+                            confirmed_queries.insert(0, extracted)
+                    elif not latest_uia_text:
                         latest_uia_text = extracted
 
     confirmed_future_queries: List[str] = []
     future_elem_text = ""
-    # Why: セッション空配列時のsession[0]参照によるIndexErrorを防止
+    # Why: セッション空配列時のsession[0]参照によるIndexErrorを防止し、全プロファイル対称で別アプリ遷移時に走査終了
     if future_events and session:
         first_ctx = get_app_context(session[0])
         target_elem = first_ctx.get("element_name", "")
         target_sel = first_ctx.get("css_selector", "")
         for f_evt in future_events[:15]:
+            if has_explicit_app_identity(f_evt):
+                f_prof = detect_app_profile(f_evt)
+                if f_prof == AppProfile.SYSTEM:
+                    continue
+                if session_has_identity and f_prof != session_profile:
+                    break
+
             f_win = f_evt.get("window_name") or f_evt.get("WindowName", "")
-            title_q = extract_query_from_title(f_win)
-            if title_q and title_q not in confirmed_future_queries:
-                confirmed_future_queries.append(title_q)
+            if policy.use_search_query_inference:
+                title_q = extract_query_from_title(f_win)
+                if title_q and title_q not in confirmed_future_queries:
+                    confirmed_future_queries.append(title_q)
 
             f_act = f_evt.get("raw_action", "")
             f_ctx = get_app_context(f_evt)
@@ -199,20 +229,21 @@ def resolve_session_final_text(
             if f_val and isinstance(f_val, str) and f_val.strip() and not future_elem_text:
                 if (target_elem and f_name == target_elem) or (target_sel and f_sel == target_sel):
                     future_elem_text = f_val.strip()
-            if not future_elem_text and target_sel:
+            if not future_elem_text and target_sel and policy.use_form_snapshot:
                 for snap_dict in [f_ctx.get("form_snapshot"), f_ctx.get("committed_values")]:
                     if isinstance(snap_dict, dict) and snap_dict.get(target_sel):
                         future_elem_text = str(snap_dict[target_sel]).strip()
                         break
 
-            for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
-                if url_candidate and isinstance(url_candidate, str):
-                    extracted, is_url_query = extract_search_query(url_candidate)
-                    if is_url_query and extracted and extracted not in confirmed_future_queries:
-                        confirmed_future_queries.append(extracted)
+            if policy.use_search_query_inference:
+                for url_candidate in [f_ctx.get("url"), f_ctx.get("value"), f_ctx.get("text"), f_ctx.get("element_name")]:
+                    if url_candidate and isinstance(url_candidate, str):
+                        extracted, is_url_query = extract_search_query(url_candidate)
+                        if is_url_query and extracted and extracted not in confirmed_future_queries:
+                            confirmed_future_queries.append(extracted)
 
-            if f_ctx.get("query") and f_ctx["query"] not in confirmed_future_queries:
-                confirmed_future_queries.append(f_ctx["query"])
+                if f_ctx.get("query") and f_ctx["query"] not in confirmed_future_queries:
+                    confirmed_future_queries.append(f_ctx["query"])
 
     has_actual_chars = any(
         str(item.get("semantic_role", "")).lower() not in IGNORE_EXACT_KEYS

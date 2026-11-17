@@ -7,10 +7,16 @@ import queue
 
 from core.recorder import screen_capturer, window_inspector
 from core.recorder.ime_detector import is_ime_active
+from core.recorder.mouse_action_processor import get_app_context as _shared_get_app_context
 from core.recorder.state import state
 from core.recorder.utils import now_datetime, make_combo_text
 from core.recorder.log_builder import build_base_log
-from core.recorder.app_inspectors.inspector_factory import InspectorFactory
+from core.shared.app_log_profile import (
+    AppProfile,
+    LogChannel,
+    detect_app_profile,
+    get_app_log_policy,
+)
 from core.shared.screen_capture import take_screenshot
 
 logger = logging.getLogger(__name__)
@@ -36,46 +42,8 @@ from core.recorder.mouse_event_handler import (
 )
 
 def _get_app_context(window_info: dict, x: int | None = None, y: int | None = None) -> dict | None:
-    """該当アプリケーション専用のインスペクターがあれば、それを実行してコンテキストを取得する"""
-    context = None
-    inspector = InspectorFactory.get_inspector(window_info)
-    if inspector:
-        try:
-            context = inspector.inspect(window_info, x=x, y=y)
-        except Exception as e:
-            print(f"Inspector error: {e}")
-
-    # インスペクターが無い、またはテキストが取得できなかった場合のフォールバック
-    if not context or not context.get("text"):
-        try:
-            from core.recorder.uia_scanner import get_focused_element_info
-            focused_info = get_focused_element_info()
-            if focused_info and not focused_info.get("error"):
-                c_name = focused_info.get("name", "")
-                c_type = focused_info.get("control_type", "")
-                # Why: ボタン等の非入力コントロールやシステムUIがテキストとして誤混入するのを防止
-                if "button" not in c_type.lower() and not window_inspector.should_ignore_window(c_name):
-                    if context is None:
-                        context = {
-                            "app": "GenericUIA",
-                            "element_name": c_name,
-                            "control_type": c_type,
-                            "text": focused_info.get("value", "") or c_name,
-                            "value": focused_info.get("value", ""),
-                        }
-                    else:
-                        val = focused_info.get("value", "") or c_name
-                        if val:
-                            context["text"] = val
-                            context["value"] = focused_info.get("value", "")
-                        if not context.get("element_name") and c_name:
-                            context["element_name"] = c_name
-                        if not context.get("control_type") and c_type:
-                            context["control_type"] = c_type
-        except Exception as e:
-            print(f"UIA fallback error: {e}")
-
-    return context
+    """mouse_action_processorと共通化されたアプリプロファイル対応コンテキスト取得を委譲呼び出しする"""
+    return _shared_get_app_context(window_info, x=x, y=y)
 
 
 def flush_typing_buffer(trigger_reason: str) -> None:
@@ -188,6 +156,12 @@ def process_uia_event(info: dict):
         if window_inspector.should_ignore_window(window_info.get("title")):
             return
 
+        # Why: Excel操作時はCOMイベントを優先してUIA_SCANを除外し、Word等の非Excel系OfficeではUIA_SCANを許可
+        app_profile = detect_app_profile(window_info)
+        policy = get_app_log_policy(app_profile, source=window_info)
+        if LogChannel.UIA_SCAN not in policy.allowed_channels:
+            return
+
         event_no = state.get_next_event_no()
         dt = now_datetime()
 
@@ -206,12 +180,56 @@ def process_uia_event(info: dict):
         traceback.print_exc()
 
 
+def _find_recent_excel_window_info() -> dict | None:
+    """フォーカス喪失時のOnSheetChange救出用に、直近のExcel入力イベントからウィンドウ情報を復元する。"""
+    with state.input_logs_lock:
+        recent_logs = list(state.input_logs[-6:])
+    for prev_log in reversed(recent_logs):
+        prev_type = str(prev_log.get("Type", "")).lower()
+        if "office" in prev_type or "recording" in prev_type:
+            continue
+        if get_app_log_policy(detect_app_profile(prev_log), source=prev_log).use_office_com:
+            if any(k in prev_type for k in ("key", "type", "click", "drag")):
+                win_coords = prev_log.get("WindowCoordinates") or {"x": 0, "y": 0}
+                win_size = prev_log.get("WindowSize") or {"width": 0, "height": 0}
+                return {
+                    "title": prev_log.get("WindowName", ""),
+                    "process_name": prev_log.get("ProcessName", ""),
+                    "command_line": prev_log.get("WindowCommandLine", ""),
+                    "rect": {
+                        "left": win_coords.get("x", 0),
+                        "top": win_coords.get("y", 0),
+                        "right": win_coords.get("x", 0) + win_size.get("width", 0),
+                        "bottom": win_coords.get("y", 0) + win_size.get("height", 0),
+                    },
+                    "size": win_size,
+                    "coordinates": win_coords,
+                    "is_maximized": prev_log.get("IsMaximized", False),
+                    "monitor": prev_log.get("Monitor"),
+                }
+    return None
+
+
 def process_office_event(info: dict):
     """Excel等からCOM経由で受け取ったイベント情報をログに記録する"""
     try:
+        msg = str(info.get("message", ""))
+        if info.get("event_type") == "system" or "[System]" in msg:
+            return
+
         window_info = window_inspector.get_foreground_window_info()
         if window_inspector.should_ignore_window(window_info.get("title")):
             return
+
+        fg_profile = detect_app_profile(window_info)
+        fg_policy = get_app_log_policy(fg_profile, source=window_info)
+        if not fg_policy.use_office_com:
+            # Why: セル入力直後に別ウィンドウクリックでフォーカス喪失発火したOnSheetChangeのみ直近Excel情報を引き継いで救出
+            is_cell_change = info.get("event_type") == "cell_change" or "入力確定" in msg
+            rescued_win = _find_recent_excel_window_info() if is_cell_change else None
+            if not rescued_win:
+                return
+            window_info = rescued_win
 
         event_no = state.get_next_event_no()
         dt = now_datetime()

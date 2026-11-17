@@ -26,6 +26,7 @@ def _empty_window_info(error: str) -> dict:
         "process_id": None,
         "process_name": "",
         "exe_path": "",
+        "command_line": "",
         "rect": {"left": 0, "top": 0, "right": 0, "bottom": 0},
         "size": {"width": 0, "height": 0},
         "coordinates": {"x": 0, "y": 0},
@@ -144,6 +145,7 @@ def build_recording_window_fields(
 
     return {
         "WindowName": window_info.get("title", ""),
+        "ProcessName": window_info.get("process_name", ""),
         "WindowCommandLine": window_info.get("command_line", ""),
         "WindowSize": {
             "width": int(window_info.get("size", {}).get("width", 0)),
@@ -171,6 +173,8 @@ def get_window_title_at_point(x: int, y: int) -> dict:
                 "title": "",
                 "hwnd": 0,
                 "class_name": "",
+                "process_name": "",
+                "command_line": "",
                 "root_hwnd": 0,
                 "root_title": "",
                 "root_class_name": "",
@@ -197,11 +201,30 @@ def get_window_title_at_point(x: int, y: int) -> dict:
         root_title = root_title_buffer.value or ""
         display_title = root_title or title
 
+        target_hwnd = int(root_hwnd) if root_hwnd else int(hwnd)
+        process_name = ""
+        command_line = ""
+        if target_hwnd and psutil is not None:
+            try:
+                pid = ctypes.c_ulong()
+                user32.GetWindowThreadProcessId(target_hwnd, ctypes.byref(pid))
+                if pid.value:
+                    proc = psutil.Process(int(pid.value))
+                    process_name = proc.name() or ""
+                    cmdline = proc.cmdline()
+                    if cmdline:
+                        cmdline[0] = f'"{cmdline[0]}"'
+                        command_line = " ".join(cmdline)
+            except Exception:
+                pass
+
         return {
             "success": True,
             "title": display_title,
             "hwnd": int(hwnd),
             "class_name": class_buffer.value or "",
+            "process_name": process_name,
+            "command_line": command_line,
             "root_hwnd": int(root_hwnd) if root_hwnd else 0,
             "root_title": root_title,
             "root_class_name": root_class_buffer.value or "",
@@ -214,6 +237,8 @@ def get_window_title_at_point(x: int, y: int) -> dict:
             "title": "",
             "hwnd": 0,
             "class_name": "",
+            "process_name": "",
+            "command_line": "",
             "root_hwnd": 0,
             "root_title": "",
             "root_class_name": "",

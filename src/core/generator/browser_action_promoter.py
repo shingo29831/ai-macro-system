@@ -1,38 +1,49 @@
 """Module: @role: クリック要素コンテキストの入力イベント継承、ブラウザアクション昇格、および昇格後キーノイズ除去を担当する。"""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from core.shared.app_log_profile import AppProfile, detect_app_profile, has_explicit_app_identity
 from core.shared.os_env import is_link_or_url, normalize_text_width
+from core.shared.window_utils import is_browser_window
 
 
 def inherit_click_context_before_form(temp_workflow_info: List[Dict[str, Any]]) -> None:
-    # Why: 入力コンテキストは真のクリック操作のみから継承しホバーによるすり替わりを完全防止
+    # Why: 同一アプリ種別内のみクリックコンテキストを継承し、ブラウザからOffice/Desktopへのセレクタ漏洩を完全防止
     last_clk_ctx: Dict[str, Any] = {}
     last_clk_win = ""
+    last_clk_prof: Optional[AppProfile] = None
     for info in temp_workflow_info:
         act = info.get("raw_action", "")
         w_name = info.get("window_name", "")
+        has_id = has_explicit_app_identity(info)
+        cur_prof = detect_app_profile(info) if has_id else last_clk_prof
         c = info.get("app_context") or {}
         elem = c.get("element_name") or ""
         sel = c.get("css_selector") or ""
+
+        if has_id and last_clk_prof is not None and cur_prof != last_clk_prof:
+            last_clk_ctx = {}
+            last_clk_win = ""
+            last_clk_prof = cur_prof
 
         if act == "click":
             if sel or elem or c.get("xpath"):
                 last_clk_ctx = c.copy()
                 last_clk_win = w_name
+                last_clk_prof = cur_prof
         elif act in ["type_text", "key_combo", "key_down", "key_press"] and last_clk_ctx:
-            # Why: ブラウザ遷移直後の空ウィンドウ名に対しても安全にコンテキストを伝播
             is_win_match = (
                 (w_name == last_clk_win)
-                or not last_clk_win
-                or not w_name
-                or any(b in (w_name + last_clk_win).lower() for b in ["firefox", "chrome", "edge"])
+                or (not last_clk_win and cur_prof == last_clk_prof)
+                or (not w_name and cur_prof == last_clk_prof)
+                or (is_browser_window(w_name) and is_browser_window(last_clk_win))
             )
             if is_win_match:
                 i_ctx = info.setdefault("app_context", {})
-                # Why: 自身がセレクタを持たない場合のみ直前クリックの全コンテキストを安全に継承
+                allow_dom_sel = cur_prof == AppProfile.BROWSER
+                keys_to_copy = ["css_selector", "xpath", "element_name", "control_type"] if allow_dom_sel else ["element_name", "control_type"]
                 if not i_ctx.get("css_selector") and not i_ctx.get("xpath"):
-                    for k in ["css_selector", "xpath", "element_name", "control_type"]:
+                    for k in keys_to_copy:
                         if last_clk_ctx.get(k):
                             i_ctx[k] = last_clk_ctx[k]
                 elif i_ctx.get("css_selector") == last_clk_ctx.get("css_selector"):
@@ -43,21 +54,28 @@ def inherit_click_context_before_form(temp_workflow_info: List[Dict[str, Any]]) 
 
 
 def bind_click_context_to_inputs(temp_workflow_info: List[Dict[str, Any]]) -> None:
-    # Why: 直前クリック先要素のセレクタ・コンテキストを入力イベント(type_text)へ安全にバインド
+    # Why: 直前クリック先要素のセレクタ・コンテキストを同一アプリ種別の入力イベントへ安全にバインド
     last_browser_click_ctx: Dict[str, Any] = {}
     last_browser_win = ""
+    last_prof: Optional[AppProfile] = None
     for info in temp_workflow_info:
         act = info.get("raw_action", "")
         w_name = info.get("window_name", "")
+        has_id = has_explicit_app_identity(info)
+        cur_prof = detect_app_profile(info) if has_id else last_prof
+        if has_id and last_prof is not None and cur_prof != last_prof:
+            last_browser_click_ctx = {}
+            last_browser_win = ""
+            last_prof = cur_prof
         if act == "click":
             ctx = info.get("app_context") or {}
-            # Why: ドロップダウンや別コンテナのクリックをテキスト欄へ誤付与しない
             c_type = str(ctx.get("control_type", "")).lower()
             if "combobox" not in c_type and (ctx.get("css_selector") or ctx.get("xpath") or ctx.get("element_name")):
                 last_browser_click_ctx = ctx.copy()
                 last_browser_win = w_name
+                last_prof = cur_prof
         elif act in ["type_text", "key_combo"] and last_browser_click_ctx:
-            if w_name == last_browser_win:
+            if w_name == last_browser_win and cur_prof == last_prof:
                 if not info.get("app_context"):
                     info["app_context"] = last_browser_click_ctx.copy()
                 else:
@@ -74,10 +92,7 @@ def promote_browser_actions(temp_workflow_info: List[Dict[str, Any]], strategy: 
     for info in temp_workflow_info:
         act = info.get("raw_action", "")
         app_ctx = info.get("app_context") or {}
-        win_name = info.get("window_name", "").lower()
-        is_browser = app_ctx.get("app") == "Browser" or any(
-            b in win_name for b in ["firefox", "chrome", "edge", "brave", "opera"]
-        )
+        is_browser = detect_app_profile(info) == AppProfile.BROWSER
 
         # Why: ビジュアル戦略時はブラウザアクションへの過剰昇格を抑え高精度な画面照合を保持
         if is_browser and strategy != "visual":

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 
 from models.data_types import AppConfig
+from core.generator.app_log_router import route_raw_logs_by_active_app
 from core.generator.event_parser import parse_raw_event
 from core.generator.typing_aggregator import TypingSessionAggregator
 from core.generator.macro_builder import build_and_save_macro
@@ -18,13 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """マクロで実行・再現する可能性のないノイズログ（過渡マウス移動、クリック直前移動、孤立制御キー、システムUI等）を完全排除する。"""
+    """マクロで実行・再現する可能性のないノイズログおよび非アクティブアプリの不適合チャネルログを事前排除する。"""
     if not raw_logs:
         return []
 
+    routed_logs = route_raw_logs_by_active_app(raw_logs)
     valid_candidates: List[Dict[str, Any]] = []
 
-    for entry in raw_logs:
+    for entry in routed_logs:
         if not isinstance(entry, dict):
             continue
         raw_type = str(entry.get("Type", "")).lower()

@@ -51,6 +51,39 @@ GENERATOR_SYSTEM_CONTAINS = [
 
 BROWSER_KEYWORDS = ("firefox", "chrome", "edge", "brave", "opera")
 
+_BROWSER_WORD_RE = re.compile(
+    r"(?:^|[\s\b])(firefox|chrome|msedge|edge|brave|opera)(?:$|[\s\b])",
+    re.IGNORECASE,
+)
+
+_NON_BROWSER_APP_SUFFIXES = frozenset({
+    "visual studio code",
+    "code",
+    "notepad",
+    "メモ帳",
+    "notepad++",
+    "explorer",
+    "エクスプローラー",
+    "excel",
+    "microsoft excel",
+    "word",
+    "microsoft word",
+    "powerpoint",
+    "microsoft powerpoint",
+    "outlook",
+    "microsoft outlook",
+    "access",
+    "microsoft access",
+    "powershell",
+    "windows powershell",
+    "コマンド プロンプト",
+    "cmd",
+    "terminal",
+    "windows terminal",
+    "pycharm",
+    "cursor",
+})
+
 
 def extract_app_name(title: str, default: str = "") -> str:
     """ウィンドウタイトルの区切り文字以降からアプリケーション名を抽出する。"""
@@ -65,8 +98,15 @@ def is_browser_window(title: str) -> bool:
     """ウィンドウタイトルが主要ブラウザを示すかを判定する。"""
     if not title:
         return False
-    lower = title.lower()
-    return any(b in lower for b in BROWSER_KEYWORDS)
+    segments = [s.strip() for s in re.split(r"[\-—–―]", title) if s.strip()]
+    if not segments:
+        return False
+    app_tail = segments[-1].lower()
+    # Why: 非ブラウザアプリのファイル名に含まれる単語(chrome_driver.py, knowledge, operation等)の誤爆を防止
+    if app_tail in _NON_BROWSER_APP_SUFFIXES:
+        return False
+    check_targets = segments[-2:] if len(segments) >= 2 else segments
+    return any(bool(_BROWSER_WORD_RE.search(seg)) for seg in check_targets)
 
 
 def is_system_shell_window(title: str, check_keywords_for_browser: bool = False) -> bool:

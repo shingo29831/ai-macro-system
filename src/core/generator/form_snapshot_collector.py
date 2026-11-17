@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.generator.form_value_evaluator import evaluate_form_value
+from core.shared.app_log_profile import AppProfile, detect_app_profile
 
 
 @dataclass
@@ -87,6 +88,8 @@ def collect_form_snapshot_context(
     post_submit_reset_detected = False
 
     for info in temp_workflow_info:
+        if detect_app_profile(info) != AppProfile.BROWSER:
+            continue
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
         ename = str(ctx.get("element_name") or info.get("element_name") or "").strip()
@@ -142,6 +145,8 @@ def _collect_and_evaluate_candidates(
     config: Optional[Any] = None,
 ) -> None:
     for info in temp_workflow_info:
+        if detect_app_profile(info) != AppProfile.BROWSER:
+            continue
         ctx = info.get("app_context") or {}
         sel = ctx.get("css_selector") or info.get("selector") or ""
         elem_name = str(ctx.get("element_name") or info.get("element_name") or "").strip()

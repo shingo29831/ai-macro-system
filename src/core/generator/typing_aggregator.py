@@ -16,6 +16,7 @@ from core.generator.typing_session_helpers import (
     propagate_click_context,
     resolve_session_final_text,
 )
+from core.shared.app_log_profile import detect_app_profile, has_explicit_app_identity
 
 logger = logging.getLogger(__name__)
 
@@ -122,9 +123,15 @@ class TypingSessionAggregator:
         diff_val = get_event_diff_val(event)
         time_diff = current_ts - last_ts if current_ts > 0 and last_ts > 0 else 0
 
-        # Why: サジェスト展開による画面差分や要素名変化で入力セッションが細切れになるのを防止
+        profile_switched = (
+            has_explicit_app_identity(last_event)
+            and has_explicit_app_identity(event)
+            and detect_app_profile(last_event) != detect_app_profile(event)
+        )
+
+        # Why: 明示的なアプリプロファイル切り替え時や別ウィンドウ遷移時は確実にセッションを分割
         is_ongoing_typing = action in ["key_down", "key_press", "key_combo"] and time_diff < 1500
-        if current_window and last_window and current_window != last_window:
+        if profile_switched or (current_window and last_window and current_window != last_window):
             self._flush_session(current_session, aggregated_events, future_events=future_events)
         elif not is_ongoing_typing and diff_val > 15.0 and time_diff > 500:
             self._flush_session(current_session, aggregated_events, future_events=future_events)

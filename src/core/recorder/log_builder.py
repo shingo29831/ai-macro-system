@@ -5,6 +5,11 @@ import logging
 from datetime import datetime
 from core.recorder import macro_path_manager, process_monitor, screen_capturer
 from core.recorder.state import state
+from core.shared.app_log_profile import (
+    detect_app_profile,
+    resolve_log_channels,
+    sanitize_context_for_profile,
+)
 from core.shared.os_env import get_wheel_scroll_settings
 from core.shared.screen_capture import calculate_diff_percent, take_screenshot
 
@@ -12,16 +17,33 @@ logger = logging.getLogger(__name__)
 
 def build_base_log(event_no: str, dt: datetime, input_type: str, content: dict | None, window_info: dict, cursor_x: int | None = None, cursor_y: int | None = None, app_specific_context: dict | None = None) -> dict:
     window_fields = process_monitor.build_recording_window_fields(window_info, cursor_x=cursor_x, cursor_y=cursor_y)
+    profile_source = {
+        "process_name": window_fields.get("ProcessName") or window_info.get("process_name", ""),
+        "command_line": window_fields.get("WindowCommandLine") or window_info.get("command_line", ""),
+        "title": window_fields.get("WindowName", ""),
+        "Type": input_type,
+        "AppSpecificContext": app_specific_context,
+    }
+    app_profile = detect_app_profile(profile_source)
+    sanitized_ctx = sanitize_context_for_profile(app_profile, app_specific_context, source_info=profile_source)
+    primary_channel, active_channels = resolve_log_channels(
+        input_type, app_profile, sanitized_ctx, source=profile_source
+    )
     return {
         "EventNo": event_no,
         "TimeStamp": dt.isoformat(),
         "Type": input_type,
         "Content": content,
         "WindowName": window_fields["WindowName"],
+        "ProcessName": window_fields.get("ProcessName") or window_info.get("process_name", ""),
+        "WindowCommandLine": window_fields.get("WindowCommandLine") or window_info.get("command_line", ""),
+        "AppProfile": app_profile.value,
+        "LogChannel": primary_channel.value,
+        "ActiveChannels": active_channels,
         "WindowSize": window_fields["WindowSize"],
         "WindowCoordinates": window_fields["WindowCoordinates"],
         "CursorCoordinates": window_fields["CursorCoordinates"],
-        "AppSpecificContext": app_specific_context,
+        "AppSpecificContext": sanitized_ctx,
         "Images": {"Pre": None, "Crop": None, "Diff": None},
     }
 
@@ -32,6 +54,16 @@ def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy:
         point_window = process_monitor.get_foreground_window_info()
 
     window_fields = process_monitor.build_recording_window_fields(point_window, cursor_x=x, cursor_y=y)
+    profile_source = {
+        "process_name": window_fields.get("ProcessName") or (point_window or {}).get("process_name", ""),
+        "command_line": window_fields.get("WindowCommandLine") or (point_window or {}).get("command_line", ""),
+        "title": window_fields.get("WindowName", ""),
+        "Type": "mouse_scroll",
+    }
+    app_profile = detect_app_profile(profile_source)
+    primary_channel, active_channels = resolve_log_channels(
+        "mouse_scroll", app_profile, None, source=profile_source
+    )
 
     direction = "none"
     if dy > 0: direction = "up"
@@ -55,6 +87,11 @@ def build_scroll_log(event_no: str, dt: datetime, x: int, y: int, dx: float, dy:
             "is_page_scroll": scroll_settings.get("is_page_scroll", False),
         },
         "WindowName": window_fields["WindowName"],
+        "ProcessName": window_fields.get("ProcessName") or (point_window or {}).get("process_name", ""),
+        "WindowCommandLine": window_fields.get("WindowCommandLine") or (point_window or {}).get("command_line", ""),
+        "AppProfile": app_profile.value,
+        "LogChannel": primary_channel.value,
+        "ActiveChannels": active_channels,
         "WindowSize": window_fields["WindowSize"],
         "WindowCoordinates": window_fields["WindowCoordinates"],
         "CursorCoordinates": window_fields["CursorCoordinates"],

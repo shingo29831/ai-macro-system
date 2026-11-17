@@ -9,6 +9,7 @@ from core.generator.form_value_evaluator import (
     is_system_ui_event,
     select_candidate_with_llm,
 )
+from core.shared.app_log_profile import AppProfile, detect_app_profile
 
 __all__ = [
     "is_system_ui_event",
@@ -139,6 +140,8 @@ def _consume_following_selector_events(
     n = len(temp_workflow_info)
     while j < n:
         nxt = temp_workflow_info[j]
+        if detect_app_profile(nxt) != AppProfile.BROWSER:
+            break
         n_sel = (nxt.get("app_context") or {}).get("css_selector") or nxt.get("selector") or ""
         n_act = nxt.get("raw_action", "")
         n_name = str((nxt.get("app_context") or {}).get("element_name") or "").strip()
@@ -279,6 +282,8 @@ def _try_convert_to_input_action(
 
     while result:
         prev_item = result[-1]
+        if detect_app_profile(prev_item) != AppProfile.BROWSER:
+            break
         p_act = prev_item.get("raw_action", "")
         p_sel = (prev_item.get("app_context") or {}).get("css_selector") or prev_item.get("selector") or ""
         if p_act in ["type_text", "key_down", "key_press", "press_key", "key_combo"] and (
@@ -307,7 +312,7 @@ def _try_convert_to_input_action(
 
 def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], config: Optional[Any] = None) -> List[Dict[str, Any]]:
     # Why: ハードコードを完全排除しコントロール種別と最新確定値に基づく普遍的なフォーム最適化
-    if not temp_workflow_info:
+    if not temp_workflow_info or not any(detect_app_profile(e) == AppProfile.BROWSER for e in temp_workflow_info):
         return temp_workflow_info
 
     state = collect_form_snapshot_context(temp_workflow_info, config=config)
@@ -318,6 +323,11 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
 
     while i < n:
         info = temp_workflow_info[i]
+        # Why: 非ブラウザイベント(Excel/Desktop等)は変換・除外せず元の時系列位置にそのまま保持
+        if detect_app_profile(info) != AppProfile.BROWSER:
+            result.append(info)
+            i += 1
+            continue
         act, ctx, sel, c_type, elem_name, scanned_elem = _resolve_element_metadata(info, state)
 
         if is_system_ui_event(info) or (sel and sel in processed_selectors):

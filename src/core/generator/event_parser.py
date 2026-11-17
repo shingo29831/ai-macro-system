@@ -10,6 +10,13 @@ from models.data_types import (
     InteractedUiElement, BoundingBox, ActionDetail,
     ContextComponent
 )
+from core.shared.app_log_profile import (
+    AppProfile,
+    detect_app_profile,
+    resolve_log_channels,
+    sanitize_context_for_profile,
+)
+from core.shared.window_utils import is_browser_window
 from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
 
@@ -25,9 +32,10 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         
     window_name = log_entry.get("WindowName") or "Unknown Window"
     command_line = log_entry.get("WindowCommandLine", "")
+    app_profile = detect_app_profile(log_entry)
     # Why: 「Google 検索」等のWebページタイトルがシステム検索窓と誤爆除外されるのを防止
     w_lower = window_name.lower().strip()
-    is_browser = any(b in w_lower for b in ["firefox", "chrome", "edge", "brave", "opera"])
+    is_browser = app_profile == AppProfile.BROWSER or is_browser_window(window_name)
     system_exact = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
     system_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
     if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
@@ -54,7 +62,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
 
     raw_type = str(log_entry.get("Type", ""))
     content_data = log_entry.get("Content") or {}
-    app_context = log_entry.get("AppSpecificContext") or log_entry.get("appSpecificContext") or {}
+    raw_app_context = log_entry.get("AppSpecificContext") or log_entry.get("appSpecificContext") or {}
+    app_context = sanitize_context_for_profile(app_profile, raw_app_context, source_info=log_entry) or {}
     
     raw_screen_coords = content_data.get("screen_coordinates") if isinstance(content_data, dict) else None
     if raw_screen_coords:
@@ -156,6 +165,13 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     images_data = log_entry.get("Images") or {}
     crop_path_str = images_data.get("Crop")
     pre_img_path_str = images_data.get("Pre")
+    primary_channel, active_channels = resolve_log_channels(
+        raw_type=raw_type,
+        app_profile=app_profile,
+        app_context=app_context,
+        has_crop_image=bool(crop_path_str and crop_path_str != "切り抜き失敗"),
+        source=log_entry,
+    )
 
     raw_diff = images_data.get("Diff", "0.0%")
     try:
@@ -266,7 +282,13 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         "win_w": win_size_data.get("width", 0),
         "win_h": win_size_data.get("height", 0),
         "ime_active": ime_active,
+        "content": content_data if isinstance(content_data, dict) else {},
+        "office_info": content_data.get("office_info") if isinstance(content_data, dict) else None,
         "app_context": app_context,
+        "app_profile": app_profile.value,
+        "log_channel": log_entry.get("LogChannel") or primary_channel.value,
+        "active_channels": log_entry.get("ActiveChannels") or active_channels,
+        "process_name": log_entry.get("ProcessName") or "",
         "window_name": window_name,
         "command_line": command_line,
         "integrated_event": integrated_event

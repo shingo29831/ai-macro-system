@@ -15,6 +15,13 @@ from core.recorder.utils import (
     now_datetime,
     serialize_ui_rect,
 )
+from core.shared.app_log_profile import (
+    AppProfile,
+    detect_app_profile,
+    detect_office_sub_app,
+    resolve_log_channels,
+    sanitize_context_for_profile,
+)
 from core.shared.macro_paths import get_macros_root
 from core.shared.screen_capture import calculate_diff_percent, take_screenshot
 
@@ -24,7 +31,8 @@ _scroll_dedup_lock = threading.Lock()
 
 
 def get_app_context(window_info: Dict[str, Any], x: Optional[int] = None, y: Optional[int] = None) -> Optional[Dict[str, Any]]:
-    """該当アプリケーション専用のインスペクターがあれば実行し、無ければUIAで要素テキストを取得する"""
+    """アクティブなアプリのプロファイルに基づき、専用インスペクターおよびUIA要素コンテキストを取得する"""
+    app_profile = detect_app_profile(window_info)
     context = None
     inspector = InspectorFactory.get_inspector(window_info)
     if inspector:
@@ -37,26 +45,37 @@ def get_app_context(window_info: Dict[str, Any], x: Optional[int] = None, y: Opt
         try:
             from core.recorder.uia_scanner import get_focused_element_info
             focused_info = get_focused_element_info()
-            if focused_info:
-                if context is None:
-                    context = {
-                        "app": "GenericUIA",
-                        "element_name": focused_info.get("name", ""),
-                        "control_type": focused_info.get("control_type", ""),
-                        "text": focused_info.get("value", "") or focused_info.get("name", ""),
-                        "value": focused_info.get("value", ""),
-                    }
-                else:
-                    context["text"] = focused_info.get("value", "") or focused_info.get("name", "")
-                    context["value"] = focused_info.get("value", "")
-                    if not context.get("element_name"):
-                        context["element_name"] = focused_info.get("name", "")
-                    if not context.get("control_type"):
-                        context["control_type"] = focused_info.get("control_type", "")
+            if focused_info and not focused_info.get("error"):
+                c_name = focused_info.get("name", "")
+                c_type = focused_info.get("control_type", "")
+                # Why: ボタン等の非入力コントロールやシステムUIがテキストとして誤混入するのを防止
+                if "button" not in c_type.lower() and not window_inspector.should_ignore_window(c_name):
+                    default_app = (
+                        detect_office_sub_app(window_info) or "Office"
+                        if app_profile == AppProfile.OFFICE
+                        else ("Browser" if app_profile == AppProfile.BROWSER else "GenericUIA")
+                    )
+                    if context is None:
+                        context = {
+                            "app": default_app,
+                            "element_name": c_name,
+                            "control_type": c_type,
+                            "text": focused_info.get("value", "") or c_name,
+                            "value": focused_info.get("value", ""),
+                        }
+                    else:
+                        val = focused_info.get("value", "") or c_name
+                        if val:
+                            context["text"] = val
+                            context["value"] = focused_info.get("value", "")
+                        if not context.get("element_name") and c_name:
+                            context["element_name"] = c_name
+                        if not context.get("control_type") and c_type:
+                            context["control_type"] = c_type
         except Exception as e:
             print(f"UIA fallback error: {e}")
 
-    return context
+    return sanitize_context_for_profile(app_profile, context, source_info=window_info)
 
 
 def calculate_and_update_diff(current_img: Any) -> str:
@@ -200,6 +219,14 @@ def process_click_event(event: Dict[str, Any], input_type: str, click_count: int
             pass
 
         log["Images"] = {"Pre": pre_ref, "Crop": crop_ref, "Diff": diff}
+        if crop_ref and crop_ref != "切り抜き失敗":
+            _, log["ActiveChannels"] = resolve_log_channels(
+                input_type,
+                detect_app_profile(event["window_info"]),
+                log.get("AppSpecificContext"),
+                has_crop_image=True,
+                source=event["window_info"],
+            )
         state.append_log(log)
         print(f"クリックログ追加: evt_{event_no}, type={input_type}, diff={diff}")
     except Exception:

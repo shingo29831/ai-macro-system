@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
+from core.shared.app_log_profile import AppProfile, detect_app_profile, has_explicit_app_identity
+from core.shared.window_utils import is_browser_window
 from core.generator.typing_text_resolver import (
     IGNORE_EXACT_KEYS,
     IGNORE_MODIFIERS,
@@ -55,33 +57,47 @@ def get_event_diff_val(event: Dict[str, Any]) -> float:
 
 
 def propagate_click_context(raw_events: List[Dict[str, Any]]) -> None:
-    # Why: キー入力のフォーカス先は直前クリック要素のみから継承しホバー移動による汚染を根絶
+    # Why: キー入力のフォーカス先は同一アプリ種別の直前クリック要素のみから継承しクロスアプリ汚染を根絶
     last_click_ctx: Dict[str, Any] = {}
     last_click_win = ""
+    last_click_prof: Optional[AppProfile] = None
     for ev in raw_events:
         ev_act = ev.get("raw_action", "")
         ev_win = ev.get("window_name", "")
+        has_id = has_explicit_app_identity(ev)
+        ev_prof = detect_app_profile(ev) if has_id else last_click_prof
         ctx = get_app_context(ev)
         elem = ctx.get("element_name") or ""
         sel = ctx.get("css_selector") or ""
+
+        if has_id and last_click_prof is not None and ev_prof != last_click_prof:
+            last_click_ctx = {}
+            last_click_win = ""
+            last_click_prof = ev_prof
 
         if ev_act in ["click", "mouse_click"]:
             if elem or sel or ctx.get("xpath"):
                 last_click_ctx = ctx.copy()
                 last_click_win = ev_win
+                last_click_prof = ev_prof
         elif ev_act in ["key_down", "key_press", "type_text", "key_combo"] and last_click_ctx:
             is_win_match = (
                 (ev_win == last_click_win)
-                or not last_click_win
-                or not ev_win
-                or any(b in (ev_win + last_click_win).lower() for b in BROWSER_TITLE_KEYWORDS)
+                or (not last_click_win and ev_prof == last_click_prof)
+                or (not ev_win and ev_prof == last_click_prof)
+                or (is_browser_window(ev_win) and is_browser_window(last_click_win))
             )
             if is_win_match:
                 e_ctx = ev.setdefault("app_context", {})
                 e_sel = e_ctx.get("css_selector") or e_ctx.get("xpath")
                 l_sel = last_click_ctx.get("css_selector") or last_click_ctx.get("xpath")
+                keys_to_copy = (
+                    ["element_name", "css_selector", "xpath", "control_type"]
+                    if ev_prof == AppProfile.BROWSER
+                    else ["element_name", "control_type"]
+                )
                 if not e_sel or e_sel == l_sel:
-                    for k in ["element_name", "css_selector", "xpath", "control_type"]:
+                    for k in keys_to_copy:
                         if not e_ctx.get(k) and last_click_ctx.get(k):
                             e_ctx[k] = last_click_ctx[k]
 
