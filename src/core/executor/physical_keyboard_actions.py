@@ -161,7 +161,7 @@ def execute_press_key_action(args: Dict[str, Any], keyboard: KeyboardController)
 
     try:
         if "+" in key_str:
-            keys = key_str.split("+")
+            keys = [k for k in key_str.split("+") if k]
             pressed = []
             for k in keys:
                 k_name = k.lower().replace("key.", "")
@@ -170,8 +170,11 @@ def execute_press_key_action(args: Dict[str, Any], keyboard: KeyboardController)
                 key_obj = getattr(Key, k_name, k_name)
                 keyboard.press(key_obj)
                 pressed.append(key_obj)
+                time.sleep(0.02)
+            time.sleep(0.02)
             for key_obj in reversed(pressed):
                 keyboard.release(key_obj)
+            time.sleep(0.05)
         else:
             key_name = key_str.lower()
             if key_name in ["win", "windows"]:

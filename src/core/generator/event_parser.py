@@ -113,7 +113,7 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     elif is_click:
         action_type = "click"
     elif is_key:
-        action_type = "key_down"
+        action_type = "key_combo" if "combo" in raw_type_lower else "key_down"
     elif is_uia:
         action_type = "uia_scan"
     else:
@@ -133,12 +133,31 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         
         if action_type == "click":
             input_val = f"{button_val}_click"
-        elif action_type == "key_down":
+        elif action_type in ("key_down", "key_combo"):
             raw_key = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown_key"
-            # Why: WindowsキーフックのCtrl+A〜Z制御文字(\x01〜\x1a)を正規のショートカット名へ復元
+            # Why: WindowsキーフックのCtrl+A〜Z制御文字(\x01〜\x1a)および左右修飾キー名を正規ショートカット名へ統一
             if isinstance(raw_key, str) and len(raw_key) == 1 and 1 <= ord(raw_key) <= 26:
                 ctrl_char = chr(ord(raw_key) + 96)
                 input_val = f"ctrl+{ctrl_char}"
+                action_type = "key_combo"
+            elif isinstance(raw_key, str) and "+" in raw_key:
+                parts = []
+                for p in raw_key.lower().split("+"):
+                    if not p:
+                        continue
+                    if len(p) == 1 and 1 <= ord(p) <= 26:
+                        p = chr(ord(p) + 96)
+                    elif p in ("ctrl_l", "ctrl_r"):
+                        p = "ctrl"
+                    elif p in ("alt_l", "alt_r"):
+                        p = "alt"
+                    elif p in ("shift_l", "shift_r"):
+                        p = "shift"
+                    elif p in ("win_l", "win_r", "windows", "cmd"):
+                        p = "win"
+                    if p not in parts:
+                        parts.append(p)
+                input_val = "+".join(parts)
                 action_type = "key_combo"
             else:
                 input_val = raw_key

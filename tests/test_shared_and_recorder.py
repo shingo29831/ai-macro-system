@@ -30,6 +30,19 @@ def test_ime_controller_url_and_width_classification():
     assert ime_controller.should_input_as_halfwidth("abc123") is True
     assert ime_controller.should_input_as_fullwidth("名古屋") is True
 
+    from core.recorder import utils as rec_utils
+
+    class _DummyCtrlKey:
+        def __init__(self, char: str, vk: int):
+            self.char = char
+            self.vk = vk
+
+    assert rec_utils.normalize_key_name(_DummyCtrlKey("\x01", 65)) == "a"
+    assert rec_utils.normalize_key_name(_DummyCtrlKey("\x03", 67)) == "c"
+    assert rec_utils.normalize_key_name(_DummyCtrlKey("\x16", 86)) == "v"
+    assert rec_utils.make_combo_text(["ctrl_l", "v"]) == "ctrl+v"
+    assert rec_utils.should_record_key_combo({"ctrl_l"}, "v") is True
+
 
 def test_log_builder_scroll_and_save(tmp_path, monkeypatch):
     if importlib.util.find_spec("etw") is None and "etw" not in sys.modules:

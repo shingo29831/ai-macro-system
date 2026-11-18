@@ -10,6 +10,7 @@ from core.shared.app_log_profile import (
     get_app_log_policy,
     has_explicit_app_identity,
 )
+from core.shared.window_utils import extract_app_name, is_browser_window
 
 IGNORE_EXACT_KEYS = {
     "tab", "enter", "delete", "esc", "shift", "ctrl", "alt",
@@ -21,6 +22,71 @@ IGNORE_MODIFIERS = ["shift", "ctrl", "alt", "win", "cmd"]
 def get_app_context(event: Dict[str, Any]) -> Dict[str, Any]:
     ctx = event.get("app_context") or event.get("AppSpecificContext") or event.get("appSpecificContext")
     return ctx if isinstance(ctx, dict) else {}
+
+
+def is_same_editor_window(ev1: Dict[str, Any], ev2: Dict[str, Any]) -> bool:
+    """未保存マーク(*)や入力内容のタイトル反映を伴う同一デスクトップエディタかを判定する。"""
+    w1 = str(ev1.get("window_name") or ev1.get("WindowName") or "").strip()
+    w2 = str(ev2.get("window_name") or ev2.get("WindowName") or "").strip()
+    if not w1 or not w2:
+        return False
+    if w1 == w2 or w1.lstrip("* ") == w2.lstrip("* "):
+        return True
+    if is_browser_window(w1) or is_browser_window(w2):
+        return False
+    app1 = extract_app_name(w1).lower()
+    app2 = extract_app_name(w2).lower()
+    if app1 and app1 == app2:
+        p1 = str(ev1.get("process_name") or "").lower()
+        p2 = str(ev2.get("process_name") or "").lower()
+        if not p1 or not p2 or p1 == p2:
+            return True
+    return False
+
+
+def _strip_pasted_repetition(
+    uia_text: str,
+    fallback_text: str,
+    session: List[Dict[str, Any]],
+    future_events: Optional[List[Dict[str, Any]]],
+) -> str:
+    """非同期UIA取得遅延により後続Ctrl+Vの反復結果が混入した場合に1回分の入力文字列へ復元する。"""
+    if not uia_text or len(uia_text) < 2:
+        return uia_text
+
+    if fallback_text and len(uia_text) >= len(fallback_text) * 2 and len(uia_text) % len(fallback_text) == 0:
+        repeats = len(uia_text) // len(fallback_text)
+        if repeats >= 2 and fallback_text * repeats == uia_text:
+            return fallback_text
+
+    has_future_paste = bool(
+        future_events
+        and any(
+            "v" in str(f.get("semantic_role", "")).lower().split("+")
+            and any(m in str(f.get("semantic_role", "")).lower() for m in ("ctrl", "cmd"))
+            for f in future_events[:10]
+        )
+    )
+    key_strokes = sum(
+        1
+        for item in session
+        if item.get("raw_action") in ("key_down", "key_press", "type_text")
+        and str(item.get("semantic_role", "")).lower() not in IGNORE_EXACT_KEYS
+    )
+
+    n = len(uia_text)
+    for unit_len in range(1, n // 2 + 1):
+        if n % unit_len != 0:
+            continue
+        repeats = n // unit_len
+        if repeats < 2:
+            continue
+        unit = uia_text[:unit_len]
+        if unit * repeats == uia_text:
+            if has_future_paste or (fallback_text and fallback_text in unit) or key_strokes <= unit_len * 3:
+                if not fallback_text or len(fallback_text) <= unit_len * 2:
+                    return unit
+    return uia_text
 
 
 def _convert_romaji_chunk(chunk: str) -> str:
@@ -226,6 +292,12 @@ def resolve_session_final_text(
                 if (target_elem and f_name and f_name != target_elem) or (target_sel and f_sel and f_sel != target_sel):
                     break
 
+            # Why: 後続のショートカット(Ctrl+V等)や別キー入力以降のUIA値はペースト後汚染のため参照しない
+            f_role = str(f_evt.get("semantic_role", "")).lower()
+            if f_act in ["key_combo", "type_text", "key_down", "key_press"]:
+                if "+" in f_role or f_act == "type_text" or (len(f_role) == 1 and f_role.isprintable()):
+                    break
+
             if f_val and isinstance(f_val, str) and f_val.strip() and not future_elem_text:
                 if (target_elem and f_name == target_elem) or (target_sel and f_sel == target_sel):
                     future_elem_text = f_val.strip()
@@ -262,6 +334,9 @@ def resolve_session_final_text(
             if not current_input or matches_text or matches_suggest_or_ime:
                 matched_future_query = fq
                 break
+
+    latest_uia_text = _strip_pasted_repetition(latest_uia_text, fallback_text, session, future_events)
+    future_elem_text = _strip_pasted_repetition(future_elem_text, fallback_text, session, future_events)
 
     if confirmed_queries:
         return confirmed_queries[0]
@@ -305,12 +380,20 @@ def merge_consecutive_type_events(
             if action == "type_text":
                 next_win = next_event.get("window_name", "")
                 next_elem = get_app_context(next_event).get("element_name", "")
-                # Why: 同一要素への分割入力は断片を結合し最終的な完成文字列へ復元
-                if curr_win == next_win and curr_elem == next_elem:
+                # Why: 同一要素への分割入力は断片を結合し、累積UIA部分文字列の重複加算を防止
+                if (curr_win == next_win or is_same_editor_window(event, next_event)) and curr_elem == next_elem:
                     events_to_merge.append(next_event)
                     nxt_text = str(next_event.get("semantic_role", "")).strip()
-                    if last_valid_text and nxt_text and not nxt_text.startswith(last_valid_text):
-                        last_valid_text = last_valid_text + nxt_text
+                    if last_valid_text and nxt_text:
+                        if nxt_text.lower().startswith(last_valid_text.lower()):
+                            last_valid_text = nxt_text
+                        elif (
+                            last_valid_text.lower().endswith(nxt_text.lower())
+                            or nxt_text.lower() in last_valid_text.lower()
+                        ):
+                            pass
+                        else:
+                            last_valid_text = last_valid_text + nxt_text
                     else:
                         last_valid_text = nxt_text or last_valid_text
                 else:

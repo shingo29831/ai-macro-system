@@ -47,6 +47,14 @@ def remove_os_shell_noise(
             # Why: 業務アクション開始または新ウィンドウ出現時にシェルスキップを即時解除
             if is_business_action(info) or (not is_system and win_name != win_key_window_name):
                 skip_until_new_window = False
+                # Why: シェル検索からアプリ起動した瞬間の確定Enterが新ウィンドウ先頭に漏れた場合は除外
+                if (
+                    not is_system
+                    and win_name != win_key_window_name
+                    and info.get("raw_action") in ["key_down", "key_press", "press_key"]
+                    and str(info.get("semantic_role", "")).lower() in ["enter", "return"]
+                ):
+                    continue
             else:
                 continue
 

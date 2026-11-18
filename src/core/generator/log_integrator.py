@@ -26,6 +26,7 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
     routed_logs = route_raw_logs_by_active_app(raw_logs)
     valid_candidates: List[Dict[str, Any]] = []
 
+    just_skipped_shell = False
     for entry in routed_logs:
         if not isinstance(entry, dict):
             continue
@@ -46,6 +47,7 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
                     break
 
         if is_system_shell_window(win_name, check_keywords_for_browser=False):
+            just_skipped_shell = True
             continue
 
         content = entry.get("Content") or {}
@@ -54,7 +56,12 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
             # Why: IMEトグルキー(shift+space等)は実行エンジン自動IME制御と競合するため除外
             if "+" in combo_str and any(k in combo_str for k in ["space", "grave", "kanji"]):
                 continue
+            # Why: Windows検索等のシェルでアプリ起動時に押したEnterが新ウィンドウ先頭へ漏れた場合を除外
+            if just_skipped_shell and "key" in raw_type and combo_str in ("enter", "return"):
+                just_skipped_shell = False
+                continue
 
+        just_skipped_shell = False
         valid_candidates.append(entry)
 
     filtered: List[Dict[str, Any]] = []

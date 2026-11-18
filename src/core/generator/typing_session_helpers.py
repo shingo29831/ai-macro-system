@@ -12,6 +12,7 @@ from core.generator.typing_text_resolver import (
     extract_query_from_title,
     extract_search_query,
     get_app_context,
+    is_same_editor_window,
     merge_consecutive_type_events,
     resolve_session_final_text,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "parse_diff_value",
     "get_app_context",
     "get_event_diff_val",
+    "is_same_editor_window",
     "propagate_click_context",
     "collect_global_uia_texts",
     "filter_session_events",

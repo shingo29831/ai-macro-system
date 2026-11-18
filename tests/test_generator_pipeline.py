@@ -93,6 +93,116 @@ def test_typing_aggregator_merge_and_trailing_enter_without_index_or_key_error()
     assert any(e.get("semantic_role") == "enter" for e in out)
 
 
+def test_notepad_typing_and_copy_paste_shortcuts_not_duplicated_or_merged():
+    raw_logs = [
+        {"EventNo": "001", "Type": "key_press", "WindowName": "検索", "Content": {"key": "m"}},
+        {"EventNo": "002", "Type": "key_press", "WindowName": "検索", "Content": {"key": "e"}},
+        {"EventNo": "003", "Type": "key_press", "WindowName": "検索", "Content": {"key": "m"}},
+        # Leaked Enter key right as Notepad opens from Windows Search
+        {"EventNo": "004", "Type": "key_press", "WindowName": "タイトルなし - メモ帳", "Content": {"key": "enter"}},
+        {"EventNo": "005", "Type": "key_press", "WindowName": "タイトルなし - メモ帳", "Content": {"key": "a"}},
+    ]
+    filtered = filter_meaningful_raw_logs(raw_logs)
+    assert [e["EventNo"] for e in filtered] == ["005"]
+
+    agg = TypingSessionAggregator()
+    pasted_three_times = "aiueoあいうえおaiueoあいうえおaiueoあいうえお"
+    notepad_events = [
+        {
+            "event_id": "evt_010",
+            "timestamp": 1000,
+            "raw_action": "key_down",
+            "semantic_role": "aiueo",
+            "window_name": "タイトルなし - メモ帳",
+            "process_name": "Notepad.exe",
+            "ime_active": False,
+            "diff_val": 1.0,
+            "app_context": {"element_name": "テキスト エディター", "value": "aiueoあいうえおaiueoあいうえお"},
+        },
+        {
+            "event_id": "evt_011",
+            "timestamp": 1400,
+            "raw_action": "key_down",
+            "semantic_role": "aiueo",
+            "window_name": "*タイトルなし - メモ帳",
+            "process_name": "Notepad.exe",
+            "ime_active": True,
+            "diff_val": 1.0,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_012",
+            "timestamp": 1600,
+            "raw_action": "key_down",
+            "semantic_role": "enter",
+            "window_name": "aiueoあいうえお - メモ帳",
+            "process_name": "Notepad.exe",
+            "ime_active": True,
+            "diff_val": 0.5,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_013",
+            "timestamp": 2000,
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+a",
+            "window_name": "aiueoあいうえお - メモ帳",
+            "process_name": "Notepad.exe",
+            "diff_val": 0.5,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_014",
+            "timestamp": 2200,
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+c",
+            "window_name": "aiueoあいうえお - メモ帳",
+            "process_name": "Notepad.exe",
+            "diff_val": 0.0,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_015",
+            "timestamp": 2400,
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+v",
+            "window_name": "aiueoあいうえお - メモ帳",
+            "process_name": "Notepad.exe",
+            "diff_val": 0.5,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_016",
+            "timestamp": 2600,
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+v",
+            "window_name": "aiueoあいうえおaiueoあいうえお - メモ帳",
+            "process_name": "Notepad.exe",
+            "diff_val": 1.0,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+        {
+            "event_id": "evt_017",
+            "timestamp": 2800,
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+v",
+            "window_name": f"{pasted_three_times} - メモ帳",
+            "process_name": "Notepad.exe",
+            "diff_val": 1.0,
+            "app_context": {"element_name": "テキスト エディター", "value": pasted_three_times},
+        },
+    ]
+    aggregated = agg.aggregate_events(notepad_events)
+    assert [(e["raw_action"], e["semantic_role"]) for e in aggregated] == [
+        ("type_text", "aiueoあいうえお"),
+        ("key_combo", "ctrl+a"),
+        ("key_combo", "ctrl+c"),
+        ("key_combo", "ctrl+v"),
+        ("key_combo", "ctrl+v"),
+        ("key_combo", "ctrl+v"),
+    ]
+
+
 def test_loop_detector_extracts_offset_and_arithmetic_sequence():
     events = [
         {"raw_type": "meta_loop_start", "raw_action": "meta", "event_id": "evt_001", "window_name": "App"},

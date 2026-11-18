@@ -12,6 +12,7 @@ from core.generator.typing_session_helpers import (
     filter_session_events,
     get_app_context,
     get_event_diff_val,
+    is_same_editor_window,
     merge_consecutive_type_events,
     propagate_click_context,
     resolve_session_final_text,
@@ -70,14 +71,26 @@ class TypingSessionAggregator:
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             is_mouse_move = action in ["move", "mouse_move", "mouse_hover"]
             is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
-            is_typing_combo = (action == "key_combo" and not is_shift_char) or is_ime_toggle
+            # Why: Ctrl+A/C/V等のショートカットはタイピングセッションへ混ぜず独立コマンドとして保持
+            is_shortcut_combo = (
+                (action == "key_combo" or "+" in role_lower)
+                and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+                and not is_ime_toggle
+                and not is_shift_char
+            )
+
+            if is_shortcut_combo:
+                if current_session:
+                    self._flush_session(current_session, aggregated_events, future_events=raw_events[i:])
+                aggregated_events.append(event)
+                continue
 
             if role_lower == "enter":
                 current_session.append(event)
                 self._flush_session(current_session, aggregated_events, future_events=raw_events[i + 1:])
                 continue
 
-            if is_text_input or is_uia_scan or is_confirm_key or is_typing_combo:
+            if is_text_input or is_uia_scan or is_confirm_key or is_ime_toggle:
                 current_session.append(event)
                 continue
 
@@ -129,9 +142,13 @@ class TypingSessionAggregator:
             and detect_app_profile(last_event) != detect_app_profile(event)
         )
 
-        # Why: 明示的なアプリプロファイル切り替え時や別ウィンドウ遷移時は確実にセッションを分割
+        # Why: メモ帳等の未保存マーク(*)や入力文字のタイトル反映ではセッションを分断せず別ウィンドウ遷移のみ分割
         is_ongoing_typing = action in ["key_down", "key_press", "key_combo"] and time_diff < 1500
-        if profile_switched or (current_window and last_window and current_window != last_window):
+        window_switched = (
+            bool(current_window and last_window and current_window != last_window)
+            and not is_same_editor_window(last_event, event)
+        )
+        if profile_switched or window_switched:
             self._flush_session(current_session, aggregated_events, future_events=future_events)
         elif not is_ongoing_typing and diff_val > 15.0 and time_diff > 500:
             self._flush_session(current_session, aggregated_events, future_events=future_events)
@@ -241,10 +258,14 @@ class TypingSessionAggregator:
             if final_text:
                 if role_lower == "tab":
                     continue
-                # Why: サジェスト選択後や画面遷移を促す確定Enterは検索実行キーとして確実に保護
+                # Why: 同一エディタ内の動的タイトル変化(*無題等)を画面遷移と誤認せずIME確定Enterを確実に除去
                 if role_lower in ["enter", "return"] or any(k in role_lower for k in ["enter", "return"]):
                     has_future_nav = bool(
-                        future_events and any(f.get("window_name") != session_window for f in future_events[:8])
+                        future_events
+                        and any(
+                            f.get("window_name") != session_window and not is_same_editor_window(session[0], f)
+                            for f in future_events[:8]
+                        )
                     )
                     if not (has_suggest_selection or has_future_nav) and (any_ime_active or e.get("ime_active")):
                         continue
@@ -280,6 +301,13 @@ class TypingSessionAggregator:
             or (prev_ctx.get("element_name") and prev_ctx.get("element_name") == curr_ctx.get("element_name"))
         )
         if same_target and prev_text and final_text and not is_suffix_or_sub:
+            # Why: UIAがテキスト要素の累積全文を返した場合は重複加算せず最新全文で更新
+            if final_text_lower.startswith(prev_text_lower):
+                output_list[-1]["semantic_role"] = final_text
+                output_list[-1].setdefault("fallback_events", []).extend(
+                    [item.get("event_id") for item in session if item.get("event_id")]
+                )
+                return True
             if not prev_text.endswith(final_text) and final_text not in prev_text:
                 output_list[-1]["semantic_role"] = prev_text + final_text
                 # Why: 単一イベント由来のtype_textではfallback_events未初期化のため安全に追記

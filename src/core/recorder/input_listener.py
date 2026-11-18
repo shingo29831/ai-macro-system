@@ -127,25 +127,9 @@ def on_press(key):
             return False 
 
     ime_on = is_ime_active()
-
-    # 背景: 文字入力や確定操作の場合は、非同期による画面変化の取りこぼしを防ぐため、即座に同期で画面をキャプチャする
-    is_text_input = (len(key_text) == 1 and key_text.isprintable()) or key_text in ("backspace", "enter", "tab", "space")
-    capture_now = is_text_input
-
-    # 追加: タイピングバッファの管理と、サーチ・確定メタイベントの発火
-    if is_text_input:
-        if key_text in ("enter", "tab"):
-            flush_typing_buffer(f"{key_text}_pressed")
-        else:
-            if not getattr(state, "typing_buffer", ""):
-                _trigger_field_search("typing_started")
-            
-            if len(key_text) == 1 and key_text.isprintable():
-                state.typing_buffer = getattr(state, "typing_buffer", "") + key_text
-            elif key_text == "space":
-                state.typing_buffer = getattr(state, "typing_buffer", "") + " "
-            elif key_text == "backspace":
-                state.typing_buffer = getattr(state, "typing_buffer", "")[:-1]
+    # Why: 同期キャプチャ遅延でEnter押下後の遷移先ウィンドウへ誤帰属するのを防ぐため押下瞬間のウィンドウを固定
+    from core.recorder import window_inspector
+    pressed_window_info = window_inspector.get_foreground_window_info()
 
     try:
         with state.pressed_keys_lock:
@@ -156,17 +140,55 @@ def on_press(key):
             state.pressed_keys.add(key_text)
             current_keys = set(state.pressed_keys)
 
-        if should_record_key_combo(current_keys, key_text):
+        is_combo = should_record_key_combo(current_keys, key_text)
+        if is_combo:
+            flush_typing_buffer("shortcut_pressed", window_info=pressed_window_info)
             combo_keys = sorted_combo_keys(current_keys)
             combo_text = make_combo_text(combo_keys)
             if combo_text not in state.logged_combo_keys:
                 state.logged_combo_keys.add(combo_text)
-                # 背景: IME状態をイベントプロセッサに伝達する
-                enqueue_key_event("key_combo", key_text, combo_keys, capture_now, ime_active=ime_on)
+                enqueue_key_event(
+                    "key_combo",
+                    key_text,
+                    combo_keys,
+                    capture_now=True,
+                    ime_active=ime_on,
+                    window_info=pressed_window_info,
+                )
             return
 
-        if key_text in MODIFIER_KEYS and not key_text.startswith("win"): return
-        enqueue_key_event("key_press", key_text, capture_now=capture_now, ime_active=ime_on)
+        if key_text in MODIFIER_KEYS and not key_text.startswith("win"):
+            return
+
+        is_text_input = (len(key_text) == 1 and key_text.isprintable()) or key_text in (
+            "backspace",
+            "enter",
+            "tab",
+            "space",
+        )
+        capture_now = is_text_input
+
+        if is_text_input:
+            if key_text in ("enter", "tab"):
+                flush_typing_buffer(f"{key_text}_pressed", window_info=pressed_window_info)
+            else:
+                if not getattr(state, "typing_buffer", ""):
+                    _trigger_field_search("typing_started")
+
+                if len(key_text) == 1 and key_text.isprintable():
+                    state.typing_buffer = getattr(state, "typing_buffer", "") + key_text
+                elif key_text == "space":
+                    state.typing_buffer = getattr(state, "typing_buffer", "") + " "
+                elif key_text == "backspace":
+                    state.typing_buffer = getattr(state, "typing_buffer", "")[:-1]
+
+        enqueue_key_event(
+            "key_press",
+            key_text,
+            capture_now=capture_now,
+            ime_active=ime_on,
+            window_info=pressed_window_info,
+        )
     except Exception:
         logger.exception("キーフック処理中にエラーが発生しました")
 
@@ -174,5 +196,6 @@ def on_release(key):
     key_text = key_to_string(key)
     with state.pressed_keys_lock:
         state.pressed_keys.discard(key_text)
-        if not state.pressed_keys:
+        # Why: Ctrl押しっぱなしでの連続Ctrl+V等で2回目以降が抑制されないよう非修飾キー解放時にリセット
+        if not state.pressed_keys or key_text not in MODIFIER_KEYS:
             state.logged_combo_keys.clear()

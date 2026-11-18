@@ -46,12 +46,18 @@ def _get_app_context(window_info: dict, x: int | None = None, y: int | None = No
     return _shared_get_app_context(window_info, x=x, y=y)
 
 
-def flush_typing_buffer(trigger_reason: str) -> None:
+def flush_typing_buffer(trigger_reason: str, window_info: dict | None = None) -> None:
     """未確定のタイピングバッファを確定メタイベントとして投入する。"""
     if not getattr(state, "typing_buffer", ""):
         return
     ime_on = is_ime_active()
-    enqueue_key_event("text_candidate_confirm", "", capture_now=True, ime_active=ime_on)
+    enqueue_key_event(
+        "text_candidate_confirm",
+        "",
+        capture_now=True,
+        ime_active=ime_on,
+        window_info=window_info,
+    )
     state.typing_buffer = ""
     logger.debug("タイピングバッファを確定しました [%s]", trigger_reason)
 
@@ -62,11 +68,13 @@ def enqueue_key_event(
     keys: list[str] | None = None,
     capture_now: bool = False,
     ime_active: bool = False,
+    window_info: dict | None = None,
 ):
     # Why: フックスレッドのブロックを防止しつつ保留クリックを非同期即時確定
     process_pending_single_click(sync=False)
 
-    window_info = window_inspector.get_foreground_window_info()
+    if window_info is None:
+        window_info = window_inspector.get_foreground_window_info()
     if window_inspector.should_ignore_window(window_info.get("title")):
         return
 
