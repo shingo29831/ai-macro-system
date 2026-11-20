@@ -31,8 +31,12 @@ class BrowserInspector(BaseInspector):
         cls._tracker.reset()
 
     @classmethod
-    def extract_form_snapshot(cls, window_info: Dict[str, Any]) -> Dict[str, Any]:
-        return cls._tracker.extract_form_snapshot(window_info)
+    def extract_form_snapshot(
+        cls,
+        window_info: Dict[str, Any],
+        point: Optional[Tuple[int, int]] = None,
+    ) -> Dict[str, Any]:
+        return cls._tracker.extract_form_snapshot(window_info, point=point)
 
     @staticmethod
     def parse_url_details(raw_url: str) -> Dict[str, Any]:
@@ -43,7 +47,13 @@ class BrowserInspector(BaseInspector):
         """UIAを用いて主要ブラウザのアドレスバーから確定URLおよび検索クエリを取得する"""
         return _get_address_bar_info(window_info, extract_value_from_elem, desktop=desktop)
 
-    def inspect(self, window_info: Dict[str, Any], x: Optional[int] = None, y: Optional[int] = None) -> Dict[str, Any]:
+    def inspect(
+        self,
+        window_info: Dict[str, Any],
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        include_snapshot: bool = True,
+    ) -> Dict[str, Any]:
         result: Dict[str, Any] = {
             "app": "Browser",
             "element_name": "",
@@ -91,7 +101,9 @@ class BrowserInspector(BaseInspector):
                     log_debug(f"セレクタ推定中にエラー: {e}")
 
             self._attach_address_bar_context(window_info, desktop, primary_elem, extracted_text, x, y, result)
-            self._update_snapshot_and_tracking(window_info, primary_elem, x, y, result)
+            self._update_snapshot_and_tracking(
+                window_info, primary_elem, x, y, result, include_snapshot=include_snapshot
+            )
 
         except ImportError:
             error_msg = "pywinauto がインストールされていません"
@@ -319,6 +331,7 @@ class BrowserInspector(BaseInspector):
         x: Optional[int],
         y: Optional[int],
         result: Dict[str, Any],
+        include_snapshot: bool = True,
     ) -> None:
         c_type_l = str(result.get("control_type", "")).lower()
         e_name_l = str(result.get("element_name", "")).lower()
@@ -328,8 +341,9 @@ class BrowserInspector(BaseInspector):
             or any(k in e_name_l for k in ("登録", "送信", "保存", "submit", "save"))
             or "submit" in sel_l
         )
-        if is_submit_action or (x is not None and y is not None):
-            snapshot = BrowserInspector.extract_form_snapshot(window_info)
+        if include_snapshot and (is_submit_action or (x is not None and y is not None)):
+            pt = (int(x), int(y)) if (x is not None and y is not None) else None
+            snapshot = BrowserInspector.extract_form_snapshot(window_info, point=pt)
             if snapshot:
                 result["form_snapshot"] = snapshot
 

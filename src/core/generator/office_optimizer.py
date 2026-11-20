@@ -13,6 +13,8 @@ from core.shared.app_log_profile import (
 
 logger = logging.getLogger(__name__)
 
+_EXCEL_CELL_REF_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]*$")
+
 
 def _extract_office_event_payload(info: Dict[str, Any]) -> Tuple[str, str, Any, bool]:
     """構造化office_infoまたは従来のメッセージ文字列から(event_kind, cell, value, is_range)を抽出する。"""
@@ -276,6 +278,16 @@ def propagate_excel_cells(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict
         if last_office_win is not None and win_name != last_office_win:
             last_excel_dest_cell = None
             last_office_win = win_name
+
+        # Why: 保護ビュー等COMイベント非発火時でもUIAセル番地(A2等)をclickへ付与し別データ行での誤修復を防止
+        if info.get("raw_action") == "click" and not info.get("excel_dest_cell"):
+            app_ctx = info.get("app_context") or {}
+            elem_name = str(app_ctx.get("element_name") or "").strip().upper()
+            c_type = str(app_ctx.get("control_type") or "").lower()
+            if _EXCEL_CELL_REF_RE.match(elem_name) and (
+                not c_type or any(t in c_type for t in ("dataitem", "cell", "edit"))
+            ):
+                info["excel_dest_cell"] = elem_name
 
         if info.get("excel_dest_cell"):
             last_excel_dest_cell = info["excel_dest_cell"]

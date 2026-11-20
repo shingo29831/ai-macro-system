@@ -174,7 +174,8 @@ def execute_press_key_action(args: Dict[str, Any], keyboard: KeyboardController)
             time.sleep(0.02)
             for key_obj in reversed(pressed):
                 keyboard.release(key_obj)
-            time.sleep(0.05)
+            # Why: Excel等からのCtrl+C/V直後にウィンドウ切替前にクリップボード反映を完了させる
+            time.sleep(0.12 if key_str.lower().strip() in ("ctrl+c", "ctrl+x", "ctrl+v") else 0.05)
         else:
             key_name = key_str.lower()
             if key_name in ["win", "windows"]:

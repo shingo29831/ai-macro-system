@@ -18,6 +18,9 @@ __all__ = [
     "consolidate_web_form_interactions",
 ]
 
+_PASTE_COMBOS = frozenset({"ctrl+v", "ctrl+shift+v", "shift+insert"})
+_CLIPBOARD_EDIT_COMBOS = _PASTE_COMBOS | frozenset({"ctrl+a", "ctrl+c", "ctrl+x", "ctrl+z"})
+
 
 def _is_valid_menu_hover(info: Dict[str, Any], elem_name: str) -> bool:
     # Why: UIA要素名欠落時も画面変化(Diff>=3%)を伴うメニュー展開ホバーを確実に保持
@@ -309,6 +312,7 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
     state = collect_form_snapshot_context(temp_workflow_info, config=config)
     result: List[Dict[str, Any]] = []
     processed_selectors: Set[str] = set()
+    paste_handled_selectors: Set[str] = set()
     last_browser_win = ""
     n = len(temp_workflow_info)
     i = 0
@@ -328,7 +332,27 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
             last_browser_win = cur_win
         act, ctx, sel, c_type, elem_name, scanned_elem = _resolve_element_metadata(info, state)
 
-        if is_system_ui_event(info) or (sel and sel in processed_selectors):
+        if is_system_ui_event(info):
+            i += 1
+            continue
+
+        # Why: Excel等からのCtrl+V動的ペーストを保持し、後続スナップショット復元による固定値上書きを防止
+        role_l = str(info.get("semantic_role", "")).lower().strip()
+        if act == "key_combo" and role_l in _CLIPBOARD_EDIT_COMBOS:
+            result.append(info)
+            if role_l in _PASTE_COMBOS:
+                if sel:
+                    paste_handled_selectors.add(sel)
+                if result and len(result) >= 2:
+                    prev_br = result[-2]
+                    if detect_app_profile(prev_br) == AppProfile.BROWSER:
+                        prev_sel = (prev_br.get("app_context") or {}).get("css_selector") or prev_br.get("selector") or ""
+                        if prev_sel:
+                            paste_handled_selectors.add(prev_sel)
+            i += 1
+            continue
+
+        if sel and sel in processed_selectors:
             i += 1
             continue
 
@@ -420,4 +444,6 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
         result.append(info)
         i += 1
 
-    return restore_missing_snapshot_elements(result, temp_workflow_info, state, processed_selectors)
+    return restore_missing_snapshot_elements(
+        result, temp_workflow_info, state, processed_selectors | paste_handled_selectors
+    )

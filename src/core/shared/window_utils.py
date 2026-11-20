@@ -22,8 +22,42 @@ IGNORED_SYSTEM_WINDOW_TITLES = [
 ]
 
 SYSTEM_EXACT_WINDOWS = [
-    "検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト",
+    "検索",
+    "スタート",
+    "start",
+    "search",
+    "タスクバー",
+    "taskbar",
+    "cortana",
+    "ジャンプ リスト",
+    "タスクの切り替え",
+    "task switching",
+    "タスク ビュー",
+    "task view",
+    "プログラム マネージャー",
+    "program manager",
 ]
+
+_EXACT_IGNORED_SYSTEM_TITLES = frozenset({
+    "記録中",
+    "停止中",
+    "設定",
+    "実行中",
+    "実行中...",
+    "スナップ",
+    "タスクの切り替え",
+    "task switching",
+    "タスク ビュー",
+    "task view",
+})
+
+_SUBSTRING_IGNORED_SYSTEM_TITLES = (
+    "aiマクロ生成中",
+    "マクロ生成中",
+    "ウィンドウの紐付け",
+    "スナップ アシスト",
+    "snap assist",
+)
 
 SYSTEM_WINDOW_KEYWORDS = [
     "program manager",
@@ -138,9 +172,117 @@ def is_ignored_system_window(title: Optional[str]) -> bool:
     """録画・UIマスク対象から除外すべきシステム/ツール自身ウィンドウかを判定する。"""
     if not title:
         return False
-    title_lower = title.lower()
-    extra = ["スナップ アシスト", "スナップ", "snap assist"]
-    return any(ignored.lower() in title_lower for ignored in (IGNORED_SYSTEM_WINDOW_TITLES + extra))
+    # Why: Webページタイトルに「設定」「AI Macro System」等が含まれてもブラウザ操作は絶対に除外しない
+    if is_browser_window(title):
+        return False
+    title_lower = title.lower().strip()
+    if title_lower in _EXACT_IGNORED_SYSTEM_TITLES:
+        return True
+    if title_lower == "ai macro system" or title_lower.startswith("ai macro system "):
+        return True
+    return any(ignored in title_lower for ignored in _SUBSTRING_IGNORED_SYSTEM_TITLES)
+
+
+def _strip_browser_title_suffix(window_title: str) -> str:
+    """ブラウザウィンドウタイトルから末尾のブラウザ名を除いたページタイトル部分を返す。"""
+    if not window_title:
+        return ""
+    parts = [p.strip() for p in re.split(r"[\-—–―]", window_title) if p.strip()]
+    if len(parts) >= 2 and is_browser_window(parts[-1]):
+        return " - ".join(parts[:-1]).strip().lower()
+    return window_title.strip().lower()
+
+
+def find_active_browser_document(
+    win_ctrl: object,
+    window_title: str = "",
+    point: Optional[Tuple[int, int]] = None,
+) -> object:
+    """マルチタブ環境(Firefox/Chrome/Edge)で現在アクティブなタブの可視DocumentControlのみを特定する。"""
+    try:
+        import uiautomation as auto
+    except Exception:
+        return win_ctrl
+
+    win_hwnd = getattr(win_ctrl, "NativeWindowHandle", 0) or 0
+    win_rect = getattr(win_ctrl, "BoundingRectangle", None)
+
+    def _belongs_to_window(ctrl: object) -> bool:
+        if not win_hwnd:
+            return True
+        cur = ctrl
+        for _ in range(32):
+            if cur is None:
+                break
+            if (getattr(cur, "NativeWindowHandle", 0) or 0) == win_hwnd:
+                return True
+            try:
+                cur = cur.GetParentControl()
+            except Exception:
+                break
+        return False
+
+    # Why: アクティブ領域の1点から親DocumentControlを逆引きすることで非表示バックグラウンドタブ混入をO(1)回避
+    probe_points: List[Tuple[int, int]] = []
+    if point is not None and win_rect is not None:
+        px, py = int(point[0]), int(point[1])
+        if win_rect.left <= px <= win_rect.right and (win_rect.top + 110) <= py <= win_rect.bottom:
+            probe_points.append((px, py))
+    if win_rect is not None and (win_rect.right - win_rect.left) > 100 and (win_rect.bottom - win_rect.top) > 160:
+        cx = (win_rect.left + win_rect.right) // 2
+        cy = max(win_rect.top + 140, (win_rect.top + win_rect.bottom) // 2)
+        probe_points.append((cx, cy))
+
+    for px, py in probe_points:
+        try:
+            pt_ctrl = auto.ControlFromPoint(px, py)
+            cur = pt_ctrl
+            for _ in range(32):
+                if cur is None:
+                    break
+                if getattr(cur, "ControlTypeName", "") == "DocumentControl":
+                    if not getattr(cur, "IsOffscreen", False) and _belongs_to_window(cur):
+                        return cur
+                    break
+                cur = cur.GetParentControl()
+        except Exception:
+            continue
+
+    # フォールバック: 浅層走査で可視かつタイトル一致・最大面積のDocumentControlを選択
+    title_prefix = _strip_browser_title_suffix(window_title)
+    visible_docs: List[Tuple[int, int, object]] = []
+    try:
+        for idx, (ctrl, _depth) in enumerate(auto.WalkControl(win_ctrl, maxDepth=10)):
+            if idx >= 250:
+                break
+            if getattr(ctrl, "ControlTypeName", "") != "DocumentControl":
+                continue
+            if getattr(ctrl, "IsOffscreen", False):
+                continue
+            rect = getattr(ctrl, "BoundingRectangle", None)
+            if not rect:
+                continue
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+            if w < 100 or h < 100:
+                continue
+            doc_name = str(getattr(ctrl, "Name", "") or "").strip().lower()
+            title_score = 1 if (title_prefix and doc_name and (doc_name in title_prefix or title_prefix in doc_name)) else 0
+            visible_docs.append((title_score, w * h, ctrl))
+    except Exception:
+        pass
+
+    if visible_docs:
+        visible_docs.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return visible_docs[0][2]
+
+    try:
+        doc = win_ctrl.DocumentControl()
+        if doc and doc.Exists(0, 0) and not getattr(doc, "IsOffscreen", False):
+            return doc
+    except Exception:
+        pass
+    return win_ctrl
 
 
 def get_window_bounds(hwnd: Optional[int]) -> Optional[Tuple[int, int, int, int]]:
@@ -190,7 +332,7 @@ def get_system_window_rects() -> List[Tuple[int, int, int, int]]:
                 buff = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(hwnd, buff, length + 1)
                 title = buff.value
-                if any(ignored in title for ignored in IGNORED_SYSTEM_WINDOW_TITLES):
+                if is_ignored_system_window(title):
                     rect = wintypes.RECT()
                     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                         rects.append((rect.left, rect.top, rect.right, rect.bottom))

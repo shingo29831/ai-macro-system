@@ -465,3 +465,90 @@ def test_app_profile_log_switching_between_office_and_browser():
     assert cleaned_office[2]["action"] == "clear_range"
     assert cleaned_office[2]["range_address"] == "A1:B2"
     assert "excel_cell" not in cleaned_office[3]
+
+
+def test_excel_copy_to_web_paste_preserves_dynamic_paste_and_filters_untouched_snapshot():
+    raw_logs = [
+        {"EventNo": "001", "Type": "mouse_click", "WindowName": "タスクの切り替え", "ProcessName": "explorer.exe", "Content": {"screen_coordinates": {"x": 300, "y": 1060}}},
+        {"EventNo": "002", "Type": "key_combo", "WindowName": "Book1.xlsx - Excel", "ProcessName": "EXCEL.EXE", "Content": {"combo": "alt+tab"}},
+        {"EventNo": "003", "Type": "mouse_click", "WindowName": "Book1.xlsx [保護ビュー] - Excel", "ProcessName": "EXCEL.EXE", "Content": {"screen_coordinates": {"x": 55, "y": 230}}},
+    ]
+    filtered = filter_meaningful_raw_logs(raw_logs)
+    assert [e["EventNo"] for e in filtered] == ["003"]
+
+    # Leading move on unrelated window (VS Code) must be trimmed while Excel cell clicks get excel_dest_cell
+    workflow_events = [
+        {
+            "event_id": "evt_001",
+            "raw_action": "move",
+            "window_name": "config.json - Visual Studio Code",
+            "process_name": "Code.exe",
+            "app_profile": "desktop",
+            "diff_val": 1.0,
+            "app_context": {"element_name": "Terminal"},
+        },
+        {
+            "event_id": "evt_002",
+            "raw_action": "click",
+            "window_name": "data.xlsx [保護ビュー] - Excel",
+            "process_name": "EXCEL.EXE",
+            "app_profile": "office",
+            "cursor_x": 55,
+            "cursor_y": 230,
+            "app_context": {"element_name": "A2", "control_type": "DataItem", "value": "岡田 真"},
+        },
+        {
+            "event_id": "evt_003",
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+c",
+            "window_name": "data.xlsx [保護ビュー] - Excel",
+            "process_name": "EXCEL.EXE",
+            "app_profile": "office",
+        },
+        {
+            "event_id": "evt_004",
+            "raw_action": "click",
+            "window_name": "AI Macro System テスト — Mozilla Firefox",
+            "process_name": "firefox.exe",
+            "app_profile": "browser",
+            "cursor_x": 960,
+            "cursor_y": 357,
+            "app_context": {
+                "css_selector": "#field-full-name",
+                "element_name": "氏名",
+                "control_type": "Edit",
+                "form_snapshot": {
+                    "#dummy_fields_name": "true",
+                    "#field-gender": "選択してください",
+                    "#field-full-name": "岡田 真",
+                    "__elements__": [
+                        {"selector": "#dummy_fields_name", "element_name": "氏名", "control_type": "CheckBox", "x": 332, "y": 445, "value": "true"},
+                        {"selector": "#nav-form", "element_name": "顧客データ登録", "control_type": "Button", "x": 1089, "y": 146, "value": "顧客データ登録"},
+                        {"selector": "#field-full-name", "element_name": "氏名", "control_type": "Edit", "x": 960, "y": 357, "value": "岡田 真"},
+                        {"selector": "#field-gender", "element_name": "性別", "control_type": "ComboBox", "x": 960, "y": 605, "value": "選択してください"},
+                    ],
+                },
+            },
+        },
+        {
+            "event_id": "evt_005",
+            "raw_action": "key_combo",
+            "semantic_role": "ctrl+v",
+            "window_name": "AI Macro System テスト — Mozilla Firefox",
+            "process_name": "firefox.exe",
+            "app_profile": "browser",
+            "app_context": {"css_selector": "#field-full-name", "element_name": "氏名", "control_type": "Edit"},
+        },
+    ]
+
+    consolidated = consolidate_web_form_interactions(workflow_events)
+    trimmed = trim_boundary_noise(consolidated)
+    propagated = propagate_excel_cells(trimmed)
+
+    assert [e["event_id"] for e in propagated] == ["evt_002", "evt_003", "evt_004", "evt_005"]
+    assert propagated[0]["excel_dest_cell"] == "A2"
+    # Untouched snapshot elements (#dummy_fields_name, #field-gender, #nav-form) must not be fabricated
+    assert not any(e.get("selector") in ("#dummy_fields_name", "#field-gender", "#nav-form") for e in propagated)
+    # Dynamic Ctrl+V paste must remain intact without hardcoded type_text overwrite
+    assert propagated[-1]["raw_action"] == "key_combo"
+    assert propagated[-1]["semantic_role"] == "ctrl+v"

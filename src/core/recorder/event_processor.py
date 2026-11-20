@@ -75,7 +75,7 @@ def enqueue_key_event(
 
     if window_info is None:
         window_info = window_inspector.get_foreground_window_info()
-    if window_inspector.should_ignore_window(window_info.get("title")):
+    if window_inspector.should_ignore_window(window_info.get("title"), window_info=window_info):
         return
 
     event_no = state.get_next_event_no()
@@ -100,7 +100,7 @@ def enqueue_key_event(
 
 
 def process_key_event(event: dict):
-    if window_inspector.should_ignore_window(event["window_info"].get("title")):
+    if window_inspector.should_ignore_window(event["window_info"].get("title"), window_info=event["window_info"]):
         return
 
     input_type = event["input_type"]
@@ -161,7 +161,7 @@ def process_uia_event(info: dict):
             return
 
         window_info = window_inspector.get_foreground_window_info()
-        if window_inspector.should_ignore_window(window_info.get("title")):
+        if window_inspector.should_ignore_window(window_info.get("title"), window_info=window_info):
             return
 
         # Why: Excel操作時はCOMイベントを優先してUIA_SCANを除外し、Word等の非Excel系OfficeではUIA_SCANを許可

@@ -38,8 +38,10 @@ def scroll_into_view(
     if not target_hwnd and platform.system() == "Windows":
         target_hwnd = ctypes.windll.user32.GetForegroundWindow()
 
+    # Why: 明示的IDセレクタや要素名がある場合はスクロールズレ補正のためUIA探索を優先する
+    has_strong_locator = bool((sel_clean and sel_clean.startswith("#")) or element_name)
     win_rect_pre = get_window_bounds(target_hwnd)
-    if win_rect_pre and x is not None and y is not None:
+    if not has_strong_locator and win_rect_pre and x is not None and y is not None:
         w_l, w_t, w_r, w_b = win_rect_pre
         if w_l <= x <= w_r and (w_t + 80) <= y <= (w_b - 40):
             return (int(x), int(y))

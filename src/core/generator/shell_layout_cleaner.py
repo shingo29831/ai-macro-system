@@ -144,7 +144,23 @@ def trim_boundary_noise(temp_workflow_info: List[Dict[str, Any]]) -> List[Dict[s
         if first_evt.get("raw_action") == "move":
             diff = first_evt.get("diff_val", 0.0)
             elem = (first_evt.get("app_context") or {}).get("element_name")
-            if diff < 0.005 and not elem:
+            first_win = str(first_evt.get("window_name") or "").strip()
+            # Why: 録画開始直後に別ウィンドウ(VS Code等)を通過しただけのmoveを先頭から除去
+            has_business_in_same_win = bool(
+                first_win
+                and any(
+                    str(e.get("window_name") or "").strip() == first_win and is_business_action(e)
+                    for e in temp_workflow_info[1:]
+                )
+            )
+            has_later_other_win = bool(
+                first_win
+                and any(
+                    str(e.get("window_name") or "").strip() not in ("", first_win)
+                    for e in temp_workflow_info[1:]
+                )
+            )
+            if (diff < 0.005 and not elem) or (not has_business_in_same_win and has_later_other_win):
                 temp_workflow_info.pop(0)
             else:
                 break

@@ -38,7 +38,8 @@ def _extract_app_name(title: str) -> str:
 
 
 def _should_skip_system_window(current_window: str) -> bool:
-    return is_system_shell_window(current_window, check_keywords_for_browser=True)
+    # Why: Webページタイトルに「設定」「AI Macro System」「python」等を含む業務タブの誤除外を防止
+    return is_system_shell_window(current_window, check_keywords_for_browser=False)
 
 
 def _build_action_command(

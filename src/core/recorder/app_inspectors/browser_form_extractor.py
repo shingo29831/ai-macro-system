@@ -2,8 +2,11 @@
 
 import logging
 import math
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
+
+from core.shared.window_utils import find_active_browser_document
 
 logger = logging.getLogger(__name__)
 
@@ -258,8 +261,12 @@ class BrowserFormTracker:
             logger.debug(f"[BrowserFormTracker] commit_previous_element error: {e}")
         return None
 
-    def extract_form_snapshot(self, window_info: Dict[str, Any]) -> Dict[str, Any]:
-        """ページ全域を走査し各フォーム要素のセレクタ・確定値・物理座標を一括抽出する。"""
+    def extract_form_snapshot(
+        self,
+        window_info: Dict[str, Any],
+        point: Optional[Tuple[int, int]] = None,
+    ) -> Dict[str, Any]:
+        """アクティブタブのWebドキュメントを走査し各フォーム要素のセレクタ・確定値・物理座標を抽出する。"""
         snapshot: Dict[str, Any] = dict(self.form_values_cache)
         hwnd = window_info.get("hwnd") or window_info.get("handle")
         if not hwnd:
@@ -271,19 +278,24 @@ class BrowserFormTracker:
             if not win_ctrl or not win_ctrl.Exists(0, 0):
                 return snapshot
 
-            # Why: ブラウザのアドレスバー・タブを除外しWebドキュメント領域へ探索を限定
-            doc_ctrl = None
-            for c in win_ctrl.GetChildren():
-                c_name = getattr(c, "ControlTypeName", "") or ""
-                c_class = getattr(c, "ClassName", "") or ""
-                if c_name == "DocumentControl" or any(cn in c_class for cn in _DOCUMENT_CLASSES):
-                    doc_ctrl = c
-                    break
+            # Why: Firefox等の複数タブ環境で非表示バックグラウンドタブがスナップショットへ混入するのを遮断
+            scan_root = find_active_browser_document(
+                win_ctrl,
+                window_title=str(window_info.get("title") or ""),
+                point=point,
+            )
+            if not scan_root:
+                return snapshot
 
-            scan_root = doc_ctrl if doc_ctrl and doc_ctrl.Exists(0, 0) else win_ctrl
             elements_detail: List[Dict[str, Any]] = []
+            walk_start = time.monotonic()
 
-            for ctrl, _depth in auto.WalkControl(scan_root, maxDepth=16):
+            for node_idx, (ctrl, _depth) in enumerate(auto.WalkControl(scan_root, maxDepth=16)):
+                # Why: 巨大DOMによる録画ワーカー長時間ブロックと後続クリック欠落を防止
+                if node_idx >= 600 or (time.monotonic() - walk_start) > 0.35:
+                    break
+                if getattr(ctrl, "IsOffscreen", False):
+                    continue
                 c_type = getattr(ctrl, "ControlTypeName", "") or ""
                 if c_type not in _SNAPSHOT_TARGET_TYPES:
                     continue
@@ -297,8 +309,10 @@ class BrowserFormTracker:
                     continue
 
                 rect = ctrl.BoundingRectangle
-                cx = (rect.left + rect.right) // 2 if rect else 0
-                cy = (rect.top + rect.bottom) // 2 if rect else 0
+                if not rect or (rect.right - rect.left) <= 0 or (rect.bottom - rect.top) <= 0:
+                    continue
+                cx = (rect.left + rect.right) // 2
+                cy = (rect.top + rect.bottom) // 2
                 # Why: 画面上部ツールバー内の誤検出を座標で安全に遮断
                 if cy < 110:
                     continue
@@ -315,18 +329,16 @@ class BrowserFormTracker:
                     "value": val,
                     "x": cx,
                     "y": cy,
-                    "rect": [rect.left, rect.top, rect.right, rect.bottom] if rect else [0, 0, 0, 0],
+                    "rect": [rect.left, rect.top, rect.right, rect.bottom],
                 })
 
-                # Why: ボタンやNaN値は入力キャッシュに混入させず純粋な入力値のみ保持
+                # Why: 未操作デフォルト値でcommitted用form_values_cacheを汚染せずスナップショットのみ記録
                 if val and str(val).strip() and str(val).strip().lower() != "nan" and c_type != "ButtonControl":
                     v_str = str(val).strip()
                     if sel:
                         snapshot[sel] = v_str
-                        self.form_values_cache[sel] = v_str
                     if clean_name:
                         snapshot[f"name:{clean_name}"] = v_str
-                        self.form_values_cache[f"name:{clean_name}"] = v_str
 
             if elements_detail:
                 snapshot["__elements__"] = elements_detail

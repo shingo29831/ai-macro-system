@@ -1,7 +1,7 @@
 """Module: @role: 記録イベント列からWebフォーム確定値スナップショット・物理座標・スキャン要素情報および入力値候補を集約する。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.generator.form_value_evaluator import evaluate_form_value
 from core.shared.app_log_profile import AppProfile, detect_app_profile
@@ -19,6 +19,8 @@ class FormSnapshotContext:
     scanned_elements_values: Dict[str, str] = field(default_factory=dict)
     selector_candidates: Dict[str, List[str]] = field(default_factory=dict)
     element_final_values: Dict[str, str] = field(default_factory=dict)
+    changed_selectors: Set[str] = field(default_factory=set)
+    committed_selectors: Set[str] = field(default_factory=set)
 
 
 def _should_skip_snapshot_update(
@@ -101,7 +103,10 @@ def collect_form_snapshot_context(
         if sel and ename:
             state.selector_names[sel] = ename
 
-        for snap_src in [ctx.get("form_snapshot"), ctx.get("committed_values")]:
+        for is_committed_src, snap_src in (
+            (False, ctx.get("form_snapshot")),
+            (True, ctx.get("committed_values")),
+        ):
             if isinstance(snap_src, dict):
                 if "__elements__" in snap_src and isinstance(snap_src["__elements__"], list):
                     # Why: __elements__詳細スキャンから真の要素物理座標と型を直接統合
@@ -112,8 +117,12 @@ def collect_form_snapshot_context(
                     if sk == "__elements__" or sv is None or not str(sv).strip():
                         continue
                     val_str = str(sv).strip()
+                    if is_committed_src:
+                        state.committed_selectors.add(sk)
                     if sk not in state.initial_form_values:
                         state.initial_form_values[sk] = val_str
+                    elif val_str != state.initial_form_values[sk] and not post_submit_reset_detected:
+                        state.changed_selectors.add(sk)
                     prev_val = state.global_form_snapshot.get(sk)
                     if not _should_skip_snapshot_update(
                         prev_val, val_str, state.initial_form_values.get(sk), post_submit_reset_detected
@@ -126,6 +135,7 @@ def collect_form_snapshot_context(
             pv = prev_c.get("value")
             if ps and pv and str(pv).strip():
                 pv_str = str(pv).strip()
+                state.committed_selectors.add(ps)
                 prev_val = state.global_form_snapshot.get(ps)
                 if not _should_skip_snapshot_update(
                     prev_val, pv_str, state.initial_form_values.get(ps), post_submit_reset_detected

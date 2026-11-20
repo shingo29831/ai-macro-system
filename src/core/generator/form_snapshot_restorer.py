@@ -9,6 +9,13 @@ _INTERNAL_UI_KEYWORDS = [
     "contentselectdropdown", "select-popup", "datalist", "popup", "moz-", "chrome://",
     "urlbar", "addressbar", "omnibox", "identity-box", "tracking-protection",
 ]
+_INTERACTIVE_USER_ACTIONS = frozenset({
+    "click", "type_text", "key_down", "key_press", "key_combo", "browser_action",
+})
+_NON_SUBMIT_BUTTON_HINTS = (
+    "nav", "home", "back", "reset", "clear", "cancel", "logout", "close",
+    "戻る", "クリア", "キャンセル", "ログアウト",
+)
 
 
 def _resolve_snapshot_coords(
@@ -66,21 +73,29 @@ def restore_missing_snapshot_elements(
         v_str = str(v).strip()
         if not v_str:
             continue
-        # Why: 近傍にカーソル移動があったチェックボックスは明示的な操作対象として復元
+        # Why: 未操作デフォルト要素・他タブ要素の捏造を防ぎ、値変化・blur確定・実操作ありの要素のみ復元
         scanned_elem = state.scanned_elements_map.get(k) or {}
         sc_x = scanned_elem.get("x", 0)
         sc_y = scanned_elem.get("y", 0)
         has_interaction = any(
-            (e.get("app_context") or {}).get("css_selector") == k
-            or e.get("selector") == k
-            or (
-                sc_x > 20 and sc_y > 20
-                and abs(e.get("cursor_x", e.get("x", 0)) - sc_x) <= 45
-                and abs(e.get("cursor_y", e.get("y", 0)) - sc_y) <= 45
+            detect_app_profile(e) == AppProfile.BROWSER
+            and e.get("raw_action") in _INTERACTIVE_USER_ACTIONS
+            and (
+                (e.get("app_context") or {}).get("css_selector") == k
+                or e.get("selector") == k
+                or (
+                    sc_x > 20 and sc_y > 20
+                    and abs(e.get("cursor_x", e.get("x", 0)) - sc_x) <= 45
+                    and abs(e.get("cursor_y", e.get("y", 0)) - sc_y) <= 45
+                )
             )
             for e in temp_workflow_info
         )
-        if not has_interaction and v_str.lower() in ["false", ""]:
+        was_changed = k in state.changed_selectors
+        was_committed = k in state.committed_selectors
+        if not (has_interaction or was_changed or was_committed):
+            continue
+        if not has_interaction and not was_changed and v_str.lower() in ["false", ""]:
             continue
         snapshot_items.append((k, v_str))
 
@@ -202,24 +217,33 @@ def finalize_form_order(
             runs.append((is_br, [item]))
 
     has_explicit_submit = False
+    has_any_form_input = False
     last_browser_run_idx = -1
     for r_idx, (is_br, items) in enumerate(runs):
         if is_br:
             last_browser_run_idx = r_idx
             for item in items:
                 act = item.get("action")
+                raw_act = item.get("raw_action")
                 sel = str(item.get("selector", "")).lower()
                 if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
                     has_explicit_submit = True
+                if (raw_act == "browser_action" and act in ("type_text", "select_option", "set_checkbox")) or (
+                    raw_act == "key_combo" and str(item.get("semantic_role", "")).lower() in ("ctrl+v", "ctrl+shift+v")
+                ):
+                    has_any_form_input = True
 
     recovered_submit: List[Dict[str, Any]] = []
-    if not has_explicit_submit and last_browser_run_idx >= 0:
+    # Why: 実入力がない場合やナビゲーション系ボタン(#nav-form等)を誤って送信クリック捏造しない
+    if has_any_form_input and not has_explicit_submit and last_browser_run_idx >= 0:
         for s_key, s_data in state.scanned_elements_map.items():
             s_sel = str(s_data.get("selector", "")).lower()
             s_name = str(s_data.get("element_name", "")).lower()
             c_type = str(s_data.get("control_type", "")).lower()
+            is_non_submit = any(h in s_sel or h in s_name for h in _NON_SUBMIT_BUTTON_HINTS)
             is_real_submit = (
-                ("submit" in s_sel or "submit" in s_key.lower() or any(w in s_name for w in ["登録", "送信", "保存", "submit"]))
+                not is_non_submit
+                and ("submit" in s_sel or "submit" in s_key.lower() or any(w in s_name for w in ["登録", "送信", "保存", "submit"]))
                 and "button" in c_type
             )
             if is_real_submit and s_data.get("selector"):
@@ -260,7 +284,12 @@ def finalize_form_order(
         section_others: List[Dict[str, Any]] = []
         for item in items:
             act = item.get("action")
-            is_boundary = item.get("raw_action") == "browser_action" and act in ("click_element", "open_url")
+            raw_act = item.get("raw_action")
+            # Why: clickやCtrl+Vペーストも順序境界とし、フォーム要素並び替えによる時系列破壊を防止
+            is_boundary = (
+                (raw_act == "browser_action" and act in ("click_element", "open_url"))
+                or raw_act in ("click", "key_combo")
+            )
             if is_boundary:
                 ordered_output.extend(section_others)
                 ordered_output.extend(_sort_form_inputs(section_inputs))

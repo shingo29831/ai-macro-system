@@ -18,6 +18,22 @@ def test_window_utils_extract_and_system_shell_distinction():
     assert window_utils.is_system_shell_window("Google 検索 - Google Chrome", check_keywords_for_browser=False) is False
     assert window_utils.is_system_shell_window("AI Macro System - Chrome", check_keywords_for_browser=True) is True
     assert window_utils.is_ignored_system_window("AIマクロ生成中...") is True
+    assert window_utils.is_ignored_system_window("設定（UI切替） - Mozilla Firefox") is False
+    assert window_utils.is_ignored_system_window("AI Macro System テスト - Mozilla Firefox") is False
+    assert window_utils.is_ignored_system_window("設定") is True
+    assert window_utils.is_system_shell_window("タスクの切り替え") is True
+
+    import os
+    from core.recorder import window_inspector
+
+    assert window_inspector.should_ignore_window("任意のタイトル", window_info={"process_id": os.getpid()}) is True
+    assert (
+        window_inspector.should_ignore_window(
+            "AI Macro System テスト — Mozilla Firefox",
+            window_info={"process_id": os.getpid() + 99999, "process_name": "firefox.exe"},
+        )
+        is False
+    )
 
 
 def test_ime_controller_url_and_width_classification():

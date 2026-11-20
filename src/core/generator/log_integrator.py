@@ -18,6 +18,15 @@ from core.shared.window_utils import is_system_shell_window
 
 logger = logging.getLogger(__name__)
 
+_OS_WINDOW_SWITCH_COMBOS = frozenset({
+    "alt+tab",
+    "alt+shift+tab",
+    "shift+alt+tab",
+    "win+tab",
+    "alt+esc",
+    "ctrl+alt+tab",
+})
+
 
 def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """マクロで実行・再現する可能性のないノイズログおよび非アクティブアプリの不適合チャネルログを事前排除する。"""
@@ -56,8 +65,8 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
         content = entry.get("Content") or {}
         if isinstance(content, dict):
             combo_str = str(content.get("combo") or content.get("key") or "").lower()
-            # Why: 明示的なIMEトグルのみ除外し、Excel行/列選択(shift/ctrl+space)等を保護
-            if is_ime_toggle_combo(combo_str):
+            # Why: 明示的なIMEトグルおよびOSウィンドウ切替(Alt+Tab等)を除外し、activate_windowへ委譲
+            if is_ime_toggle_combo(combo_str) or combo_str in _OS_WINDOW_SWITCH_COMBOS:
                 continue
             # Why: Windows検索等のシェルでアプリ起動時に押したEnterが新ウィンドウ先頭へ漏れた場合を除外
             if just_skipped_shell and "key" in raw_type and combo_str in ("enter", "return"):

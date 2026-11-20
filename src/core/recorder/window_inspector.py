@@ -1,6 +1,7 @@
 """Module: @role: Windows APIおよびUI Automationを用いて、フォアグラウンドウィンドウやカーソル位置のUI要素矩形・テキスト情報を取得・診断する。"""
 
 import ctypes
+import os
 from ctypes import wintypes
 
 from core.shared.window_utils import IGNORED_SYSTEM_WINDOW_TITLES, is_ignored_system_window
@@ -12,9 +13,32 @@ except ImportError:
 
 IGNORED_WINDOW_TITLES = IGNORED_SYSTEM_WINDOW_TITLES + ["スナップ アシスト", "スナップ", "snap assist"]
 
+_NON_SYSTEM_USER_PROCESSES = frozenset({
+    "firefox.exe",
+    "chrome.exe",
+    "msedge.exe",
+    "brave.exe",
+    "opera.exe",
+    "excel.exe",
+    "winword.exe",
+    "powerpnt.exe",
+    "outlook.exe",
+    "msaccess.exe",
+    "code.exe",
+    "notepad.exe",
+})
 
-def should_ignore_window(title: str | None) -> bool:
+
+def should_ignore_window(title: str | None, window_info: dict | None = None) -> bool:
     """システム自身の操作・設定ウィンドウかどうかを判定して除外対象とする"""
+    if isinstance(window_info, dict):
+        pid = window_info.get("process_id")
+        # Why: 自プロセスウィンドウはタイトルに依らず確実除外し、外部ブラウザ等の誤除外を完全防止
+        if pid and int(pid) == os.getpid():
+            return True
+        proc_name = str(window_info.get("process_name") or "").lower().strip()
+        if proc_name in _NON_SYSTEM_USER_PROCESSES:
+            return False
     return is_ignored_system_window(title)
 
 def _empty_window_info(error: str) -> dict:
@@ -35,96 +59,120 @@ def _empty_window_info(error: str) -> dict:
         "error": error,
     }
 
-def get_foreground_window_info() -> dict:
-    """現在アクティブなフォアグラウンドウィンドウの属性・サイズ・所属プロセス情報を取得する"""
+def _build_window_info_from_hwnd(hwnd: int) -> dict:
+    user32 = ctypes.windll.user32
+    title_buffer = ctypes.create_unicode_buffer(512)
+    class_buffer = ctypes.create_unicode_buffer(256)
+
+    user32.GetWindowTextW(hwnd, title_buffer, 512)
+    user32.GetClassNameW(hwnd, class_buffer, 256)
+
+    rect = wintypes.RECT()
+    rect_ok = user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+    if rect_ok:
+        left = int(rect.left)
+        top = int(rect.top)
+        right = int(rect.right)
+        bottom = int(rect.bottom)
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+    else:
+        left = top = right = bottom = width = height = 0
+
+    is_maximized = bool(user32.IsZoomed(hwnd))
+    monitor_info = {"left": 0, "top": 0, "right": 0, "bottom": 0, "is_primary": True}
     try:
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
+        class _RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT), ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+        h_mon = user32.MonitorFromWindow(hwnd, 2)
+        if h_mon:
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            if user32.GetMonitorInfoW(h_mon, ctypes.byref(mi)):
+                monitor_info = {
+                    "left": int(mi.rcMonitor.left),
+                    "top": int(mi.rcMonitor.top),
+                    "right": int(mi.rcMonitor.right),
+                    "bottom": int(mi.rcMonitor.bottom),
+                    "is_primary": bool(mi.dwFlags & 1),
+                }
+    except Exception:
+        pass
 
-        if not hwnd:
-            return _empty_window_info("GetForegroundWindow returned 0")
+    pid = ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process_id = int(pid.value) if pid.value else None
 
-        title_buffer = ctypes.create_unicode_buffer(512)
-        class_buffer = ctypes.create_unicode_buffer(256)
+    process_name = ""
+    exe_path = ""
+    command_line = ""
 
-        user32.GetWindowTextW(hwnd, title_buffer, 512)
-        user32.GetClassNameW(hwnd, class_buffer, 256)
-
-        rect = wintypes.RECT()
-        rect_ok = user32.GetWindowRect(hwnd, ctypes.byref(rect))
-
-        if rect_ok:
-            left = int(rect.left)
-            top = int(rect.top)
-            right = int(rect.right)
-            bottom = int(rect.bottom)
-            width = max(0, right - left)
-            height = max(0, bottom - top)
-        else:
-            left = top = right = bottom = width = height = 0
-
-        is_maximized = bool(user32.IsZoomed(hwnd))
-        monitor_info = {"left": 0, "top": 0, "right": 0, "bottom": 0, "is_primary": True}
+    if process_id and psutil is not None:
         try:
-            class _RECT(ctypes.Structure):
-                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-            class _MONITORINFO(ctypes.Structure):
-                _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT), ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
-            h_mon = user32.MonitorFromWindow(hwnd, 2)
-            if h_mon:
-                mi = _MONITORINFO()
-                mi.cbSize = ctypes.sizeof(_MONITORINFO)
-                if user32.GetMonitorInfoW(h_mon, ctypes.byref(mi)):
-                    monitor_info = {
-                        "left": int(mi.rcMonitor.left),
-                        "top": int(mi.rcMonitor.top),
-                        "right": int(mi.rcMonitor.right),
-                        "bottom": int(mi.rcMonitor.bottom),
-                        "is_primary": bool(mi.dwFlags & 1),
-                    }
+            proc = psutil.Process(process_id)
+            process_name = proc.name() or ""
+            exe_path = proc.exe() or ""
+            cmdline = proc.cmdline()
+            if cmdline:
+                cmdline[0] = f'"{cmdline[0]}"'
+                command_line = " ".join(cmdline)
         except Exception:
             pass
 
-        pid = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        process_id = int(pid.value) if pid.value else None
+    return {
+        "success": True,
+        "hwnd": int(hwnd),
+        "title": title_buffer.value or "",
+        "class_name": class_buffer.value or "",
+        "process_id": process_id,
+        "process_name": process_name,
+        "exe_path": exe_path,
+        "command_line": command_line,
+        "rect": {"left": left, "top": top, "right": right, "bottom": bottom},
+        "size": {"width": width, "height": height},
+        "coordinates": {"x": left, "y": top},
+        "is_maximized": is_maximized,
+        "monitor": monitor_info,
+        "error": None,
+    }
 
-        process_name = ""
-        exe_path = ""
-        command_line = ""
 
-        if process_id and psutil is not None:
-            try:
-                proc = psutil.Process(process_id)
-                process_name = proc.name() or ""
-                exe_path = proc.exe() or ""
-                cmdline = proc.cmdline()
-                if cmdline:
-                    # 実行ファイルパスにスペースが含まれる場合を考慮してダブルクォートで囲む
-                    cmdline[0] = f'"{cmdline[0]}"'
-                    command_line = " ".join(cmdline)
-            except Exception:
-                pass
-
-        return {
-            "success": True,
-            "hwnd": int(hwnd),
-            "title": title_buffer.value or "",
-            "class_name": class_buffer.value or "",
-            "process_id": process_id,
-            "process_name": process_name,
-            "exe_path": exe_path,
-            "command_line": command_line,
-            "rect": {"left": left, "top": top, "right": right, "bottom": bottom},
-            "size": {"width": width, "height": height},
-            "coordinates": {"x": left, "y": top},
-            "is_maximized": is_maximized,
-            "monitor": monitor_info,
-            "error": None,
-        }
-
+def get_foreground_window_info() -> dict:
+    """現在アクティブなフォアグラウンドウィンドウの属性・サイズ・所属プロセス情報を取得する"""
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return _empty_window_info("GetForegroundWindow returned 0")
+        return _build_window_info_from_hwnd(int(hwnd))
     except Exception as e:
         return _empty_window_info(str(e))
+
+
+def get_window_info_at_point(x: int, y: int) -> dict:
+    """クリック座標直下のルートウィンドウ情報を取得し、ウィンドウ切替直前の旧FG誤帰属を防止する。"""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+        if hwnd:
+            root_hwnd = user32.GetAncestor(hwnd, 2) or hwnd
+            info = _build_window_info_from_hwnd(int(root_hwnd))
+            # Why: ブラウザの<select>ポップアップ等タイトル空の同一プロセス子窓は親FGウィンドウ情報へ統合
+            if not info.get("title"):
+                fg_info = get_foreground_window_info()
+                if (
+                    fg_info.get("success")
+                    and fg_info.get("title")
+                    and info.get("process_name")
+                    and info["process_name"].lower() == str(fg_info.get("process_name") or "").lower()
+                ):
+                    return fg_info
+            return info
+    except Exception:
+        pass
+    return get_foreground_window_info()
 
 def build_recording_window_fields(
     window_info: dict,

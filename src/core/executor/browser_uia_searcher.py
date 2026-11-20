@@ -9,7 +9,7 @@ import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.shared.window_utils import get_browser_family
+from core.shared.window_utils import find_active_browser_document, get_browser_family
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,8 @@ def _find_by_point(
     target_y: Optional[int],
     target_hwnd: Optional[int],
     last_win_args: Optional[Dict[str, Any]],
+    direct_auto_ids: Optional[List[str]] = None,
+    search_terms: Optional[List[str]] = None,
 ) -> Any:
     if not (target_x is not None and target_y is not None and target_x > 20 and target_y > 20):
         return None
@@ -114,6 +116,17 @@ def _find_by_point(
             off_x, off_y = get_window_offset(target_hwnd, last_win_args.get("x", 0), last_win_args.get("y", 0))
         pt_ctrl = auto.ControlFromPoint(int(target_x + off_x), int(target_y + off_y))
         if pt_ctrl and pt_ctrl.Exists(0, 0):
+            # Why: スクロールズレ時に座標上の無関係な別要素を誤返却しないようID/名称一致を検証
+            if direct_auto_ids or search_terms:
+                aid = str(getattr(pt_ctrl, "AutomationId", "") or "").strip().lower()
+                name = str(getattr(pt_ctrl, "Name", "") or "").strip().lower()
+                id_match = any(aid == d.lower() for d in (direct_auto_ids or []))
+                term_match = any(
+                    len(t) >= 2 and ((aid and t in aid) or (name and t in name))
+                    for t in (search_terms or [])
+                )
+                if not (id_match or term_match):
+                    return None
             return UIAWrapper(pt_ctrl.Element)
     except Exception:
         pass
@@ -124,6 +137,7 @@ def _find_in_document_tree(
     target_hwnd: Optional[int],
     direct_auto_ids: List[str],
     search_terms: List[str],
+    window_title: str = "",
 ) -> Any:
     try:
         import uiautomation as auto
@@ -138,7 +152,8 @@ def _find_in_document_tree(
         if not (win_ctrl and win_ctrl.Exists(0, 0)):
             return None
 
-        scope_ctrl = win_ctrl.DocumentControl()
+        # Why: 複数タブ環境で先頭バックグラウンドタブではなくアクティブタブのDocumentControlを探索
+        scope_ctrl = find_active_browser_document(win_ctrl, window_title=window_title)
         if not scope_ctrl or not scope_ctrl.Exists(0, 0):
             scope_ctrl = win_ctrl
 
@@ -286,19 +301,27 @@ def find_uia_element(
             desktop = pywinauto.Desktop(backend="uia")
             target_hwnd = last_win_args.get("mapped_hwnd") if last_win_args else None
 
-            # Why: 記録座標からのControlFromPointで深層走査タイムアウトを回避し高速特定
-            target_x = x if x is not None else kwargs.get("x")
-            target_y = y if y is not None else kwargs.get("y")
-            pt_elem = _find_by_point(target_x, target_y, target_hwnd, last_win_args)
-            if pt_elem:
-                return pt_elem
-
             search_terms, direct_auto_ids = build_search_criteria(
                 selector, element_name, url, text or kwargs.get("text")
             )
 
-            # Why: WebContentのDocumentControlを起点にして深層DOM要素を構文解析結果に基づき自律検出
-            doc_elem = _find_in_document_tree(target_hwnd, direct_auto_ids, search_terms)
+            # Why: 記録座標からのControlFromPointで深層走査タイムアウトを回避しつつID/名称一致を保証
+            target_x = x if x is not None else kwargs.get("x")
+            target_y = y if y is not None else kwargs.get("y")
+            pt_elem = _find_by_point(
+                target_x,
+                target_y,
+                target_hwnd,
+                last_win_args,
+                direct_auto_ids=direct_auto_ids,
+                search_terms=search_terms,
+            )
+            if pt_elem:
+                return pt_elem
+
+            win_title = str(last_win_args.get("window_title") or "") if last_win_args else ""
+            # Why: WebContentのアクティブDocumentControlを起点にして深層DOM要素を構文解析結果に基づき自律検出
+            doc_elem = _find_in_document_tree(target_hwnd, direct_auto_ids, search_terms, window_title=win_title)
             if doc_elem:
                 return doc_elem
 

@@ -84,8 +84,9 @@ def handle_mouse_event(evt: Dict[str, Any]) -> None:
 
     if pressed:
         try:
-            window_info = window_inspector.get_foreground_window_info()
-            if window_inspector.should_ignore_window(window_info.get("title")):
+            # Why: 非アクティブウィンドウへの直接クリック時に旧FG(Excel等)へ誤帰属するのを防止
+            window_info = window_inspector.get_window_info_at_point(int(x), int(y))
+            if window_inspector.should_ignore_window(window_info.get("title"), window_info=window_info):
                 return
 
             event_no, dt = state.get_next_event_no(), now_datetime()

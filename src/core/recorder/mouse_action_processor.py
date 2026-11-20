@@ -30,14 +30,22 @@ _last_scroll_info = None
 _scroll_dedup_lock = threading.Lock()
 
 
-def get_app_context(window_info: Dict[str, Any], x: Optional[int] = None, y: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def get_app_context(
+    window_info: Dict[str, Any],
+    x: Optional[int] = None,
+    y: Optional[int] = None,
+    include_snapshot: bool = True,
+) -> Optional[Dict[str, Any]]:
     """アクティブなアプリのプロファイルに基づき、専用インスペクターおよびUIA要素コンテキストを取得する"""
     app_profile = detect_app_profile(window_info)
     context = None
     inspector = InspectorFactory.get_inspector(window_info)
     if inspector:
         try:
-            context = inspector.inspect(window_info, x=x, y=y)
+            if hasattr(inspector, "extract_form_snapshot"):
+                context = inspector.inspect(window_info, x=x, y=y, include_snapshot=include_snapshot)
+            else:
+                context = inspector.inspect(window_info, x=x, y=y)
         except Exception as e:
             print(f"Inspector error: {e}")
 
@@ -99,7 +107,7 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
                 flush_pending_click(False)
 
         window_info = window_inspector.get_foreground_window_info()
-        if window_inspector.should_ignore_window(window_info.get("title")):
+        if window_inspector.should_ignore_window(window_info.get("title"), window_info=window_info):
             return
 
         event_no = state.get_next_event_no()
@@ -109,7 +117,8 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
         pre_full_img, pre_monitor = take_screenshot()
         pre_ref = screen_capturer.save_pre_image_from_pil(event_no=event_no, img=pre_full_img)
 
-        app_context = get_app_context(window_info, x=x, y=y)
+        # Why: mouse_moveごとの重いDOM全走査を抑止し、録画遅延と未操作タブ要素混入を根絶
+        app_context = get_app_context(window_info, x=x, y=y, include_snapshot=False)
         ui_rect = window_inspector.get_ui_element_rect_at_point(x, y)
 
         diff_str = calculate_and_update_diff(pre_full_img)
@@ -169,7 +178,7 @@ def process_move_event(event: Dict[str, Any], flush_pending_click: Optional[Call
 
 def process_click_event(event: Dict[str, Any], input_type: str, click_count: int) -> None:
     try:
-        if window_inspector.should_ignore_window(event["window_info"].get("title")):
+        if window_inspector.should_ignore_window(event["window_info"].get("title"), window_info=event["window_info"]):
             return
 
         event_no, dt = event["event_no"], event["datetime"]
@@ -259,7 +268,7 @@ def process_click_event(event: Dict[str, Any], input_type: str, click_count: int
 
 def process_drag_event(event: Dict[str, Any]) -> None:
     try:
-        if window_inspector.should_ignore_window(event["window_info"].get("title")):
+        if window_inspector.should_ignore_window(event["window_info"].get("title"), window_info=event["window_info"]):
             return
 
         event_no = event["event_no"]
@@ -359,7 +368,7 @@ def process_scroll_event(event: Dict[str, Any], flush_pending_click: Optional[Ca
                 point_window = fg_info
 
         w_title = point_window.get("title", "") if point_window else ""
-        if w_title and window_inspector.should_ignore_window(w_title):
+        if w_title and window_inspector.should_ignore_window(w_title, window_info=point_window):
             return
 
         event_no = state.get_next_event_no()
