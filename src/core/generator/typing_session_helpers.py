@@ -25,6 +25,7 @@ __all__ = [
     "IGNORE_MODIFIERS",
     "ESSENTIAL_KEYS",
     "BROWSER_TITLE_KEYWORDS",
+    "is_ime_toggle_combo",
     "parse_diff_value",
     "get_app_context",
     "get_event_diff_val",
@@ -41,21 +42,42 @@ __all__ = [
 ]
 
 
+def is_ime_toggle_combo(combo_str: str) -> bool:
+    """明示的なIME切替キーのみ判定し、shift+space(Excel行選択)やctrl/alt+spaceを誤除外しない。"""
+    s = (combo_str or "").lower().strip()
+    if not s:
+        return False
+    parts = [p for p in s.split("+") if p]
+    if any(k in parts for k in ("kanji", "hankaku", "zenkaku", "eisu", "kana")):
+        return True
+    if "+" in s:
+        if "alt" in parts and "grave" in parts:
+            return True
+        if ("win" in parts or "windows" in parts or "cmd" in parts) and "space" in parts:
+            return True
+    return False
+
+
 def parse_diff_value(val: Any) -> float:
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, str):
+        s = val.strip()
         try:
-            return float(val.replace("%", "").strip())
+            if s.endswith("%"):
+                return float(s[:-1].strip()) / 100.0
+            return float(s)
         except ValueError:
             return 0.0
     return 0.0
 
 
 def get_event_diff_val(event: Dict[str, Any]) -> float:
-    return parse_diff_value(
-        event.get("diff_val") or event.get("diffRatio") or event.get("Diff") or event.get("diff")
-    )
+    for key in ("diff_val", "diffRatio", "Diff", "diff"):
+        val = event.get(key)
+        if val is not None:
+            return parse_diff_value(val)
+    return 0.0
 
 
 def propagate_click_context(raw_events: List[Dict[str, Any]]) -> None:
@@ -139,7 +161,7 @@ def filter_session_events(session: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         is_essential_key = role_lower in ESSENTIAL_KEYS
         is_combo = action == "key_combo"
         is_shortcut = is_combo and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
-        is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
+        is_ime_toggle = is_ime_toggle_combo(role_lower)
 
         if is_ime_toggle:
             last_ime_active = ime_active
@@ -147,7 +169,8 @@ def filter_session_events(session: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
         is_valid = False
         has_text_change = last_text is not None and current_text != last_text and current_text != ""
-        has_screen_diff = diff_val >= 0.1
+        # Why: diff_valは0.0〜1.0比率で統一されているため0.1%相当の0.001を閾値とする
+        has_screen_diff = diff_val >= 0.001
         has_ime_change = last_ime_active is not None and ime_active != last_ime_active
 
         if is_combo:

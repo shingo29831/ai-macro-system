@@ -17,6 +17,7 @@ def append_wait_if_needed(
         duration = (current_timestamp - prev_timestamp) / 1000.0
         if duration > 0.01:
             raw_commands_data.append({"method": "wait", "args": {"duration": round(min(duration, 1.5), 3)}})
+        return max(prev_timestamp, current_timestamp)
     return current_timestamp
 
 
@@ -54,9 +55,11 @@ def merge_scroll_commands(raw_commands_data: List[Dict[str, Any]]) -> List[Dict[
             if prev_cmd["method"] == "scroll":
                 p_dx = prev_cmd["args"].get("dx", 0.0)
                 p_dy = prev_cmd["args"].get("dy", 0.0)
-                # Why: スクロール間の短時間待機も挟んだ戻しスクロールを正味量へ集約
+                is_same_dir = (p_dy * c_dy >= 0) and (p_dx * c_dx >= 0)
+                # Why: 直結スクロールと一貫して同方向のみ集約し逆方向の意図的操作を保護
                 if (
-                    last_cmd["args"]["duration"] < 1.2
+                    is_same_dir
+                    and last_cmd["args"]["duration"] < 1.2
                     and abs(prev_cmd["args"]["x"] - cmd["args"]["x"]) <= 200
                     and abs(prev_cmd["args"]["y"] - cmd["args"]["y"]) <= 300
                 ):

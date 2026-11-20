@@ -85,19 +85,20 @@ def build_browser_command(
         "value": b_val,
         "element_name": elem_name_val,
         "timeout_sec": 10.0,
+        "clear_before_typing": bool(cur_info.get("clear_before_typing", True)),
         "target_id": target_id_for_healer,
         "raw_event_id": raw_event_id,
     }
     cx = cur_info.get("cursor_x") if cur_info.get("cursor_x") is not None else cur_info.get("x")
     cy = cur_info.get("cursor_y") if cur_info.get("cursor_y") is not None else cur_info.get("y")
-    if (cx is None or cy is None or cx <= 20 or cy <= 20) and params.browser_selector:
+    if (cx is None or cy is None or (cx == 0 and cy == 0)) and params.browser_selector:
         snap_c = (cur_info.get("app_context") or {}).get("form_snapshot", {}).get("__elements__", [])
         for el in snap_c:
-            if el.get("selector") == params.browser_selector and el.get("x", 0) > 20:
+            if el.get("selector") == params.browser_selector and (el.get("x", 0) != 0 or el.get("y", 0) != 0):
                 cx, cy = el["x"], el["y"]
                 break
-    w_y = cur_info.get("win_y", -50)
-    if cx is not None and cy is not None and cy >= w_y and cy > -50 and cx > 20:
+    # Why: マルチモニタ負座標を保持しつつ最小化異常値と未設定(0,0)のみ除外
+    if cx is not None and cy is not None and (cx != 0 or cy != 0) and cx > -10000 and cy > -10000:
         b_args["x"] = cx
         b_args["y"] = cy
     return {"method": "browser_action", "args": b_args}
@@ -166,15 +167,16 @@ def convert_step_to_command(
 
     if cmd_type == "MOUSE_CLICK":
         click_x, click_y = resolve_pointer_coords(cur_info, integ_evt)
-        # Why: 画面外の無効座標のみを除外（タブやメニューバーは保護）
-        if click_y < -50 or click_x < -50:
+        # Why: マルチモニタ負座標を保護し最小化異常座標のみ除外
+        if click_y <= -10000 or click_x <= -10000:
             logger.info(f"Omitted off-screen click at ({click_x}, {click_y}) for event {raw_event_id}")
             return None
+        clicks_val = max(1, int(cur_info.get("clicks") or 1))
         cmd_args: Dict[str, Any] = {
             "x": click_x,
             "y": click_y,
             "button": params.button or "left",
-            "clicks": 1,
+            "clicks": clicks_val,
             "target_id": target_id_for_healer,
             "raw_event_id": raw_event_id,
         }
@@ -237,7 +239,7 @@ def convert_step_to_command(
         if params.excel_cell:
             cmd_args["excel_cell"] = params.excel_cell
         cx, cy = cur_info.get("cursor_x"), cur_info.get("cursor_y")
-        if cx is not None and cy is not None and (cx > 20 or cy > 20):
+        if cx is not None and cy is not None and (cx != 0 or cy != 0) and cx > -10000 and cy > -10000:
             cmd_args["x"] = cx
             cmd_args["y"] = cy
         if elem_name and elem_name != params.text and not elem_name.startswith("{{"):
@@ -256,6 +258,8 @@ def convert_step_to_command(
             "args": {
                 "loop_count": params.loop_count if params.loop_count is not None else 10,
                 "loop_variables": params.loop_variables or {},
+                "target_id": target_id_for_healer,
+                "raw_event_id": raw_event_id,
             },
         }
 

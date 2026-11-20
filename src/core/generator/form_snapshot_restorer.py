@@ -201,7 +201,7 @@ def finalize_form_order(
         else:
             runs.append((is_br, [item]))
 
-    submit_buttons: List[Dict[str, Any]] = []
+    has_explicit_submit = False
     last_browser_run_idx = -1
     for r_idx, (is_br, items) in enumerate(runs):
         if is_br:
@@ -210,9 +210,10 @@ def finalize_form_order(
                 act = item.get("action")
                 sel = str(item.get("selector", "")).lower()
                 if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
-                    submit_buttons.append(item)
+                    has_explicit_submit = True
 
-    if not submit_buttons and last_browser_run_idx >= 0:
+    recovered_submit: List[Dict[str, Any]] = []
+    if not has_explicit_submit and last_browser_run_idx >= 0:
         for s_key, s_data in state.scanned_elements_map.items():
             s_sel = str(s_data.get("selector", "")).lower()
             s_name = str(s_data.get("element_name", "")).lower()
@@ -221,16 +222,16 @@ def finalize_form_order(
                 ("submit" in s_sel or "submit" in s_key.lower() or any(w in s_name for w in ["登録", "送信", "保存", "submit"]))
                 and "button" in c_type
             )
-            if is_real_submit:
+            if is_real_submit and s_data.get("selector"):
                 btn_x = s_data.get("x", 0)
                 btn_y = s_data.get("y", 0)
-                btn_name = s_data.get("element_name") or "登録する"
+                btn_name = s_data.get("element_name") or "送信"
                 btn_eid = f"{ref_eid}_submit_btn"
-                submit_buttons.append({
+                recovered_submit.append({
                     "raw_action": "browser_action",
                     "raw_type": "browser_action",
                     "action": "click_element",
-                    "selector": s_data.get("selector") or "#submit-btn",
+                    "selector": s_data["selector"],
                     "selector_type": "css",
                     "element_name": btn_name,
                     "semantic_role": btn_name,
@@ -249,25 +250,30 @@ def finalize_form_order(
                 })
                 break
 
+    # Why: ページ遷移(open_url)やボタンクリックを境界とし、複数ページ/ウィザード間の順序破壊を防止
     ordered_output: List[Dict[str, Any]] = []
     for r_idx, (is_br, items) in enumerate(runs):
         if not is_br:
             ordered_output.extend(items)
             continue
-        run_inputs: List[Dict[str, Any]] = []
-        run_others: List[Dict[str, Any]] = []
+        section_inputs: List[Dict[str, Any]] = []
+        section_others: List[Dict[str, Any]] = []
         for item in items:
             act = item.get("action")
-            sel = str(item.get("selector", "")).lower()
-            if act == "click_element" and any(b in sel for b in ["submit", "btn", "button"]):
-                continue
+            is_boundary = item.get("raw_action") == "browser_action" and act in ("click_element", "open_url")
+            if is_boundary:
+                ordered_output.extend(section_others)
+                ordered_output.extend(_sort_form_inputs(section_inputs))
+                section_others.clear()
+                section_inputs.clear()
+                ordered_output.append(item)
             elif item.get("raw_action") == "browser_action" and act in ["type_text", "select_option", "set_checkbox"]:
-                run_inputs.append(item)
+                section_inputs.append(item)
             else:
-                run_others.append(item)
-        ordered_output.extend(run_others)
-        ordered_output.extend(_sort_form_inputs(run_inputs))
-        if r_idx == last_browser_run_idx:
-            ordered_output.extend(submit_buttons)
+                section_others.append(item)
+        ordered_output.extend(section_others)
+        ordered_output.extend(_sort_form_inputs(section_inputs))
+        if r_idx == last_browser_run_idx and recovered_submit:
+            ordered_output.extend(recovered_submit)
 
     return ordered_output

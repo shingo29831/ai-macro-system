@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from core.generator.executable_macro_builder import build_executable_commands
 from core.generator.workflow_builder import build_workflow_model
 from models.data_types import IntegratedEvent
+from models.executable_macro import ExecutableMacro
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ def build_and_save_macro(
         "target_application": "auto_generated",
         "commands": commands_data,
     }
+    # Why: 保存前にPydanticモデル検証を行いスキーマ不整合マクロの永続化を防止
+    ExecutableMacro.model_validate(exec_macro_dict)
     with open(target_dir / "executable_macro.json", "w", encoding="utf-8") as f:
         json.dump(exec_macro_dict, f, indent=4, ensure_ascii=False)
 

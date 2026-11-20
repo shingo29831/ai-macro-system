@@ -21,7 +21,9 @@ def optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) ->
         if act == "move":
             ctx = curr.get("app_context") or {}
             c_type = str(ctx.get("control_type", "")).lower()
-            is_input_elem = "edit" in c_type or bool(ctx.get("css_selector")) or bool(curr.get("element_name"))
+            sel_l = str(ctx.get("css_selector") or "").lower()
+            # Why: 入力欄コントロール上のホバーのみフォーカスクリックへ昇格し通常通過moveの誤クリックを防止
+            is_input_elem = "edit" in c_type or any(tag in sel_l for tag in ("input", "textarea"))
 
             j = i + 1
             has_subsequent_type = False
@@ -34,10 +36,10 @@ def optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) ->
                     break
                 j += 1
 
-            # Why: ウィンドウ枠外やタイトルバーの移動は入力フォーカスクリックへ誤昇格させない
+            # Why: タイトルバー移動と最小化異常座標のみ除外しマルチモニタ負座標を保護
             cy = curr.get("cursor_y", curr.get("y", 0))
             wy = curr.get("win_y", 0)
-            if cy - wy <= 45 or cy < -50:
+            if cy - wy <= 45 or cy <= -10000:
                 is_input_elem = False
 
             if is_input_elem and has_subsequent_type:
@@ -86,14 +88,15 @@ def optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) ->
                 n_win = nxt.get("window_name", "")
 
                 if n_win != t_win:
-                    found_target_event = True
                     break
 
                 if n_act in ["key_down", "key_press", "press_key"] and n_role in ["enter", "return"]:
                     found_target_event = True
                     break
 
-                # Why: 補完済みテキスト入力後のTab(補完用)・矢印キーや過渡的クリック・移動を完全排除
+                # Why: Enter確定前のサジェスト選択キー・候補項目クリック・手ブレ移動のみ除去し通常ボタンクリックを保護
+                n_ctx = nxt.get("app_context") or {}
+                n_ctype = str(n_ctx.get("control_type", "")).lower()
                 is_completion_key = n_act in ["key_down", "key_press", "press_key"] and n_role in [
                     "tab",
                     "down",
@@ -101,10 +104,10 @@ def optimize_typing_and_search_flow(temp_workflow_info: List[Dict[str, Any]]) ->
                     "right",
                     "left",
                 ]
-                is_intervening_click = n_act == "click"
+                is_suggest_click = n_act == "click" and any(t in n_ctype for t in ("listitem", "menuitem"))
                 is_intervening_move = n_act == "move"
 
-                if is_completion_key or is_intervening_click or is_intervening_move:
+                if is_completion_key or is_suggest_click or is_intervening_move:
                     noise_indices.add(k)
                     k += 1
                 else:

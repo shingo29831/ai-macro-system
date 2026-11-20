@@ -200,6 +200,8 @@ def build_workflow_model(
 
         if raw_type == "meta_loop_start":
             loop_vars = info.get("loop_variables", {"y_offset": 30})
+            detected_count = info.get("loop_count")
+            loop_count = int(detected_count) if isinstance(detected_count, int) and detected_count > 0 else 10
             workflow_steps.append(
                 WorkflowStep(
                     step_id=step_idx,
@@ -208,7 +210,7 @@ def build_workflow_model(
                     context=WorkflowStepContext(active_window_name=current_window),
                     action=WorkflowCommandAction(
                         command="LOOP_START",
-                        parameters=ActionParameters(loop_count=10, loop_variables=loop_vars),
+                        parameters=ActionParameters(loop_count=loop_count, loop_variables=loop_vars),
                     ),
                     fallback_raw_events=[event_id],
                 )
@@ -243,16 +245,17 @@ def build_workflow_model(
             is_max = info.get("is_maximized")
             if is_max is None:
                 is_max = info.get("IsMaximized")
-            if is_max is None and (win_x <= -8 and win_y <= -8 and win_w >= 1900):
-                is_max = True
 
             current_win_rect = (win_x, win_y, win_w, win_h)
+            # Why: 同一アプリでも別ブック/別ウィンドウへの切替時はACTIVATE_WINDOWを生成(未保存*変化は同一視)
+            norm_curr = current_window.lstrip("* ").strip()
+            norm_prev = prev_window_name.lstrip("* ").strip() if prev_window_name else ""
             curr_app = _extract_app_name(current_window).lower()
             prev_app = _extract_app_name(prev_window_name).lower() if prev_window_name else ""
-            is_same_app = curr_app == prev_app and curr_app != ""
-
-            # Why: 同一アプリ移動時は別アクティベートを挿入せずリサイズ/移動のみ委譲
-            needs_activation = prev_window_name is None or (not is_same_app and current_window != prev_window_name)
+            is_browser_same_tab_nav = curr_app == prev_app and any(b in curr_app for b in BROWSER_WINDOW_KEYWORDS)
+            needs_activation = prev_window_name is None or (
+                norm_curr != norm_prev and not is_browser_same_tab_nav
+            )
             if needs_activation:
                 win_info_json = json.dumps(
                     {
@@ -289,8 +292,8 @@ def build_workflow_model(
             continue
         cmd, intent, desc, params = built
 
-        # Why: コマンド生成成功後のみui_targetsへ登録しスキップ時のステップ番号ズレを防止
-        if raw_action in ["click", "move", "type_text", "key_down", "drag"]:
+        # Why: コマンド生成成功後のみui_targetsへ登録しbrowser_action/key_comboの修復ターゲット欠落を防止
+        if raw_action in ["click", "move", "type_text", "key_down", "key_combo", "drag", "browser_action"]:
             ui_targets_dict[f"tgt_{step_idx}"] = {
                 "semantic_role": final_semantic_role,
                 "ui_type": info.get("ui_type", "unknown"),

@@ -64,8 +64,9 @@ def optimize_workflow_events(
         temp_workflow_info = consolidate_web_form_interactions(temp_workflow_info, config=config)
 
     temp_workflow_info = trim_boundary_noise(temp_workflow_info)
+    # Why: ループ内の動的セル変化を検出できるようループ解析前にExcelセル番地を伝播
+    temp_workflow_info = propagate_excel_cells(temp_workflow_info)
     temp_workflow_info = detect_and_optimize_loops(temp_workflow_info, workflow_id, should_cancel)
-
     temp_workflow_info = propagate_excel_cells(temp_workflow_info)
     temp_workflow_info = filter_web_excel_conflicts(temp_workflow_info)
 

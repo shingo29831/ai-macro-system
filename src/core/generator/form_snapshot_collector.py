@@ -30,11 +30,8 @@ def _should_skip_snapshot_update(
     # Why: 初回値からの変更値を優先し末尾リセット空値による上書きを普遍防止
     if prev_val and prev_val != new_val and new_val in ["", "None"]:
         return True
-    # Why: フォーム送信後のリセットで初期値に戻った場合の上書きを完全防止
+    # Why: フォーム送信後のリセットで初期値に戻った場合の上書きを完全防止(Backspace短縮修正は尊重)
     if prev_val and prev_val != initial_val and (new_val == initial_val or post_submit_reset_detected):
-        return True
-    # Why: 確定済みの完全長文値を入力途中の短縮プレフィックス値で上書き巻き戻ししない
-    if prev_val and new_val and len(new_val) < len(prev_val) and (prev_val.startswith(new_val) or new_val in prev_val):
         return True
     return False
 

@@ -11,6 +11,7 @@ from models.data_types import AppConfig
 from core.generator.app_log_router import route_raw_logs_by_active_app
 from core.generator.event_parser import parse_raw_event
 from core.generator.typing_aggregator import TypingSessionAggregator
+from core.generator.typing_session_helpers import is_ime_toggle_combo
 from core.generator.macro_builder import build_and_save_macro
 from core.shared.macro_paths import get_macros_root
 from core.shared.window_utils import is_system_shell_window
@@ -31,7 +32,9 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
         if not isinstance(entry, dict):
             continue
         raw_type = str(entry.get("Type", "")).lower()
-        if any(term in raw_type for term in ["recording", "meta"]):
+        # Why: ループ記録境界(meta_loop_start/end)は保持し、録画制御系メタノイズのみ除外
+        is_loop_meta = raw_type in ("meta_loop_start", "meta_loop_end")
+        if not is_loop_meta and any(term in raw_type for term in ["recording", "meta"]):
             continue
 
         win_name = entry.get("WindowName", "")
@@ -53,8 +56,8 @@ def filter_meaningful_raw_logs(raw_logs: List[Dict[str, Any]]) -> List[Dict[str,
         content = entry.get("Content") or {}
         if isinstance(content, dict):
             combo_str = str(content.get("combo") or content.get("key") or "").lower()
-            # Why: IMEトグルキー(shift+space等)は実行エンジン自動IME制御と競合するため除外
-            if "+" in combo_str and any(k in combo_str for k in ["space", "grave", "kanji"]):
+            # Why: 明示的なIMEトグルのみ除外し、Excel行/列選択(shift/ctrl+space)等を保護
+            if is_ime_toggle_combo(combo_str):
                 continue
             # Why: Windows検索等のシェルでアプリ起動時に押したEnterが新ウィンドウ先頭へ漏れた場合を除外
             if just_skipped_shell and "key" in raw_type and combo_str in ("enter", "return"):
@@ -204,9 +207,11 @@ def generate_macro_workflow(
                 logger.info(f"[{workflow_id}] Generation cancelled by user.")
                 raise InterruptedError("Generation cancelled by user")
 
-            # Why: 単一イベント解析のエラーやAI推論障害による生成パイプライン全体のスタックを完全防止
+            # Why: キャンセル例外は即時伝播し、単一イベント解析障害のみ隔離して継続
             try:
                 parsed_info = parse_raw_event(log_entry, i, total_events, workflow_id, macros_root, progress_callback)
+            except InterruptedError:
+                raise
             except Exception as parse_err:
                 logger.warning(f"[{workflow_id}] Event parse failed for entry {i}: {parse_err}")
                 parsed_info = None
@@ -219,12 +224,9 @@ def generate_macro_workflow(
             progress_callback(70, "入力ログの最適化... 文字入力バッファの集約とUIAレスキュー")
         generation_debug_log["stages"].append({"name": "Typing Aggregation", "status": "started"})
 
-        try:
-            aggregator = TypingSessionAggregator(session_timeout_ms=2000)
-            temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
-            logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
-        except Exception as e:
-            logger.error(f"[{workflow_id}] 文字入力集約処理でエラーが発生しました: {e}")
+        aggregator = TypingSessionAggregator(session_timeout_ms=2000)
+        temp_workflow_info = aggregator.aggregate_events(temp_workflow_info)
+        logger.info(f"[{workflow_id}] キー入力集約完了: 最適化後のステップ数 = {len(temp_workflow_info)}")
 
         if progress_callback:
             progress_callback(75, "マクロ候補の抽出と品質ゲート判定中 (Judge)...")

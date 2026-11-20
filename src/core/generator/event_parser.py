@@ -16,7 +16,7 @@ from core.shared.app_log_profile import (
     resolve_log_channels,
     sanitize_context_for_profile,
 )
-from core.shared.window_utils import is_browser_window
+from core.shared.window_utils import is_browser_window, is_system_shell_window
 from engines.yolo.detector import detect_ui_elements
 from engines.ocr.reader import read_text_from_image
 
@@ -33,12 +33,12 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     window_name = log_entry.get("WindowName") or "Unknown Window"
     command_line = log_entry.get("WindowCommandLine", "")
     app_profile = detect_app_profile(log_entry)
-    # Why: 「Google 検索」等のWebページタイトルがシステム検索窓と誤爆除外されるのを防止
+    # Why: 共通のシステムシェル判定へ統一し「設定」や「python」を含む業務ウィンドウ誤除外を防止
     w_lower = window_name.lower().strip()
     is_browser = app_profile == AppProfile.BROWSER or is_browser_window(window_name)
-    system_exact = ["検索", "スタート", "start", "search", "タスクバー", "taskbar", "cortana", "ジャンプ リスト"]
-    system_contains = ["python", "unknown window", "マクロ生成中", "aiマクロ生成中", "ai macro system", "記録中", "停止中", "実行中", "設定", "ウィンドウの紐付け"]
-    if not w_lower or (not is_browser and (w_lower in system_exact or any(sc in w_lower for sc in system_contains))):
+    if not w_lower or w_lower == "unknown window" or (
+        not is_browser and is_system_shell_window(window_name, check_keywords_for_browser=False)
+    ):
         return None
         
     event_no = log_entry.get("EventNo", f"{i+1:03d}")
@@ -105,8 +105,8 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
     elif is_move:
         action_type = "move"
     elif is_drag:
-        # Why: 業務ドラッグや範囲選択を保護し画面外ノイズのみ除外
-        if cursor_y < -50:
+        # Why: マルチモニタ負座標を保護し、最小化ダミー座標(-32000等)のみ除外
+        if cursor_y <= -10000 or cursor_x <= -10000:
             logger.info(f"[{workflow_id}] Omitted off-screen drag: {event_id}")
             return None
         action_type = "drag"
@@ -124,19 +124,28 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         return None
 
     button_val = "left"
+    clicks_val = 2 if "double" in raw_type_lower else 1
     input_val = "unknown"
     ime_active = False
+    _special_ctrl_chars = {"\b": "backspace", "\t": "tab", "\n": "enter", "\r": "enter"}
     
     if isinstance(content_data, dict):
         button_val = content_data.get("button", "left")
+        if content_data.get("click_count") is not None:
+            try:
+                clicks_val = max(1, int(content_data["click_count"]))
+            except (ValueError, TypeError):
+                pass
         ime_active = content_data.get("ime_active", False)
         
         if action_type == "click":
             input_val = f"{button_val}_click"
         elif action_type in ("key_down", "key_combo"):
             raw_key = content_data.get("combo") or content_data.get("key") or content_data.get("text") or "unknown_key"
-            # Why: WindowsキーフックのCtrl+A〜Z制御文字(\x01〜\x1a)および左右修飾キー名を正規ショートカット名へ統一
-            if isinstance(raw_key, str) and len(raw_key) == 1 and 1 <= ord(raw_key) <= 26:
+            # Why: \b/\t/\n/\rを通常特殊キーとして保護し、それ以外の\x01〜\x1aをctrl+a〜zへ正規化
+            if isinstance(raw_key, str) and raw_key in _special_ctrl_chars:
+                input_val = _special_ctrl_chars[raw_key]
+            elif isinstance(raw_key, str) and len(raw_key) == 1 and 1 <= ord(raw_key) <= 26:
                 ctrl_char = chr(ord(raw_key) + 96)
                 input_val = f"ctrl+{ctrl_char}"
                 action_type = "key_combo"
@@ -145,7 +154,9 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
                 for p in raw_key.lower().split("+"):
                     if not p:
                         continue
-                    if len(p) == 1 and 1 <= ord(p) <= 26:
+                    if p in _special_ctrl_chars:
+                        p = _special_ctrl_chars[p]
+                    elif len(p) == 1 and 1 <= ord(p) <= 26:
                         p = chr(ord(p) + 96)
                     elif p in ("ctrl_l", "ctrl_r"):
                         p = "ctrl"
@@ -283,6 +294,7 @@ def parse_raw_event(log_entry: dict, i: int, total_events: int, workflow_id: str
         "raw_type": raw_type,
         "raw_action": action_type,
         "button": button_val,
+        "clicks": clicks_val,
         "ui_type": ui_type,
         "semantic_role": semantic_role,
         "diff_val": diff_val,

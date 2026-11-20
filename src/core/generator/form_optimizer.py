@@ -107,16 +107,7 @@ def _resolve_input_field_value(
     snap_val = state.global_form_snapshot.get(sel) or state.global_form_snapshot.get(f"name:{elem_name}")
     final_val = scanned_val or snap_val or state.element_final_values.get(sel)
 
-    # Why: 確定値より長文の完全版候補(佐藤 -> 佐藤 健一)が存在する場合は完全版を採用
-    if final_val:
-        f_str = str(final_val).strip()
-        for cand in reversed(state.selector_candidates.get(sel, [])):
-            c_str = str(cand).strip()
-            if len(c_str) > len(f_str) and (c_str.startswith(f_str) or f_str in c_str):
-                final_val = c_str
-                break
-
-    # Why: 不正なNaN値を排除しイベント履歴の有効数値を救出
+    # Why: 不正なNaN値を排除し確定スナップショット値を尊重しつつ空時のみ履歴候補を救出
     if final_val and str(final_val).strip().lower() in ["nan", "none"]:
         final_val = ""
     if not final_val and act == "type_text":
@@ -198,7 +189,7 @@ def _is_redundant_container_click(
     is_valid_screen_click = cx > 20 and cy > 45
     return act == "click" and not is_valid_screen_click and (
         sel in processed_selectors
-        or sel.lower() in ["#entryform", "form"]
+        or sel.lower() == "form"
         or sel.startswith("div:has-text")
         or (c_type in ["pane", "window"] and not elem_name and not ctx.get("css_selector"))
     )
@@ -218,8 +209,8 @@ def _convert_to_submit_action(info: Dict[str, Any], sel: str, elem_name: str) ->
     info["action"] = "click_element"
     info["selector"] = sel or "button[type='submit']"
     info["selector_type"] = "css"
-    info["element_name"] = elem_name or "登録する"
-    info["semantic_role"] = elem_name or "登録する"
+    info["element_name"] = elem_name or "送信"
+    info["semantic_role"] = elem_name or "送信"
 
 
 def _convert_to_checkbox_action(
@@ -318,6 +309,7 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
     state = collect_form_snapshot_context(temp_workflow_info, config=config)
     result: List[Dict[str, Any]] = []
     processed_selectors: Set[str] = set()
+    last_browser_win = ""
     n = len(temp_workflow_info)
     i = 0
 
@@ -328,6 +320,12 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
             result.append(info)
             i += 1
             continue
+        cur_win = str(info.get("window_name") or "").strip()
+        # Why: ページ遷移でウィンドウタイトルが変わった場合は同一セレクタの再入力を許可
+        if last_browser_win and cur_win and cur_win != last_browser_win:
+            processed_selectors.clear()
+        if cur_win:
+            last_browser_win = cur_win
         act, ctx, sel, c_type, elem_name, scanned_elem = _resolve_element_metadata(info, state)
 
         if is_system_ui_event(info) or (sel and sel in processed_selectors):
@@ -357,7 +355,8 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
         if _is_submit_button_event(act, c_type, sel, elem_name):
             _convert_to_submit_action(info, sel, elem_name)
             result.append(info)
-            processed_selectors.add(sel)
+            # Why: フォーム送信後は別フォームや再入力のため既処理セレクタをリセット
+            processed_selectors.clear()
             i += 1
             continue
 
@@ -379,7 +378,15 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
             i = j
             continue
 
-        is_checkbox = "checkbox" in c_type or "check" in sel.lower()
+        sel_l = sel.lower()
+        is_checkbox = (
+            "checkbox" in c_type
+            or (
+                "edit" not in c_type
+                and "button" not in c_type
+                and ("checkbox" in sel_l or "type='checkbox'" in sel_l or 'type="checkbox"' in sel_l)
+            )
+        )
         if is_checkbox and act in ["click", "browser_action"]:
             _convert_to_checkbox_action(info, act, sel, elem_name, state)
             result.append(info)
@@ -389,15 +396,16 @@ def consolidate_web_form_interactions(temp_workflow_info: List[Dict[str, Any]], 
 
         if act == "type_text" and not sel:
             sel, c_type = _resolve_missing_input_selector(sel, c_type, elem_name, state)
+            sel_l = sel.lower()
 
-        is_input_control = any(t in c_type for t in ["edit", "spinner"]) or any(tag in sel.lower() for tag in ["input", "textarea"])
-        is_container_id = any(k in sel.lower() for k in ["root", "app", "main", "container", "wrapper", "content", "body"])
+        is_input_control = any(t in c_type for t in ["edit", "spinner"]) or any(tag in sel_l for tag in ["input", "textarea"])
+        is_container_id = any(k in sel_l for k in ["root", "app", "main", "container", "wrapper", "content", "body"])
         is_input_field = (
             not is_select
+            and not is_checkbox
             and act in ["type_text", "key_down", "key_press"]
-            and (is_input_control or (sel.startswith("#") and not is_container_id and not any(tag in sel.lower() for tag in ["form", "btn", "button", "tab"])))
+            and (is_input_control or (sel.startswith("#") and not is_container_id and not any(tag in sel_l for tag in ["form", "btn", "button", "tab"])))
             and "check" not in c_type
-            and not sel.lower().endswith("newsletter")
         )
         if is_input_field:
             status = _try_convert_to_input_action(info, act, sel, elem_name, state, result)

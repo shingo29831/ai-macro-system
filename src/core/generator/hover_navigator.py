@@ -47,6 +47,16 @@ def _detect_transition(curr_info: Dict[str, Any], prev_info: Dict[str, Any]) -> 
     return False
 
 
+def _to_xpath_literal(text: str) -> str:
+    """XPath 1.0 準拠の安全な文字列リテラルを生成する。"""
+    if "'" not in text:
+        return f"'{text}'"
+    if '"' not in text:
+        return f'"{text}"'
+    parts = [f"'{part}'" for part in text.split("'")]
+    return "concat(" + ", \"'\", ".join(parts) + ")"
+
+
 def _reconcile_click_with_title(
     target_click: Dict[str, Any], clean_target_title: str, target_kws: List[str]
 ) -> None:
@@ -70,11 +80,11 @@ def _reconcile_click_with_title(
         target_click["semantic_role"] = clean_target_title
         click_ctx["element_name"] = clean_target_title
 
-        clean_title_esc = clean_target_title.replace("'", "\\'")
+        clean_title_esc = clean_target_title.replace("\\", "\\\\").replace("'", "\\'")
         target_click["selector"] = f"a:has-text('{clean_title_esc}')"
         target_click["selector_type"] = "css"
         click_ctx["css_selector"] = f"a:has-text('{clean_title_esc}')"
-        click_ctx["xpath"] = f"//a[contains(., '{clean_title_esc}')]"
+        click_ctx["xpath"] = f"//a[contains(., {_to_xpath_literal(clean_target_title)})]"
 
         if click_url and any(kw.lower() not in click_url.lower() for kw in target_kws):
             target_click.pop("url", None)

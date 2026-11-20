@@ -94,8 +94,8 @@ def _convert_romaji_chunk(chunk: str) -> str:
         return chunk
     from core.shared.romaji import to_hiragana
 
-    # Why: アルファベット末尾を含む入力(kaisaA等)をひらがなと大文字英字に適切分離
-    alpha_tail = re.search(r"[A-Za-z]+$", chunk)
+    # Why: 末尾の大文字英字(kaisaA等)のみ分離し、小文字ローマ字本体はひらがなへ変換
+    alpha_tail = re.search(r"[A-Z]+$", chunk)
     if alpha_tail:
         tail_idx = alpha_tail.start()
         return to_hiragana(chunk[:tail_idx]) + chunk[tail_idx:]
@@ -116,9 +116,11 @@ def build_fallback_text(session: List[Dict[str, Any]]) -> str:
         is_combo = action == "key_combo" or "+" in r_lower
         char = ""
 
-        # Why: 複合コンボキー(shift+a+enter+tab等)から本来のアルファベット文字を安全抽出
-        if is_combo and "shift" in r_lower:
-            alpha_parts = [p for p in r_lower.split("+") if len(p) == 1 and p.isalpha()]
+        # Why: ctrl/alt/win併用ショートカットを除外し、純粋なshift+英字のみ大文字入力として抽出
+        combo_parts = [p for p in r_lower.split("+") if p]
+        has_non_shift_mod = any(m in combo_parts for m in ("ctrl", "alt", "win", "cmd"))
+        if is_combo and "shift" in combo_parts and not has_non_shift_mod:
+            alpha_parts = [p for p in combo_parts if len(p) == 1 and p.isalpha()]
             if alpha_parts:
                 char = alpha_parts[0].upper()
                 is_combo = False
@@ -170,8 +172,14 @@ def build_fallback_text(session: List[Dict[str, Any]]) -> str:
 
 def extract_search_query(url_or_text: str) -> Tuple[Optional[str], bool]:
     if not url_or_text.startswith("http"):
-        if any(tld in url_or_text for tld in [".com", ".co.jp", ".net", ".org"]):
-            return None, False
+        # Why: メールアドレス(@含む)や一般文を保護し、純粋なドメイン/URL形式のみ除外
+        stripped = url_or_text.strip()
+        if "@" not in stripped and " " not in stripped and re.fullmatch(
+            r"(?:www\.)?[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?:/[^\s]*)?",
+            stripped,
+        ):
+            if any(tld in stripped.lower() for tld in [".com", ".co.jp", ".net", ".org", ".jp"]):
+                return None, False
         return url_or_text, False
     try:
         parsed = urllib.parse.urlsplit(url_or_text)
@@ -367,7 +375,9 @@ def merge_consecutive_type_events(
             continue
 
         events_to_merge = [event]
-        intervening_events: List[Dict[str, Any]] = []
+        confirmed_intervening: List[Dict[str, Any]] = []
+        pending_intervening: List[Dict[str, Any]] = []
+        last_type_j = i
         last_valid_text = str(event.get("semantic_role", ""))
         curr_win = event.get("window_name", "")
         curr_elem = get_app_context(event).get("element_name", "")
@@ -382,7 +392,10 @@ def merge_consecutive_type_events(
                 next_elem = get_app_context(next_event).get("element_name", "")
                 # Why: 同一要素への分割入力は断片を結合し、累積UIA部分文字列の重複加算を防止
                 if (curr_win == next_win or is_same_editor_window(event, next_event)) and curr_elem == next_elem:
+                    confirmed_intervening.extend(pending_intervening)
+                    pending_intervening.clear()
                     events_to_merge.append(next_event)
+                    last_type_j = j
                     nxt_text = str(next_event.get("semantic_role", "")).strip()
                     if last_valid_text and nxt_text:
                         if nxt_text.lower().startswith(last_valid_text.lower()):
@@ -398,17 +411,16 @@ def merge_consecutive_type_events(
                         last_valid_text = nxt_text or last_valid_text
                 else:
                     break
-            elif action in ["mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:
+            elif action in ["move", "hover", "click", "scroll", "mouse_move", "mouse_hover", "mouse_click", "mouse_scroll"]:
                 next_elem = get_app_context(next_event).get("element_name", "")
-                if action == "mouse_click" and next_elem != curr_elem:
+                if action in ("click", "mouse_click") and next_elem != curr_elem:
                     break
-                intervening_events.append(next_event)
+                pending_intervening.append(next_event)
             else:
                 break
             j += 1
 
         if len(events_to_merge) > 1:
-            final_events.extend(intervening_events)
             merged_event = events_to_merge[0].copy()
             merged_event["semantic_role"] = last_valid_text
             fallback_events: List[Any] = []
@@ -416,7 +428,9 @@ def merge_consecutive_type_events(
                 fallback_events.extend(e.get("fallback_events", []))
             merged_event["fallback_events"] = fallback_events
             final_events.append(merged_event)
-            i = j - 1
+            # Why: 結合範囲内のマウス操作は末尾へ残し、後続の未マージ操作との順序逆転を防止
+            final_events.extend(confirmed_intervening)
+            i = last_type_j
         else:
             single_text = str(event.get("semantic_role", ""))
             single_lower = single_text.lower()

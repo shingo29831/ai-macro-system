@@ -194,15 +194,21 @@ def track_text_field_by_scoring(
         return None, ""
 
     best_candidate = max(field_candidates, key=lambda x: x["score"])
-    final_img_path = macros_root / candidate_img_paths_rel[-1]
-    base_img_path_rel = group_events[0].get("pre_img_path") if group_events else candidate_img_paths_rel[0]
-    base_img_path = macros_root / base_img_path_rel
-
-    fl, ft, fr, fb = expand_final_bbox_by_diff_contours(
-        base_img_path,
-        final_img_path,
-        best_candidate["bbox"],
-        target_event_id,
+    final_img_rel = candidate_img_paths_rel[-1] if candidate_img_paths_rel else None
+    base_img_path_rel = (
+        group_events[0].get("pre_img_path")
+        if group_events and group_events[0].get("pre_img_path")
+        else (candidate_img_paths_rel[0] if candidate_img_paths_rel else None)
     )
+
+    if base_img_path_rel and final_img_rel:
+        fl, ft, fr, fb = expand_final_bbox_by_diff_contours(
+            macros_root / base_img_path_rel,
+            macros_root / final_img_rel,
+            best_candidate["bbox"],
+            target_event_id,
+        )
+    else:
+        fl, ft, fr, fb = best_candidate["bbox"]
     pad = 5
     return (max(0, fl - pad), max(0, ft - pad), fr + pad, fb + pad), best_candidate["last_text"]

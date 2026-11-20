@@ -227,6 +227,8 @@ def expand_final_bbox_by_diff_contours(
     try:
         img_base = cv2.imread(str(base_img_path), cv2.IMREAD_GRAYSCALE)
         img_final = cv2.imread(str(final_img_path), cv2.IMREAD_GRAYSCALE)
+        if img_base is None or img_final is None or img_base.shape != img_final.shape:
+            return bbox
         diff = cv2.absdiff(img_base, img_final)
         _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
         kernel = np.ones((5, 15), np.uint8)
@@ -260,16 +262,17 @@ def expand_final_bbox_by_diff_contours(
         ]
 
         if target_contours:
+            img_h, img_w = img_final.shape[:2]
             min_x = min(bx for bx, _, _, _ in target_contours)
             min_y = min(by for _, by, _, _ in target_contours)
             max_r = max(bx + bw for bx, _, bw, _ in target_contours)
             max_b = max(by + bh for _, by, _, bh in target_contours)
-            final_crop_box = (max(0, min(l, min_x)), min_y, max_r, max_b)
+            final_crop_box = (max(0, min(l, min_x)), max(0, min_y), min(img_w, max_r), min(img_h, max_b))
             logger.info(
                 f"[{target_event_id}] Logically expanded BBox by combining text contours (excluding left icons): {final_crop_box}"
             )
             return final_crop_box
-        return (l, t, r + 200, b)
+        return bbox
     except Exception as e:
         logger.warning(f"[{target_event_id}] Failed to refine and expand final BBox: {e}")
         return bbox

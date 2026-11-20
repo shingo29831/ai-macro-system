@@ -66,6 +66,8 @@ class QualityGateEvaluator:
                 )
                 self._evaluate_candidate(candidate, config)
                 candidates.append(candidate)
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning(f"[{workflow_id}] Candidate generation failed for {strat.value}: {e}")
 
@@ -125,17 +127,25 @@ class QualityGateEvaluator:
             issues.append("No business operations present in workflow")
 
         has_submit = False
-        submit_idx = -1
+        submit_win = ""
         form_input_after_submit = False
 
         for idx, evt in enumerate(events):
             act = evt.get("raw_action", "")
             sel = str(evt.get("selector", "")).lower()
+            cur_win = str(evt.get("window_name") or "")
 
-            # 1. 送信ボタンと入力フィールドの順序不整合チェック
-            if act == "browser_action" and evt.get("action") == "click_element" and any(k in sel for k in ["submit", "btn"]):
+            # Why: ページ遷移や別ウィンドウ切替時は別フォームとみなしsubmit状態をリセット
+            if (act == "browser_action" and evt.get("action") == "open_url") or (
+                has_submit and submit_win and cur_win and cur_win != submit_win
+            ):
+                has_submit = False
+                submit_win = ""
+
+            # 1. 同一フォーム内での送信ボタンと入力フィールドの順序不整合チェック
+            if act == "browser_action" and evt.get("action") == "click_element" and "submit" in sel:
                 has_submit = True
-                submit_idx = idx
+                submit_win = cur_win
             elif has_submit and act in ["type_text", "browser_action"] and evt.get("action") in ["type_text", "select_option"]:
                 form_input_after_submit = True
 
@@ -144,12 +154,12 @@ class QualityGateEvaluator:
                 score -= 15.0
                 issues.append(f"Empty typing at step {idx}")
 
-            # 3. 画面外無効座標の検知
+            # 3. 画面外無効座標の検知（マルチモニタ負座標は許容し最小化異常値のみ減点）
             raw_cx = evt.get("cursor_x") if evt.get("cursor_x") is not None else evt.get("x")
             raw_cy = evt.get("cursor_y") if evt.get("cursor_y") is not None else evt.get("y")
             cx = 0 if raw_cx is None else raw_cx
             cy = 0 if raw_cy is None else raw_cy
-            if act in ["click", "move"] and (cx < -50 or cy < -50):
+            if act in ["click", "move"] and (cx <= -10000 or cy <= -10000):
                 score -= 10.0
                 issues.append(f"Offscreen coordinates at step {idx}")
 
@@ -196,14 +206,15 @@ class QualityGateEvaluator:
             res = client.generate(prompt)
             if res.get("success") and "response" in res:
                 content = res["response"]["choices"][0]["message"]["content"].strip()
-                match = re.search(r'\{.*\}', content, re.DOTALL)
-                if match:
-                    parsed = json.loads(match.group(0))
-                    status = "PASS" if str(parsed.get("status", "")).upper() == "PASS" else "FAIL"
-                    conf = float(parsed.get("confidence", 0.8))
-                    score = float(parsed.get("score", 70.0 if status == "PASS" else 40.0))
-                    reason = str(parsed.get("reason", "LLM evaluation completed"))
-                    return score, QualityGateJudgment(status=status, confidence=conf, reason=reason)
+                brace_idx = content.find("{")
+                if brace_idx != -1:
+                    parsed, _ = json.JSONDecoder().raw_decode(content, brace_idx)
+                    if isinstance(parsed, dict):
+                        status = "PASS" if str(parsed.get("status", "")).upper() == "PASS" else "FAIL"
+                        conf = max(0.0, min(1.0, float(parsed.get("confidence", 0.8))))
+                        score = max(0.0, min(100.0, float(parsed.get("score", 70.0 if status == "PASS" else 40.0))))
+                        reason = str(parsed.get("reason", "LLM evaluation completed"))
+                        return score, QualityGateJudgment(status=status, confidence=conf, reason=reason)
         except Exception as e:
             logger.debug(f"LLM quality gate evaluation skipped: {e}")
 

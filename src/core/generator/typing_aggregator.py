@@ -12,6 +12,7 @@ from core.generator.typing_session_helpers import (
     filter_session_events,
     get_app_context,
     get_event_diff_val,
+    is_ime_toggle_combo,
     is_same_editor_window,
     merge_consecutive_type_events,
     propagate_click_context,
@@ -58,8 +59,14 @@ class TypingSessionAggregator:
             role_lower = str(event.get("semantic_role", "")).lower()
             combo_parts = [p for p in role_lower.split("+") if p]
             combo_alphas = [p for p in combo_parts if len(p) == 1 and p.isalpha()]
-            # Why: 複合コンボ(shift+a+tab等)でも英字1字が含まれる場合は大文字入力として救出
-            is_shift_char = action == "key_combo" and "shift" in role_lower and len(combo_alphas) == 1
+            has_non_shift_mod = any(mod in combo_parts for mod in ("ctrl", "alt", "win", "cmd"))
+            # Why: ctrl+shift+a等のショートカットを除外し、純粋なshift+1英字のみ大文字入力扱いとする
+            is_shift_char = (
+                action == "key_combo"
+                and "shift" in combo_parts
+                and not has_non_shift_mod
+                and len(combo_alphas) == 1
+            )
 
             is_special_key = action in ["key_down", "key_press", "key_combo"] and (
                 role_lower.startswith("key.")
@@ -70,13 +77,12 @@ class TypingSessionAggregator:
             is_uia_scan = action == "uia_scan"
             is_confirm_key = is_special_key and role_lower in ["enter", "tab"]
             is_mouse_move = action in ["move", "mouse_move", "mouse_hover"]
-            is_ime_toggle = "+" in role_lower and any(k in role_lower for k in ["space", "grave", "kanji"])
-            # Why: Ctrl+A/C/V等のショートカットはタイピングセッションへ混ぜず独立コマンドとして保持
+            is_ime_toggle = is_ime_toggle_combo(role_lower)
+            # Why: Ctrl+Shift+AやCtrl+C/V等のショートカットはセッションへ混ぜず独立コマンドとして保持
             is_shortcut_combo = (
                 (action == "key_combo" or "+" in role_lower)
-                and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
+                and has_non_shift_mod
                 and not is_ime_toggle
-                and not is_shift_char
             )
 
             if is_shortcut_combo:
@@ -150,12 +156,12 @@ class TypingSessionAggregator:
         )
         if profile_switched or window_switched:
             self._flush_session(current_session, aggregated_events, future_events=future_events)
-        elif not is_ongoing_typing and diff_val > 15.0 and time_diff > 500:
+        elif not is_ongoing_typing and diff_val > 0.15 and time_diff > 500:
             self._flush_session(current_session, aggregated_events, future_events=future_events)
         elif time_diff > 3000:
             self._flush_session(current_session, aggregated_events, future_events=future_events)
         elif not is_ongoing_typing and last_element and curr_element and last_element != curr_element:
-            if diff_val > 5.0 or time_diff > 2000:
+            if diff_val > 0.05 or time_diff > 2000:
                 self._flush_session(current_session, aggregated_events, future_events=future_events)
 
     def _flush_session(
@@ -190,7 +196,7 @@ class TypingSessionAggregator:
             diff_val = get_event_diff_val(single_event)
             is_essential_key = role_lower in ESSENTIAL_KEYS
             is_shortcut = action == "key_combo" and any(mod in role_lower for mod in ["ctrl", "alt", "win", "cmd"])
-            if diff_val < 0.1 and not is_essential_key and not is_shortcut:
+            if diff_val < 0.001 and not is_essential_key and not is_shortcut:
                 session.clear()
                 return
             output_list.append(single_event)

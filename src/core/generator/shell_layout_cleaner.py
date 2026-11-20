@@ -78,69 +78,60 @@ def normalize_window_layout(
     temp_workflow_info: List[Dict[str, Any]],
     workflow_id: str,
 ) -> List[Dict[str, Any]]:
-    app_first_business_op: Dict[str, int] = {}
-    app_final_rect: Dict[str, Tuple[int, int, int, int]] = {}
+    # Why: ウィンドウタイトル単位で最終矩形を管理し、複数ウィンドウ・最大化切替時の座標破壊を防止
+    win_final_rect: Dict[str, Tuple[int, int, int, int]] = {}
 
-    for i, info in enumerate(temp_workflow_info):
-        app = extract_app_name(info.get("window_name", ""))
-        if not app:
+    for info in temp_workflow_info:
+        win_key = str(info.get("window_name") or "").lstrip("* ").strip().lower()
+        if not win_key:
             continue
-        raw_act = info.get("raw_action", "")
-        raw_tp = str(info.get("raw_type", "")).lower()
-        role = str(info.get("semantic_role", "")).lower()
-
-        is_business = False
-        if raw_act == "type_text" or "key" in raw_act:
-            if role not in ["win", "cmd"]:
-                is_business = True
-        elif raw_act == "click" and "drag" not in raw_tp:
-            raw_cy = info.get("cursor_y") if info.get("cursor_y") is not None else info.get("y")
-            raw_wy = info.get("win_y")
-            cy = 0 if raw_cy is None else raw_cy
-            wy = 0 if raw_wy is None else raw_wy
-            if cy - wy > 45 or info.get("excel_cell") or info.get("excel_dest_cell"):
-                is_business = True
-
-        if is_business and app not in app_first_business_op:
-            app_first_business_op[app] = i
-
         wx = 0 if info.get("win_x") is None else info.get("win_x")
         wy = 0 if info.get("win_y") is None else info.get("win_y")
         ww = 0 if info.get("win_w") is None else info.get("win_w")
         wh = 0 if info.get("win_h") is None else info.get("win_h")
         if ww > 0 and wh > 0:
-            app_final_rect[app] = (wx, wy, ww, wh)
+            win_final_rect[win_key] = (wx, wy, ww, wh)
 
     layout_cleaned: List[Dict[str, Any]] = []
     for info in temp_workflow_info:
-        app = extract_app_name(info.get("window_name", ""))
+        win_key = str(info.get("window_name") or "").lstrip("* ").strip().lower()
         orig_wx = 0 if info.get("win_x") is None else info.get("win_x")
         orig_wy = 0 if info.get("win_y") is None else info.get("win_y")
+        orig_ww = 0 if info.get("win_w") is None else info.get("win_w")
+        orig_wh = 0 if info.get("win_h") is None else info.get("win_h")
         raw_cy = info.get("cursor_y") if info.get("cursor_y") is not None else info.get("y")
         raw_cx = info.get("cursor_x") if info.get("cursor_x") is not None else info.get("x")
         cy = 0 if raw_cy is None else raw_cy
         cx = 0 if raw_cx is None else raw_cx
 
-        # Why: 業務ドラッグやメニュー・タブ操作を保護し、完全な画面外座標のみ除外
-        if cy < -50 or cx < -50:
+        # Why: マルチモニタ負座標を保護し、最小化ダミー座標(-32000等)のみ除外
+        if cy <= -10000 or cx <= -10000:
             logger.info(f"[{workflow_id}] Omitted off-screen action (Event: {info.get('event_id')}) at ({cx}, {cy})")
             continue
 
-        if app in app_final_rect:
-            final_x, final_y, final_w, final_h = app_final_rect[app]
-            # Why: 移動前モニタの操作座標を最終ウィンドウの座標系へ安全に投影変換
-            if cy < final_y or cy < -50 or abs(orig_wy - final_y) > 100:
-                rel_cy = cy - orig_wy
-                rel_cx = cx - orig_wx
-                if 0 <= rel_cy <= final_h:
-                    info["cursor_y"] = final_y + rel_cy
-                    info["cursor_x"] = final_x + rel_cx
-                    info["y"] = info["cursor_y"]
-                    info["x"] = info["cursor_x"]
-            info["win_x"] = final_x
-            info["win_y"] = final_y
-            info["win_w"] = final_w
-            info["win_h"] = final_h
+        if win_key in win_final_rect:
+            final_x, final_y, final_w, final_h = win_final_rect[win_key]
+            # Why: 最大化・大幅リサイズ時は座標系が変わるため元矩形を保持し、平行移動のみ投影変換
+            size_compatible = (
+                orig_ww <= 0
+                or orig_wh <= 0
+                or (abs(orig_ww - final_w) <= 50 and abs(orig_wh - final_h) <= 50)
+            )
+            if size_compatible:
+                if raw_cx is not None and raw_cy is not None and (
+                    abs(orig_wx - final_x) > 50 or abs(orig_wy - final_y) > 50
+                ):
+                    rel_cy = cy - orig_wy
+                    rel_cx = cx - orig_wx
+                    if 0 <= rel_cx <= final_w and 0 <= rel_cy <= final_h:
+                        info["cursor_y"] = final_y + rel_cy
+                        info["cursor_x"] = final_x + rel_cx
+                        info["y"] = info["cursor_y"]
+                        info["x"] = info["cursor_x"]
+                info["win_x"] = final_x
+                info["win_y"] = final_y
+                info["win_w"] = final_w
+                info["win_h"] = final_h
 
         layout_cleaned.append(info)
 

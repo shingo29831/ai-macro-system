@@ -26,7 +26,15 @@ def detect_and_optimize_loops(
 
             loop_events = []
             j = idx + 1
-            while j < len(temp_workflow_info) and temp_workflow_info[j].get("raw_type", "").lower() != "meta_loop_end":
+            depth = 1
+            while j < len(temp_workflow_info):
+                j_type = str(temp_workflow_info[j].get("raw_type", "")).lower()
+                if j_type == "meta_loop_start":
+                    depth += 1
+                elif j_type == "meta_loop_end":
+                    depth -= 1
+                    if depth == 0:
+                        break
                 loop_events.append(temp_workflow_info[j])
                 j += 1
 
@@ -73,9 +81,9 @@ def detect_and_optimize_loops(
                     if evt.get("raw_action") in ["click", "move"] and second_iter[k].get("raw_action") == evt.get("raw_action"):
                         diff_y = second_iter[k].get("cursor_y", second_iter[k].get("y", 0)) - evt.get("cursor_y", evt.get("y", 0))
                         diff_x = second_iter[k].get("cursor_x", second_iter[k].get("x", 0)) - evt.get("cursor_x", evt.get("x", 0))
-                        if 10 < abs(diff_y) < 200:
+                        if y_offset == 0 and 10 < abs(diff_y) < 200:
                             y_offset = diff_y
-                        if 10 < abs(diff_x) < 200:
+                        if x_offset == 0 and 10 < abs(diff_x) < 200:
                             x_offset = diff_x
 
                     if evt.get("raw_action") in ["type_text", "key_down"]:
@@ -108,12 +116,15 @@ def detect_and_optimize_loops(
                                 del evt[cell_key]
                                 evt["dynamic_excel_cell"] = True
 
+                tail_events = loop_events[best_start_idx + num_iterations * best_period :]
                 loop_start_info["loop_variables"] = {"y_offset": y_offset, "x_offset": x_offset}
+                loop_start_info["loop_count"] = num_iterations
                 optimized_workflow_info.extend(pre_loop_events)
                 optimized_workflow_info.append(loop_start_info)
                 optimized_workflow_info.extend(first_iter)
                 logger.info(f"[{workflow_id}] Loop pattern detected (score={best_score:.2f}, period={best_period}, count={num_iterations}). Offsets: y={y_offset}, x={x_offset}")
             else:
+                tail_events = []
                 loop_start_info["loop_variables"] = {"y_offset": 0, "x_offset": 0}
                 optimized_workflow_info.append(loop_start_info)
                 optimized_workflow_info.extend(loop_events)
@@ -129,6 +140,9 @@ def detect_and_optimize_loops(
                     "semantic_role": "",
                     "window_name": info.get("window_name", "")
                 })
+            # Why: 周期の端数となった末尾イベントをループ外へ保持し操作欠落を防止
+            if tail_events:
+                optimized_workflow_info.extend(tail_events)
             idx = j + 1
         else:
             optimized_workflow_info.append(info)

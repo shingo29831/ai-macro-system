@@ -1,6 +1,7 @@
 """Module: @role: Workflowステップ列から実行エンジン向けのコマンド列を構築し、待機時間補完とスクロール統合を行う。"""
 
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from models.data_types import IntegratedEvent, WorkflowStep
@@ -20,15 +21,25 @@ def build_executable_commands(
 ) -> List[Dict[str, Any]]:
     raw_commands_data: List[Dict[str, Any]] = []
     prev_timestamp: Optional[int] = None
-    workflow_info_map = {item["event_id"]: item for item in temp_workflow_info}
+    workflow_info_map: Dict[str, Dict[str, Any]] = {}
+    for item in temp_workflow_info:
+        eid = item.get("event_id")
+        if eid and eid not in workflow_info_map:
+            workflow_info_map[eid] = item
 
     for step in workflow_steps:
         if check_cancel_callback and check_cancel_callback():
             raise InterruptedError("Generation cancelled by user")
 
         raw_event_id = step.fallback_raw_events[0] if step.fallback_raw_events else None
-        base_id = raw_event_id.replace("_nav_click", "").split("_chk_")[0].split("_submit_")[0] if raw_event_id else None
-        integ_evt = next((e for e in integrated_events if e.id in [raw_event_id, base_id]), None)
+        base_id = None
+        if raw_event_id:
+            m = re.match(r"^(evt_\d+)", raw_event_id)
+            base_id = m.group(1) if m else raw_event_id.replace("_nav_click", "").split("_chk_")[0].split("_submit_")[0]
+        candidate_ids = set(step.fallback_raw_events or [])
+        if base_id:
+            candidate_ids.add(base_id)
+        integ_evt = next((e for e in integrated_events if e.id in candidate_ids), None)
 
         cmd_type = step.action.command
         if not integ_evt and cmd_type not in NO_IMAGE_MATCH_COMMANDS:

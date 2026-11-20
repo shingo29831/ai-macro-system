@@ -117,7 +117,8 @@ def clean_office_events(
                             break
                         if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                             break
-                        if prev_info.get("raw_action") in ["key_down", "type_text", "click", "move"]:
+                        # Why: セル入力確定の巻き戻しは文字入力キーのみに限定し無関係なクリック/移動の消失を防止
+                        if prev_info.get("raw_action") in ["key_down", "type_text"]:
                             role = str(prev_info.get("semantic_role", "")).lower()
                             if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
                                 if not idx_to_remove:
@@ -177,66 +178,64 @@ def clean_office_events(
                             cleaned_workflow_info.pop(i)
 
             elif event_kind == "selection_change" and cell:
-                if True:
+                is_duplicate = False
+                current_window = info.get("window_name", "")
+                for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                    prev_info = cleaned_workflow_info[i]
+                    if prev_info.get("window_name", "") != current_window:
+                        break
+                    if prev_info.get("raw_action") == "click" and prev_info.get("excel_dest_cell"):
+                        if prev_info.get("excel_dest_cell") == cell:
+                            is_duplicate = True
+                        break
+                    elif prev_info.get("raw_action") == "type_text" and prev_info.get("excel_cell"):
+                        if prev_info.get("excel_cell") == cell:
+                            is_duplicate = True
+                        break
 
-                    is_duplicate = False
-                    current_window = info.get("window_name", "")
+                if not is_duplicate:
+                    idx_to_remove = []
+                    last_x, last_y = 0, 0
+                    has_nav_key = False
                     for i in range(len(cleaned_workflow_info) - 1, -1, -1):
                         prev_info = cleaned_workflow_info[i]
                         if prev_info.get("window_name", "") != current_window:
                             break
-                        if prev_info.get("raw_action") == "click" and prev_info.get("excel_dest_cell"):
-                            if prev_info.get("excel_dest_cell") == cell:
-                                is_duplicate = True
+                        if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
                             break
-                        elif prev_info.get("raw_action") == "type_text" and prev_info.get("excel_cell"):
-                            if prev_info.get("excel_cell") == cell:
-                                is_duplicate = True
-                            break
-
-                    if not is_duplicate:
-                        idx_to_remove = []
-                        last_x, last_y = 0, 0
-                        has_nav_key = False
-                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
-                            prev_info = cleaned_workflow_info[i]
-                            if prev_info.get("window_name", "") != current_window:
+                        if prev_info.get("raw_action") in ["click", "move"]:
+                            idx_to_remove.append(i)
+                            if prev_info.get("raw_action") == "click" and last_x == 0:
+                                last_x = prev_info.get("cursor_x", prev_info.get("x", 0))
+                                last_y = prev_info.get("cursor_y", prev_info.get("y", 0))
+                        elif prev_info.get("raw_action") in ["key_down", "type_text"]:
+                            role = str(prev_info.get("semantic_role", "")).lower()
+                            if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
+                                has_nav_key = True
                                 break
-                            if prev_info.get("excel_dest_cell") or prev_info.get("excel_cell"):
-                                break
-                            if prev_info.get("raw_action") in ["click", "move"]:
-                                idx_to_remove.append(i)
-                                if prev_info.get("raw_action") == "click" and last_x == 0:
-                                    last_x = prev_info.get("cursor_x", prev_info.get("x", 0))
-                                    last_y = prev_info.get("cursor_y", prev_info.get("y", 0))
-                            elif prev_info.get("raw_action") in ["key_down", "type_text"]:
-                                role = str(prev_info.get("semantic_role", "")).lower()
-                                if role in ["enter", "tab", "esc", "up", "down", "left", "right"] or role.startswith("key.") or "+" in role:
-                                    has_nav_key = True
-                                    break
-                                else:
-                                    break
                             else:
                                 break
-
-                        if has_nav_key:
-                            for i in sorted(idx_to_remove, reverse=True):
-                                cleaned_workflow_info.pop(i)
-                            for i in range(len(cleaned_workflow_info) - 1, -1, -1):
-                                if cleaned_workflow_info[i].get("raw_action") in ["key_down", "type_text"]:
-                                    cleaned_workflow_info[i]["excel_dest_cell"] = cell
-                                    break
                         else:
-                            for i in sorted(idx_to_remove, reverse=True):
-                                cleaned_workflow_info.pop(i)
+                            break
 
-                            if last_x != 0 or last_y != 0:
-                                info["raw_action"] = "click"
-                                info["excel_dest_cell"] = cell
-                                info["button"] = "left"
-                                info["cursor_x"] = last_x
-                                info["cursor_y"] = last_y
-                                cleaned_workflow_info.append(info)
+                    if has_nav_key:
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
+                        for i in range(len(cleaned_workflow_info) - 1, -1, -1):
+                            if cleaned_workflow_info[i].get("raw_action") in ["key_down", "type_text"]:
+                                cleaned_workflow_info[i]["excel_dest_cell"] = cell
+                                break
+                    else:
+                        for i in sorted(idx_to_remove, reverse=True):
+                            cleaned_workflow_info.pop(i)
+
+                        if last_x != 0 or last_y != 0:
+                            info["raw_action"] = "click"
+                            info["excel_dest_cell"] = cell
+                            info["button"] = "left"
+                            info["cursor_x"] = last_x
+                            info["cursor_y"] = last_y
+                            cleaned_workflow_info.append(info)
 
             continue
 

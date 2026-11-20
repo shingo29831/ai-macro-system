@@ -27,7 +27,7 @@ def select_candidate_with_llm(candidates: List[str], elem_name: str, config: Opt
         res = client.generate(prompt)
         if res.get("success") and "response" in res:
             content = res["response"]["choices"][0]["message"]["content"].strip()
-            match = re.search(r"\b([1-9])\b", content)
+            match = re.search(r"\b([1-9]\d*)\b", content)
             if match:
                 selected_idx = int(match.group(1)) - 1
                 if 0 <= selected_idx < len(candidates):
@@ -46,10 +46,10 @@ def _score_candidate_value(val: str, idx: int, elem_name: str) -> float:
     v = val.strip()
     if not v or v.lower() == elem_name.lower() or v in ["検索", "Search", "クリア", "×", "left_click", "move"]:
         return -500.0
-    # Why: 未確定ローマ字の末尾子音(kaisy, satou等)を大幅減点し確定値を救済
+    # Why: 未確定ローマ字の明確な末尾子音クラスタのみ減点し、通常英単語(you等)の誤減点を防止
     is_raw_romaji = bool(
         re.fullmatch(r"[a-z]+", v.lower())
-        and any(v.lower().endswith(c) for c in ["sy", "ty", "ky", "sh", "ch", "ou", "ei"])
+        and any(v.lower().endswith(c) for c in ["sy", "ty", "ky", "sh", "ch", "ts"])
     )
     if is_raw_romaji:
         return -100.0 + min(len(v), 10)
@@ -75,15 +75,9 @@ def evaluate_form_value(
     llm_val = select_candidate_with_llm(candidates, elem_name, config)
     if llm_val:
         return llm_val
-    # Why: ブラウザ確定スナップショット値を絶対最優先し普遍判定で最適値を決定
+    # Why: ブラウザ確定スナップショット値を最優先し、Backspace短縮修正の巻き戻しを防止
     if has_snapshot_val and str(has_snapshot_val).strip():
-        s_val = str(has_snapshot_val).strip()
-        # Why: 候補に確定値の前方一致完全長文(例: 佐藤 -> 佐藤 健一)が存在する場合は完全版を採用
-        for c in reversed(candidates):
-            c_str = str(c).strip()
-            if len(c_str) > len(s_val) and (c_str.startswith(s_val) or s_val in c_str):
-                return c_str
-        return s_val
+        return str(has_snapshot_val).strip()
     if not candidates:
         return ""
 
