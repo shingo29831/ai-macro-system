@@ -150,26 +150,32 @@ def try_template_recovery(
         if tpl_img is None or screen_bgr is None:
             return None
 
-        scales = [1.0, 0.9, 1.1, 0.85, 1.15, 0.8, 1.2]
+        win_scales = [1.0, 0.9, 1.1, 0.85, 1.15, 0.8, 1.2, 0.67, 1.5]
+        full_scales = [1.0, 0.8, 1.25, 0.67, 1.5]
         matched = None
         off_x, off_y = 0, 0
+        tpl_gray = cv2.cvtColor(tpl_img, cv2.COLOR_BGR2GRAY)
 
         if win_crop_box:
             x1, y1, x2, y2 = win_crop_box
             win_bgr = screen_bgr[y1:y2, x1:x2]
-            matched = match_multiscale_template(win_bgr, tpl_img, 0.72, scales)
+            matched = match_multiscale_template(win_bgr, tpl_img, 0.72, win_scales)
             if matched:
                 off_x, off_y = x1, y1
             else:
-                # Why: ホバー色変化やテーマ色差を吸収するため対象ウィンドウ内限定でグレースケール照合
+                # Why: ホバー色変化やテーマ色差を吸収するためグレースケール照合を実行
                 win_gray = cv2.cvtColor(win_bgr, cv2.COLOR_BGR2GRAY)
-                tpl_gray = cv2.cvtColor(tpl_img, cv2.COLOR_BGR2GRAY)
-                matched = match_multiscale_template(win_gray, tpl_gray, 0.78, scales)
+                matched = match_multiscale_template(win_gray, tpl_gray, 0.76, win_scales)
                 if matched:
                     off_x, off_y = x1, y1
 
         if not matched:
-            matched = match_multiscale_template(screen_bgr, tpl_img, 0.72, scales)
+            matched = match_multiscale_template(screen_bgr, tpl_img, 0.74, full_scales)
+
+        if not matched:
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            matched = match_multiscale_template(screen_gray, tpl_gray, 0.78, full_scales)
+            off_x, off_y = 0, 0
 
         if matched:
             bx, by, bw, bh, score = matched
@@ -186,6 +192,93 @@ def try_template_recovery(
             }
     except Exception as cv_err:
         logger.debug(f"[{workflow_id}] Template match recovery bypassed: {cv_err}")
+    return None
+
+
+def _match_multiscale_edges(
+    search_gray: Any,
+    tpl_gray: Any,
+    threshold: float,
+    scales: List[float],
+) -> Optional[Tuple[int, int, int, int, float]]:
+    """グレースケール画像をスケール後にCanny算出・微膨張させてエッジ途切れを防ぐ。"""
+    import cv2
+    import numpy as np
+
+    kernel = np.ones((2, 2), np.uint8)
+    search_edges = cv2.dilate(cv2.Canny(search_gray, 50, 150), kernel, iterations=1)
+    best_val, best_loc, best_w, best_h = -1.0, None, 0, 0
+
+    for scale in scales:
+        tw, th = int(tpl_gray.shape[1] * scale), int(tpl_gray.shape[0] * scale)
+        if tw >= search_edges.shape[1] or th >= search_edges.shape[0] or tw < 16 or th < 12:
+            continue
+        scaled_tpl = tpl_gray if scale == 1.0 else cv2.resize(tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
+        tpl_edges = cv2.dilate(cv2.Canny(scaled_tpl, 50, 150), kernel, iterations=1)
+        if int(np.count_nonzero(tpl_edges)) < 20:
+            continue
+        res = cv2.matchTemplate(search_edges, tpl_edges, cv2.TM_CCOEFF_NORMED)
+        _, max_v, _, max_l = cv2.minMaxLoc(res)
+        if max_v > best_val:
+            best_val, best_loc, best_w, best_h = max_v, max_l, tw, th
+
+    if best_val >= threshold and best_loc is not None:
+        return best_loc[0], best_loc[1], best_w, best_h, float(best_val)
+    return None
+
+
+def try_edge_template_recovery(
+    workflow_id: str,
+    target_dir: Path,
+    raw_event_id: str,
+    target_id: str,
+    full_img: Any,
+    monitor_info: Any,
+    win_crop_box: Optional[Tuple[int, int, int, int]],
+    crop_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Stage 3 OCR後でも特定できない色反転・テーマ変更UIをCannyエッジ構造一致で最終救済する。"""
+    import cv2
+    import numpy as np
+
+    resolved_crop = crop_path if crop_path is not None else resolve_crop_path(target_dir, raw_event_id, target_id)
+    if not resolved_crop or not resolved_crop.exists():
+        return None
+
+    m_left = int(monitor_info.get("left", 0)) if isinstance(monitor_info, dict) else 0
+    m_top = int(monitor_info.get("top", 0)) if isinstance(monitor_info, dict) else 0
+
+    try:
+        tpl_gray = cv2.imread(str(resolved_crop), cv2.IMREAD_GRAYSCALE)
+        screen_gray = cv2.cvtColor(np.array(full_img), cv2.COLOR_RGB2GRAY)
+        if tpl_gray is None or screen_gray is None or tpl_gray.shape[0] < 12 or tpl_gray.shape[1] < 16:
+            return None
+
+        matched = None
+        off_x, off_y = 0, 0
+        if win_crop_box:
+            x1, y1, x2, y2 = win_crop_box
+            matched = _match_multiscale_edges(screen_gray[y1:y2, x1:x2], tpl_gray, 0.58, [1.0, 0.9, 1.1, 0.8, 1.25])
+            if matched:
+                off_x, off_y = x1, y1
+        if not matched:
+            matched = _match_multiscale_edges(screen_gray, tpl_gray, 0.62, [1.0, 0.8, 1.25])
+
+        if matched:
+            bx, by, bw, bh, score = matched
+            cx = m_left + off_x + bx + bw // 2
+            cy = m_top + off_y + by + bh // 2
+            logger.info(
+                f"[{workflow_id}] Stage 2b (Edge Fallback) recovered target at ({cx}, {cy}) (Score: {score:.2f})."
+            )
+            return {
+                "success": True,
+                "stage": 2,
+                "method": "edge_template_match",
+                "new_coordinates": {"x": int(cx), "y": int(cy)},
+            }
+    except Exception as edge_err:
+        logger.debug(f"[{workflow_id}] Edge template fallback bypassed: {edge_err}")
     return None
 
 

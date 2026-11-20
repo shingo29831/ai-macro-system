@@ -98,6 +98,7 @@ def run_workflow(
                 logger.warning(f"[{workflow_id}] Failed to load variables.json: {e}")
 
         commands = temp_commands if temp_commands is not None else macro_data.get("commands", [])
+        current_step_msg = ["初期化中"]
 
         step_dispatcher = StepDispatcher(
             workflow_id=workflow_id,
@@ -109,6 +110,7 @@ def run_workflow(
             check_stop_callback=_check_stop,
             is_stop_requested=lambda: _stop_requested,
             update_ui_callback=update_ui,
+            heartbeat_callback=lambda: watchdog.heartbeat(current_step_msg[0]),
         )
 
         try:
@@ -125,9 +127,9 @@ def run_workflow(
             _check_stop()
             cmd = commands[i]
             method = cmd.get("method")
-            watchdog.heartbeat(f"Step {i+1}/{len(commands)}: {method}")
-
             step_msg = f"Step {i+1}/{len(commands)}: {method}"
+            current_step_msg[0] = step_msg
+            watchdog.heartbeat(step_msg)
             if loop_stack:
                 step_msg += f" (Loop {loop_stack[-1]['current_iteration']+1}/{loop_stack[-1]['total_count']})"
             logger.info(f"[{workflow_id}] {step_msg}")

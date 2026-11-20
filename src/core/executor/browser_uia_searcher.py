@@ -5,12 +5,41 @@ import logging
 import platform
 import re
 import threading
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
+
+from core.shared.window_utils import get_browser_family
 
 logger = logging.getLogger(__name__)
 
 GENERIC_HTML_TAGS = {"div", "span", "p", "a", "li", "ul", "ol", "body", "html", "section", "header", "footer"}
+_INTERACTIVE_CONTROL_TYPES = (
+    "edit", "combo", "button", "check", "spinner", "list",
+    "hyperlink", "menuitem", "tabitem", "listitem", "radio",
+)
+_FALLBACK_CONTROL_TYPES = ("text", "image", "group", "custom")
+
+
+def _is_valid_doc_candidate(ctrl: Any, win_area: int, allow_fallback: bool = False) -> bool:
+    if getattr(ctrl, "IsOffscreen", False):
+        return False
+    rect = getattr(ctrl, "BoundingRectangle", None)
+    if not rect or (rect.right - rect.left) <= 0 or (rect.bottom - rect.top) <= 0 or rect.top < 45:
+        return False
+    ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
+    is_interactive = any(k in ct_name for k in _INTERACTIVE_CONTROL_TYPES)
+    is_fallback = any(k in ct_name for k in _FALLBACK_CONTROL_TYPES)
+    if not is_interactive and not (allow_fallback and is_fallback):
+        return False
+    if win_area > 0:
+        elem_area = (rect.right - rect.left) * (rect.bottom - rect.top)
+        if elem_area > win_area * 0.5:
+            return False
+        # Why: テキストやグループラッパー等の非対話コンテナが広範囲一致で誤クリックされるのを防止
+        if not is_interactive and elem_area > win_area * 0.15:
+            return False
+    return True
 
 
 def build_search_criteria(
@@ -113,31 +142,72 @@ def _find_in_document_tree(
         if not scope_ctrl or not scope_ctrl.Exists(0, 0):
             scope_ctrl = win_ctrl
 
+        win_rect = getattr(win_ctrl, "BoundingRectangle", None)
+        win_area = (
+            max(1, (win_rect.right - win_rect.left) * (win_rect.bottom - win_rect.top))
+            if win_rect
+            else 0
+        )
+
         for did in direct_auto_ids:
-            fc = scope_ctrl.Control(searchDepth=16, AutomationId=did)
-            if fc and fc.Exists(0, 0):
+            fc = scope_ctrl.Control(searchDepth=32, AutomationId=did)
+            if fc and fc.Exists(0, 0) and _is_valid_doc_candidate(fc, win_area, allow_fallback=True):
                 return UIAWrapper(fc.Element)
             # Why: DocumentControl外のブラウザUI(アドレスバー等)をウィンドウ直下から救出
             if scope_ctrl != win_ctrl:
-                fc_win = win_ctrl.Control(searchDepth=16, AutomationId=did)
+                fc_win = win_ctrl.Control(searchDepth=24, AutomationId=did)
                 if fc_win and fc_win.Exists(0, 0):
                     return UIAWrapper(fc_win.Element)
 
-        valid_types = ["edit", "combo", "button", "check", "spinner", "list", "hyperlink"]
-        for ctrl, _depth in auto.WalkControl(scope_ctrl, maxDepth=16):
-            ct_name = str(getattr(ctrl, "ControlTypeName", "") or "").lower()
-            if not any(k in ct_name for k in valid_types):
+        # Why: C++ネイティブ探索では対話型要素のみ即返却し非対話テキスト・親コンテナ誤爆を遮断
+        fallback_native = None
+        subname_interactive = None
+        for term in search_terms:
+            if len(term) < 2 or term.startswith("http"):
+                continue
+            exact_ctrl = scope_ctrl.Control(searchDepth=32, Name=term)
+            if exact_ctrl and exact_ctrl.Exists(0, 0):
+                if _is_valid_doc_candidate(exact_ctrl, win_area, allow_fallback=False):
+                    return UIAWrapper(exact_ctrl.Element)
+                if fallback_native is None and _is_valid_doc_candidate(exact_ctrl, win_area, allow_fallback=True):
+                    fallback_native = exact_ctrl
+            if len(term) >= 3 and subname_interactive is None:
+                sub_ctrl = scope_ctrl.Control(searchDepth=32, SubName=term)
+                if sub_ctrl and sub_ctrl.Exists(0, 0) and _is_valid_doc_candidate(sub_ctrl, win_area, allow_fallback=False):
+                    subname_interactive = sub_ctrl
+
+        if subname_interactive is not None:
+            return UIAWrapper(subname_interactive.Element)
+
+        best_interactive = None
+        best_fallback = fallback_native
+        walk_start = time.monotonic()
+        for node_idx, (ctrl, _depth) in enumerate(auto.WalkControl(scope_ctrl, maxDepth=32)):
+            if node_idx >= 2500 or (time.monotonic() - walk_start) > 1.8:
+                break
+            is_interactive = _is_valid_doc_candidate(ctrl, win_area, allow_fallback=False)
+            if not is_interactive and not _is_valid_doc_candidate(ctrl, win_area, allow_fallback=True):
                 continue
             aid = str(getattr(ctrl, "AutomationId", "") or "").lower().strip()
             name = str(getattr(ctrl, "Name", "") or "").lower().strip()
-            rect = getattr(ctrl, "BoundingRectangle", None)
-            if rect and (rect.right - rect.left <= 0 or rect.bottom - rect.top <= 0 or rect.top < 45):
-                continue
             for term in search_terms:
-                if len(term) >= 2 and (
-                    (aid and (term == aid or term in aid)) or (name and (term == name or term in name))
-                ):
-                    return UIAWrapper(ctrl.Element)
+                if len(term) < 2:
+                    continue
+                exact_match = (aid and term == aid) or (name and term == name)
+                partial_match = (aid and term in aid) or (name and term in name)
+                if not (exact_match or partial_match):
+                    continue
+                if is_interactive:
+                    if exact_match:
+                        return UIAWrapper(ctrl.Element)
+                    if best_interactive is None:
+                        best_interactive = ctrl
+                elif best_fallback is None:
+                    best_fallback = ctrl
+
+        chosen = best_interactive or best_fallback
+        if chosen is not None:
+            return UIAWrapper(chosen.Element)
     except Exception as ex_auto:
         logger.debug(f"uiautomation deep walk error: {ex_auto}")
     return None
@@ -160,10 +230,14 @@ def _find_in_pywinauto_windows(
     if not windows:
         windows = desktop.windows()
 
+    expected_title = (last_win_args.get("window_title") or "").strip() if last_win_args else ""
+    expected_family = get_browser_family(expected_title) if expected_title else ""
+
     for window in windows:
         title = window.window_text()
-        if last_win_args and last_win_args.get("window_title"):
-            if last_win_args["window_title"].lower() not in title.lower():
+        if expected_title and expected_title.lower() not in title.lower():
+            # Why: タブ遷移後のタイトル変化を許容しつつ単語境界ベースの同一ブラウザ種別に限定
+            if not (expected_family and get_browser_family(title) == expected_family):
                 continue
         try:
             rect_win = window.rectangle()

@@ -109,6 +109,19 @@ def is_browser_window(title: str) -> bool:
     return any(bool(_BROWSER_WORD_RE.search(seg)) for seg in check_targets)
 
 
+def get_browser_family(title: str) -> str:
+    """タイトルがブラウザウィンドウを示す場合に正規化ブラウザ種別(chrome/edge/firefox/brave/opera)を返す。"""
+    if not is_browser_window(title):
+        return ""
+    segments = [s.strip() for s in re.split(r"[\-—–―]", title) if s.strip()]
+    for seg in reversed(segments[-2:] if len(segments) >= 2 else segments):
+        m = _BROWSER_WORD_RE.search(seg)
+        if m:
+            fam = m.group(1).lower()
+            return "edge" if fam == "msedge" else fam
+    return ""
+
+
 def is_system_shell_window(title: str, check_keywords_for_browser: bool = False) -> bool:
     """OSシェルやシステム自身のウィンドウであり自動化対象外かを判定する。"""
     w_lower = (title or "").lower().strip()

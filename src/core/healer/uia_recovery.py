@@ -63,6 +63,7 @@ def try_browser_uia_recovery(
     target_context: Optional[Dict[str, Any]],
     last_win_args: Optional[Dict[str, Any]],
     candidate_labels: List[str],
+    timeout_sec: float = 1.5,
 ) -> Optional[Dict[str, Any]]:
     """ブラウザ対象時にDOM/UIA名およびスクロール可視化を用いて要素座標を修復する。"""
     if not target_context:
@@ -88,7 +89,7 @@ def try_browser_uia_recovery(
         elem = find_uia_element(
             selector=selector if sel_usable else None,
             last_win_args=last_win_args,
-            timeout_sec=1.2,
+            timeout_sec=timeout_sec,
             element_name=elem_name or None,
             url=url or None,
             text=target_context.get("text"),
@@ -120,7 +121,7 @@ def try_browser_uia_recovery(
             scrolled_coords = scroll_into_view(
                 selector=selector if sel_usable else None,
                 last_win_args=last_win_args,
-                timeout_sec=1.0,
+                timeout_sec=min(1.2, timeout_sec),
                 element_name=elem_name or None,
                 url=url or None,
                 text=target_context.get("text"),
@@ -184,9 +185,11 @@ def try_windows_uia_recovery(
                     return
 
                 for label in candidate_labels:
-                    matched_ctrl = root_ctrl.Control(searchDepth=16, Name=label)
+                    if done_event.is_set():
+                        return
+                    matched_ctrl = root_ctrl.Control(searchDepth=24, Name=label)
                     if not matched_ctrl or not matched_ctrl.Exists(0, 0):
-                        matched_ctrl = root_ctrl.Control(searchDepth=16, SubName=label)
+                        matched_ctrl = root_ctrl.Control(searchDepth=24, SubName=label)
                     if matched_ctrl and matched_ctrl.Exists(0, 0) and not getattr(matched_ctrl, "IsOffscreen", False):
                         ct_name = str(getattr(matched_ctrl, "ControlTypeName", "") or "").lower()
                         rect = matched_ctrl.BoundingRectangle
@@ -203,7 +206,7 @@ def try_windows_uia_recovery(
                             return
 
                 lower_labels = [lb.lower() for lb in candidate_labels if len(lb) >= 2]
-                for ctrl, _depth in auto.WalkControl(root_ctrl, maxDepth=16):
+                for ctrl, _depth in auto.WalkControl(root_ctrl, maxDepth=24):
                     if done_event.is_set():
                         return
                     if getattr(ctrl, "IsOffscreen", False):

@@ -47,6 +47,7 @@ class StepDispatcher:
         check_stop_callback: Optional[Callable[[], None]] = None,
         is_stop_requested: Optional[Callable[[], bool]] = None,
         update_ui_callback: Optional[Callable[[str, bool], None]] = None,
+        heartbeat_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         self.workflow_id = workflow_id
         self.target_dir = target_dir
@@ -57,6 +58,7 @@ class StepDispatcher:
         self.check_stop_callback = check_stop_callback or (lambda: None)
         self.is_stop_requested = is_stop_requested or (lambda: False)
         self.update_ui_callback = update_ui_callback or (lambda msg, is_warn=False: None)
+        self.heartbeat_callback = heartbeat_callback
 
         self.last_win_args: Optional[Dict[str, Any]] = None
         self.current_win_rect: Tuple[int, int, int, int] = (0, 0, 0, 0)
@@ -201,7 +203,16 @@ class StepDispatcher:
 
         self.check_stop_callback()
 
-        if raw_event_id and target_id and method in ["click", "move"]:
+        # Why: ループ内の座標オフセットや変数展開を伴う動的要素で録画時静的クロップの誤検証を回避
+        has_dynamic_target = bool(
+            (loop_stack and (seq_dx != 0 or seq_dy != 0))
+            or any(
+                _is_variable_placeholder(raw_args.get(k))
+                for k in ("x", "y", "element_name", "selector", "text")
+            )
+        )
+
+        if raw_event_id and target_id and method in ["click", "move"] and not has_dynamic_target:
             next_i, aborted, healed = heal_target_or_skip(
                 i,
                 self.commands,
@@ -218,6 +229,8 @@ class StepDispatcher:
                 self.check_stop_callback,
                 self.update_ui_callback,
                 browser_element_located=browser_located,
+                allow_fallback_on_failure=(method == "move"),
+                heartbeat_callback=self.heartbeat_callback,
             )
             if healed:
                 # Why: コピー辞書への修復結果を元コマンドへ書き戻し永続化と次回実行を一致させる
@@ -250,6 +263,8 @@ class StepDispatcher:
                 keyboard=self.keyboard,
                 check_stop_callback=self.check_stop_callback,
             )
+            if method == "activate_window" and self.last_win_args:
+                self._sync_current_win_rect(self.last_win_args)
             if method == "excel_action" and action_result is not None:
                 step_log["excel_result"] = action_result
             elif method == "browser_action" and action_result is not None:
@@ -276,3 +291,20 @@ class StepDispatcher:
                 self.last_win_args["x"], self.last_win_args["y"] = cur_x, cur_y
                 self.last_win_args["width"], self.last_win_args["height"] = cur_w, cur_h
         self.current_win_rect = (cur_x, cur_y, cur_w, cur_h)
+
+    def _sync_current_win_rect(self, win_args: Dict[str, Any]) -> None:
+        # Why: 録画座標が有効ならオフセット基準を保持し、欠損時のみmapped_hwnd実矩形を補完して既存有効矩形を守る
+        rec_x = int(win_args.get("x") or 0)
+        rec_y = int(win_args.get("y") or 0)
+        rec_w = int(win_args.get("width") or 0)
+        rec_h = int(win_args.get("height") or 0)
+        if rec_w > 0 and rec_h > 0 and (rec_x != 0 or rec_y != 0):
+            self.current_win_rect = (rec_x, rec_y, rec_w, rec_h)
+            return
+        hwnd = win_args.get("mapped_hwnd")
+        rect = get_window_rect_xywh(hwnd) if hwnd else None
+        if rect and rect[2] > 0 and rect[3] > 0:
+            self.current_win_rect = rect
+            return
+        if rec_w > 0 and rec_h > 0:
+            self.current_win_rect = (rec_x, rec_y, rec_w, rec_h)

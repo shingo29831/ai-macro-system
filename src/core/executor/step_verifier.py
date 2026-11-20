@@ -209,6 +209,8 @@ def heal_target_or_skip(
     check_stop_callback: Callable[[], None],
     update_ui_callback: Callable[[str, bool], None],
     browser_element_located: bool = False,
+    allow_fallback_on_failure: bool = False,
+    heartbeat_callback: Optional[Callable[[], None]] = None,
 ) -> Tuple[int, bool, bool]:
     """UIターゲットの検証・自己修復を行い、(next_i, aborted_for_skip, healed) を返す。"""
     # Why: Excelセル直接選択やブラウザスクロール特定済み時は静的画像検証の誤爆と座標永続上書きを回避
@@ -229,6 +231,8 @@ def heal_target_or_skip(
         status_callback=status_callback,
         check_stop_callback=check_stop_callback,
         window_offset=(off_x, off_y),
+        fast_fail=allow_fallback_on_failure,
+        heartbeat_callback=heartbeat_callback,
     )
     healed = False
     if recovery_info:
@@ -236,6 +240,11 @@ def heal_target_or_skip(
         if recovered_ok:
             healed = True
         else:
+            if allow_fallback_on_failure:
+                logger.warning(
+                    f"[{workflow_id}] Target healing failed for non-critical step {step_index + 1}; continuing with recorded coordinates."
+                )
+                return step_index + 1, False, False
             if loop_stack and loop_stack[-1].get("continue_on_error"):
                 skipped_i = _skip_failed_loop_step(
                     step_index, commands, loop_stack, workflow_id, update_ui_callback, "UI検出失敗"
